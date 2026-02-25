@@ -145,8 +145,19 @@ int InsertBar(datetime bt)
    }
 
    ArrayResize(g_bars, n + 1, 128);
+   // Explicit copy so each bar keeps its own levels[] (no shared refs after struct assign)
    for(int i = n; i > pos; i--)
-      g_bars[i] = g_bars[i - 1];
+   {
+      g_bars[i].bar_time    = g_bars[i - 1].bar_time;
+      g_bars[i].total_vol   = g_bars[i - 1].total_vol;
+      g_bars[i].total_delta = g_bars[i - 1].total_delta;
+      g_bars[i].sorted      = g_bars[i - 1].sorted;
+      g_bars[i].level_count = g_bars[i - 1].level_count;
+      int cap = ArraySize(g_bars[i - 1].levels);
+      ArrayResize(g_bars[i].levels, MathMax(cap, 64), 64);
+      if(cap > 0)
+         ArrayCopy(g_bars[i].levels, g_bars[i - 1].levels, 0, 0, cap);
+   }
 
    g_bars[pos].bar_time    = bt;
    g_bars[pos].total_vol   = 0;
@@ -235,22 +246,17 @@ void Classify(const MqlTick &t, bool &isBuy, bool &isSell)
 }
 
 //+------------------------------------------------------------------+
-int LoadHistory(datetime t0, datetime t1)
+//| Process tick array into bars (single place for LoadHistory + OnCalculate)
+//+------------------------------------------------------------------+
+void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
+                  bool skipAlreadySeen, bool updateLastTimeMs)
 {
-   MqlTick ticks[];
-   uint flag = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
-   int copied = CopyTicksRange(_Symbol, ticks, flag,
-                                (long)t0 * 1000, (long)t1 * 1000);
-   if(copied <= 0)
+   if(count <= 0) return;
+   for(int i = startIdx; i < startIdx + count; i++)
    {
-      Print("FP: No ticks. copied=", copied);
-      return -1;
-   }
+      if(skipAlreadySeen && ticks[i].time_msc <= g_last_tick_time_ms)
+         continue;
 
-   g_prevBid = ticks[0].bid;
-
-   for(int i = 0; i < copied; i++)
-   {
       double price;
       long   vol;
       if(g_hasTrades)
@@ -268,13 +274,35 @@ int LoadHistory(datetime t0, datetime t1)
 
       bool isBuy, isSell;
       Classify(ticks[i], isBuy, isSell);
-      g_prevBid = ticks[i].bid;
 
-      int shift = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
-      if(shift < 0) continue;
-      datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
+      if(ticks[i].bid != 0.0)
+         g_prevBid = ticks[i].bid;
+
+      int sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
+      if(sh < 0) continue;
+      datetime bt = iTime(_Symbol, PERIOD_CURRENT, sh);
       Feed(bt, price, vol, isBuy, isSell);
+
+      if(updateLastTimeMs)
+         g_last_tick_time_ms = ticks[i].time_msc;
    }
+}
+
+//+------------------------------------------------------------------+
+int LoadHistory(datetime t0, datetime t1)
+{
+   MqlTick ticks[];
+   uint flag = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
+   int copied = CopyTicksRange(_Symbol, ticks, flag,
+                                (long)t0 * 1000, (long)t1 * 1000);
+   if(copied <= 0)
+   {
+      Print("FP: No ticks. copied=", copied);
+      return -1;
+   }
+
+   g_prevBid = ticks[0].bid;
+   ProcessTicks(ticks, 0, copied, false, true);
 
    int n = ArraySize(g_bars);
    for(int i = 0; i < n; i++)
@@ -285,22 +313,41 @@ int LoadHistory(datetime t0, datetime t1)
 
    PrintFormat("FP: %d ticks -> %d bars", copied, n);
    g_dirty = true;
-   if(copied > 0)
-      g_last_tick_time_ms = ticks[copied - 1].time_msc;
    return copied;
+}
+
+//+------------------------------------------------------------------+
+//| Quicksort partition (descending by price)
+//+------------------------------------------------------------------+
+void SortLevelsPartition(PriceLevel &lv[], int lo, int hi)
+{
+   if(lo >= hi) return;
+   double pivot = lv[hi].price;
+   int i = lo - 1;
+   for(int j = lo; j < hi; j++)
+   {
+      if(lv[j].price >= pivot)
+      {
+         i++;
+         PriceLevel tmp = lv[i];
+         lv[i] = lv[j];
+         lv[j] = tmp;
+      }
+   }
+   i++;
+   PriceLevel tmp = lv[i];
+   lv[i] = lv[hi];
+   lv[hi] = tmp;
+
+   SortLevelsPartition(lv, lo, i - 1);
+   SortLevelsPartition(lv, i + 1, hi);
 }
 
 //+------------------------------------------------------------------+
 void SortLevels(PriceLevel &lv[], int n)
 {
    if(n <= 1) return;
-   for(int i = 1; i < n; i++)
-   {
-      PriceLevel k = lv[i];
-      int j = i - 1;
-      while(j >= 0 && lv[j].price < k.price) { lv[j + 1] = lv[j]; j--; }
-      lv[j + 1] = k;
-   }
+   SortLevelsPartition(lv, 0, n - 1);
 }
 
 //+------------------------------------------------------------------+
@@ -594,38 +641,10 @@ void DrawBar(int bi, int shift, int barW)
 }
 
 //+------------------------------------------------------------------+
-//| Master render                                                     |
+//| Layout panel and button coordinates (no drawing)
 //+------------------------------------------------------------------+
-void Render()
+void LayoutPanel(int cw, int ch)
 {
-   int cw = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
-   int ch = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
-   if(cw <= 0 || ch <= 0) return;
-
-   if(canvas.Width() != cw || canvas.Height() != ch)
-      canvas.Resize(cw, ch);
-
-   canvas.Erase(0x00000000);
-
-   int visBars  = (int)ChartGetInteger(g_chart, CHART_VISIBLE_BARS);
-   if(visBars < 1) visBars = 1;
-   int barW     = cw / visBars;
-   int firstVis = (int)ChartGetInteger(g_chart, CHART_FIRST_VISIBLE_BAR);
-   int totalBars = ArraySize(g_bars);
-   if(totalBars == 0) { canvas.Update(); return; }
-
-   g_hideText = (barW < 26);
-
-   // Info label (top-left, subtle)
-   canvas.FontSet("Consolas", 9, FW_NORMAL);
-   int opaPct = (g_opacity * 100) / 255;
-   string tsLabel = "Tick: " + DoubleToString(g_step, _Digits)
-                    + "  Imb: " + DoubleToString(g_imbRatio, 0) + "%"
-                    + "  VA: " + DoubleToString(GetEffectiveVAPercent(), 0) + "%"
-                    + "  Opa: " + IntegerToString(opaPct) + "%";
-   canvas.TextOut(5, 5, tsLabel, FpARGB(C'160,160,170', 180), TA_LEFT | TA_TOP);
-
-   // --- Control panel ---
    int panelH = FP_PANEL_H;
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
@@ -637,10 +656,6 @@ void Render()
    g_panelY1 = ch - panelH - FP_PANEL_MARGIN;
    g_panelY2 = g_panelY1 + panelH;
 
-   canvas.FillRectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2, FpARGB(C'20,20,28', 200));
-   canvas.Rectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2, FpARGB(C'70,70,80', 200));
-
-   // Button positions
    g_btnZoomOutX1 = g_panelX1 + pad;
    g_btnZoomOutY1 = g_panelY1 + pad;
    g_btnZoomOutX2 = g_btnZoomOutX1 + btnW;
@@ -685,6 +700,20 @@ void Render()
    g_btnVAY1 = g_btnZoomOutY1;
    g_btnVAX2 = g_btnVAX1 + btnW;
    g_btnVAY2 = g_btnZoomOutY2;
+}
+
+//+------------------------------------------------------------------+
+//| Draw control panel background and all buttons
+//+------------------------------------------------------------------+
+void DrawPanel()
+{
+   int panelH = FP_PANEL_H;
+   int btnW   = FP_PANEL_BTN_W;
+   int btnCenterX = btnW / 2;
+   int btnCenterY = g_btnZoomOutY1 + (panelH - 6) / 2;
+
+   canvas.FillRectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2, FpARGB(C'20,20,28', 200));
+   canvas.Rectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2, FpARGB(C'70,70,80', 200));
 
    // Hover detection
    bool hoveredTick    = (g_mouseX >= g_btnTickX1    && g_mouseX <= g_btnTickX2    &&
@@ -712,8 +741,6 @@ void Render()
    uint hoverBorder= FpARGB(C'140,140,160', 255);
 
    bool scaleFixOn = (bool)ChartGetInteger(g_chart, CHART_SCALEFIX, 0);
-   int  btnCenterX = btnW / 2;
-   int  btnCenterY = g_btnZoomOutY1 + (panelH - 6) / 2;
 
    canvas.FontSet("Consolas", 9, FW_NORMAL);
 
@@ -797,14 +824,13 @@ void Render()
    double vaPct = GetEffectiveVAPercent();
    canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
                   IntegerToString((int)vaPct) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+}
 
-   if(!g_visible)
-   {
-      canvas.Update();
-      g_dirty = false;
-      return;
-   }
-
+//+------------------------------------------------------------------+
+//| Draw visible footprint bars
+//+------------------------------------------------------------------+
+void DrawVisibleBars(int visBars, int firstVis, int barW)
+{
    for(int v = 0; v < visBars; v++)
    {
       int shift = firstVis - v;
@@ -815,6 +841,50 @@ void Render()
       if(idx >= 0)
          DrawBar(idx, shift, barW);
    }
+}
+
+//+------------------------------------------------------------------+
+//| Master render
+//+------------------------------------------------------------------+
+void Render()
+{
+   int cw = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
+   int ch = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
+   if(cw <= 0 || ch <= 0) return;
+
+   if(canvas.Width() != cw || canvas.Height() != ch)
+      canvas.Resize(cw, ch);
+
+   canvas.Erase(0x00000000);
+
+   int visBars  = (int)ChartGetInteger(g_chart, CHART_VISIBLE_BARS);
+   if(visBars < 1) visBars = 1;
+   int barW     = cw / visBars;
+   int firstVis = (int)ChartGetInteger(g_chart, CHART_FIRST_VISIBLE_BAR);
+   int totalBars = ArraySize(g_bars);
+   if(totalBars == 0) { canvas.Update(); return; }
+
+   g_hideText = (barW < 26);
+
+   canvas.FontSet("Consolas", 9, FW_NORMAL);
+   int opaPct = (g_opacity * 100) / 255;
+   string tsLabel = "Tick: " + DoubleToString(g_step, _Digits)
+                    + "  Imb: " + DoubleToString(g_imbRatio, 0) + "%"
+                    + "  VA: " + DoubleToString(GetEffectiveVAPercent(), 0) + "%"
+                    + "  Opa: " + IntegerToString(opaPct) + "%";
+   canvas.TextOut(5, 5, tsLabel, FpARGB(C'160,160,170', 180), TA_LEFT | TA_TOP);
+
+   LayoutPanel(cw, ch);
+   DrawPanel();
+
+   if(!g_visible)
+   {
+      canvas.Update();
+      g_dirty = false;
+      return;
+   }
+
+   DrawVisibleBars(visBars, firstVis, barW);
 
    canvas.Update();
    g_dirty = false;
@@ -908,42 +978,7 @@ int OnCalculate(const int rates_total,
    {
       if(g_prevBid == 0.0)
          g_prevBid = ticks[0].bid;
-
-      for(int i = 0; i < copied; i++)
-      {
-         if(ticks[i].time_msc <= g_last_tick_time_ms)
-            continue;
-
-         double price;
-         long   vol;
-         if(g_hasTrades)
-         {
-            price = ticks[i].last;
-            vol   = (long)ticks[i].volume;
-            if(vol <= 0 || price == 0.0) continue;
-         }
-         else
-         {
-            price = ticks[i].bid;
-            vol   = 1;
-            if(price == 0.0) continue;
-         }
-
-         bool isBuy, isSell;
-         Classify(ticks[i], isBuy, isSell);
-
-         if(ticks[i].bid != 0.0)
-            g_prevBid = ticks[i].bid;
-
-         int sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
-         if(sh >= 0)
-         {
-            datetime bt = iTime(_Symbol, PERIOD_CURRENT, sh);
-            Feed(bt, price, vol, isBuy, isSell);
-         }
-
-         g_last_tick_time_ms = ticks[i].time_msc;
-      }
+      ProcessTicks(ticks, 0, copied, true, true);
    }
 
    if(g_dirty)
@@ -968,7 +1003,12 @@ void OnChartEvent(const int id, const long &lparam,
    if(id == CHARTEVENT_CHART_CHANGE)
    {
       g_dirty = true;
-      Render();
+      ulong now_ticks = GetTickCount();
+      if(now_ticks - g_last_render_ms >= FP_RENDER_THROTTLE_MS)
+      {
+         Render();
+         g_last_render_ms = now_ticks;
+      }
    }
 
    if(id == CHARTEVENT_MOUSE_MOVE)
