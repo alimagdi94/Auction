@@ -1,977 +1,1104 @@
 //+------------------------------------------------------------------+
-//|                                                  VolumeProfile.mq5|
-//|                                  Copyright 2024, User            |
-//|                                             https://www.mql5.com |
+//|                                                           fp.mq5 |
+//|              Footprint (Bid x Ask Cluster) — Industry Standard   |
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2024, User"
-#property link      "https://www.mql5.com"
-#property version   "5.00"
+//| Industry alignment: Sierra / Bookmap-style footprint              |
+//| - Bid (sell) left | Ask (buy) right per price level               |
+//| - POC = Point of Control (highest volume level)                   |
+//| - Value Area = CME-style % of volume around POC (default 70%)     |
+//| - Diagonal imbalance: Ask@N vs Bid@N+1 (buy), Bid@N vs Ask@N-1    |
+//| - Delta bar and total volume below each bar                       |
+//+------------------------------------------------------------------+
+#property copyright "Trading Tool"
+#property link      "https://mql5.com"
+#property version   "10.00"
+#property description "Footprint Chart — Tick 1K/1.5K/2K, VA%, Imb, Refresh"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
 
-//--- Enums
-enum ENUM_VP_DISTRIBUTION
-  {
-   VP_DIST_CLOSE      = 0,   // Close Price (Fastest)
-   VP_DIST_EVEN       = 1,   // Even Distribution (H-L)
-   VP_DIST_TRIANGULAR = 2    // Triangular (Weighted to Typical)
-  };
+#include <Canvas\Canvas.mqh>
 
-enum ENUM_ROW_MODE
-  {
-   ROW_MODE_TICKS = 0, // Ticks per Row
-   ROW_MODE_COUNT = 1  // Number of Rows
-  };
+//--- Industry-standard defaults
+#define FP_VA_DEFAULT_PCT   70.0   // CME-style Value Area %
+#define FP_TICK_PRESET_1    1000
+#define FP_TICK_PRESET_2    1500
+#define FP_TICK_PRESET_3    2000
 
-//--- Input parameters ─── Data Source & Calculation ───
-input group "─── DATA SOURCE ───"
-sinput bool                 InpUseTicks          = true;          // Zero-Lag (Tick Data, like Footprint)
-sinput bool                 InpDynamic          = true;          // Live: extend range to now, recalc every tick
-sinput int                  InpLookBackBars      = 200;           // Initial LookBack Bars
-sinput ENUM_TIMEFRAMES      InpDataTimeframe     = PERIOD_M1;     // Data Resolution (Bar mode only)
-sinput ENUM_APPLIED_VOLUME  InpVolumeType        = VOLUME_TICK;   // Volume Type (Bar mode: Tick or Real)
-sinput ENUM_VP_DISTRIBUTION InpDistribution      = VP_DIST_EVEN;  // Volume Distribution (Bar mode only)
+//--- Inputs
+input group "Data & History"
+input int    InpTickSize       = 1000;          // Cell size (points) — 1 point = 1×_Point; click Tick to cycle 1K/1.5K/2K
+input double InpImbalanceRatio = 300.0;         // Imbalance Threshold (%)
+input int    InpHistoryBars    = 100;           // History bars to load
+input double InpVAPercent      = 70.0;          // Value Area % (industry default 70)
 
-input group "─── PROFILE LAYOUT ───"
-sinput ENUM_ROW_MODE        InpRowMode           = ROW_MODE_TICKS; // Row Layout Mode
-sinput int                  InpRowValue          = 10;            // Row Size (Ticks or Count)
-sinput double               InpValueAreaPct      = 70.0;          // Value Area % (Standard is 70)
-sinput int                  InpWidthRatio        = 40;            // Max Histogram Width %
+input group "Visual"
+input int    InpFontSize       = 8;             // Base font size
+input uchar  InpBgAlpha        = 210;           // Cell Background Alpha (0-255)
+input uchar  InpVAOffAlpha     = 80;            // Alpha outside Value Area (0-255)
 
-input group "─── COLORS: VALUE AREA ───"
-sinput color                InpColorVAUp         = C'70,130,180'; // VA Up Volume (Steel Blue)
-sinput color                InpColorVADown       = C'100,149,237';// VA Down Volume (Cornflower Blue)
-sinput color                InpColorOutUp        = C'128,128,128';// Outside VA Up (Grey)
-sinput color                InpColorOutDown      = C'169,169,169';// Outside VA Down (Silver)
+input group "Colors"
+input color  InpBidColor       = C'180,60,60';  // Bid (Sell) side color
+input color  InpAskColor       = C'50,160,80';  // Ask (Buy) side color
+input color  InpNeutralColor   = C'50,50,60';   // Neutral / Empty cell
+input color  InpPOCColor       = C'255,215,0';  // POC highlight (Gold)
+input color  InpImbBuyBg       = C'0,200,80';   // Buy Imbalance marker
+input color  InpImbSellBg      = C'220,40,40';  // Sell Imbalance marker
+input color  InpDeltaPosColor  = C'40,180,90';  // Positive Delta
+input color  InpDeltaNegColor  = C'200,50,50';  // Negative Delta
 
-input group "─── COLORS: POC & LINES ───"
-sinput color                InpColorPOCLine      = clrOrange;     // POC Line Color
-sinput int                  InpPOCWidth          = 2;             // POC Line Width
-sinput ENUM_LINE_STYLE      InpPOCStyle          = STYLE_SOLID;   // POC Line Style
-sinput bool                 InpHighlightPOCBar   = true;          // Highlight POC Bucket
-sinput color                InpColorPOCBar       = clrGold;       // POC Bucket Highlight
+//--- Data structures
+struct PriceLevel
+{
+   double price;
+   long   bid_vol;
+   long   ask_vol;
+   long   total_vol;
+   long   delta;
+};
 
-input group "─── COLORS: VA BOUNDARIES ───"
-sinput bool                 InpShowVABounds      = true;          // Show VAH/VAL Lines
-sinput color                InpColorVABounds     = clrDimGray;    // VAH/VAL Color
-sinput ENUM_LINE_STYLE      InpVAStyle           = STYLE_DASH;    // VAH/VAL Style
-sinput int                  InpVAWidth           = 1;             // VAH/VAL Width
+struct FPBar
+{
+   datetime   bar_time;
+   long       total_vol;
+   long       total_delta;
+   bool       sorted;
+   int        level_count;
+   PriceLevel levels[];
+};
 
-input group "─── VISUALS & LABELS ───"
-sinput bool                 InpBackground        = true;          // Draw as Background
-sinput bool                 InpFill              = true;          // Fill Histogram Bars
-sinput bool                 InpShowValues        = true;          // Show Volume Labels
-sinput color                InpValueColor        = clrDarkGray;   // Volume Labels Color
-sinput int                  InpValueFontSize     = 8;             // Labels Font Size
-sinput color                InpColorSelector     = clrSlateGray;  // Selector Box Color
+//--- Globals
+CCanvas  canvas;
+string   g_name     = "FP_Canvas";
+FPBar    g_bars[];
+double   g_tick;
+double   g_step;        // aggregated step = InpTickSize * _Point
+long     g_chart;
+int      g_sub;
+bool     g_hasTrades;
+double   g_prevBid;
+bool     g_dirty;
+bool     g_hideText;
+double   g_imbRatio;    // current imbalance ratio (GUI-tunable)
+int      g_opacity = 255;  // overlay opacity (runtime-tunable: 255/190/127/64)
+long     g_last_tick_time_ms = 0;
+ulong    g_last_render_ms    = 0;
 
-//--- Object name constants
-const string RECT_NAME     = "VP_Selector";
-const string LINE_PREFIX   = "VP_Line_";
-const string LABEL_PREFIX  = "VP_Val_";
-const string POC_OBJ_NAME  = "VP_POC_Line";
-const string VAH_OBJ_NAME  = "VP_VAH_Line";
-const string VAL_OBJ_NAME  = "VP_VAL_Line";
+// GUI panel & buttons
+#define FP_PANEL_BTN_W      46
+#define FP_PANEL_BTN_GAP    3
+#define FP_PANEL_PAD        3
+#define FP_PANEL_H          24
+#define FP_PANEL_MARGIN     5
+#define FP_RENDER_THROTTLE_MS 33   // ~30 FPS max to avoid UI lag
+#define FP_MIN_CELL_H         16   // Min cell height (px) for readability
 
-//--- State
-int    g_prevSteps         = 0;
-int    g_prevLabelCount    = 0;
-long   g_last_tick_time_ms = 0;   // last processed tick (for dynamic tick mode)
-ulong  g_last_render_ms    = 0;    // throttle redraws
-double g_prevBid           = 0.0; // for buy/sell classification (Forex)
-#define VP_RENDER_THROTTLE_MS 33   // ~30 FPS when dynamic (like live simulator)
+int g_panelX1, g_panelY1, g_panelX2, g_panelY2;
+int g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2;
+int g_btnImbX1,  g_btnImbY1,  g_btnImbX2,  g_btnImbY2;
+int g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2;
+int g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2;
+int g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2;
+int g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2;
+int g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2;
+int g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2;
+int g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2;
+int g_mouseX = -1, g_mouseY = -1;
+double g_vaPercent = 0;   // 0 = use InpVAPercent; else runtime VA%
+bool g_visible = true;
+
+// Persistent scratch buffers
+int  g_scratchY1[];
+int  g_scratchY2[];
+int  g_scratchCap = 0;
 
 //+------------------------------------------------------------------+
-//| Validated inputs (clamped to safe ranges)                         |
-//+------------------------------------------------------------------+
-double SafeWidthFactor()   { return MathMax(MathMin(InpWidthRatio, 100), 1) / 100.0; }
-double SafeValueAreaPct()  { return MathMax(MathMin(InpValueAreaPct, 100.0), 10.0) / 100.0; }
-int    SafePOCWidth()      { return MathMax(MathMin(InpPOCWidth, 5), 1); }
-int    SafeVAWidth()       { return MathMax(MathMin(InpVAWidth, 5), 1); }
+double NormP(double p)
+{
+   return MathFloor(p / g_step) * g_step;
+}
 
 //+------------------------------------------------------------------+
-//| Calculate Price Step (Resolution) Based on Mode                  |
-//+------------------------------------------------------------------+
-double GetResolution(double price_range)
-  {
-   if(InpRowMode == ROW_MODE_TICKS)
-      return MathMax(InpRowValue, 1) * _Point;
-   return MathMax(price_range / MathMax(InpRowValue, 1), _Point);
-  }
+int FindBarIndex(datetime bt)
+{
+   int lo = 0, hi = ArraySize(g_bars) - 1;
+   while(lo <= hi)
+   {
+      int mid = (lo + hi) / 2;
+      if(g_bars[mid].bar_time == bt) return mid;
+      if(g_bars[mid].bar_time < bt) lo = mid + 1;
+      else hi = mid - 1;
+   }
+   return -1;
+}
 
 //+------------------------------------------------------------------+
-//| Classify tick as buy/sell (same logic as Footprint fp.mq5)       |
+int InsertBar(datetime bt)
+{
+   int n = ArraySize(g_bars);
+   int pos = n;
+   for(int i = n - 1; i >= 0; i--)
+   {
+      if(g_bars[i].bar_time == bt) return i;
+      if(g_bars[i].bar_time < bt) { pos = i + 1; break; }
+      pos = i;
+   }
+
+   ArrayResize(g_bars, n + 1, 128);
+   for(int i = n; i > pos; i--)
+      g_bars[i] = g_bars[i - 1];
+
+   g_bars[pos].bar_time    = bt;
+   g_bars[pos].total_vol   = 0;
+   g_bars[pos].total_delta = 0;
+   g_bars[pos].sorted      = true;
+   g_bars[pos].level_count = 0;
+   ArrayResize(g_bars[pos].levels, 64, 64);
+   return pos;
+}
+
 //+------------------------------------------------------------------+
-void ClassifyTick(const MqlTick &t, bool &isBuy, bool &isSell)
-  {
+int GetBar(datetime bt)
+{
+   int idx = FindBarIndex(bt);
+   if(idx >= 0) return idx;
+   return InsertBar(bt);
+}
+
+//+------------------------------------------------------------------+
+void Feed(datetime bt, double price, long vol, bool isBuy, bool isSell)
+{
+   if(bt == 0 || price == 0.0) return;
+   price = NormP(price);
+   int bi = GetBar(bt);
+
+   int used = g_bars[bi].level_count;
+   for(int i = 0; i < used; i++)
+   {
+      if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
+      {
+         if(isBuy)  g_bars[bi].levels[i].ask_vol += vol;
+         if(isSell) g_bars[bi].levels[i].bid_vol += vol;
+         g_bars[bi].levels[i].total_vol += vol;
+         g_bars[bi].levels[i].delta =
+            g_bars[bi].levels[i].ask_vol - g_bars[bi].levels[i].bid_vol;
+         g_bars[bi].total_vol += vol;
+         if(isBuy)  g_bars[bi].total_delta += vol;
+         if(isSell) g_bars[bi].total_delta -= vol;
+         g_bars[bi].sorted = false;
+         g_dirty = true;
+         return;
+      }
+   }
+   int capacity = ArraySize(g_bars[bi].levels);
+   if(used >= capacity)
+   {
+      ArrayResize(g_bars[bi].levels, capacity + 64, 64);
+      capacity = ArraySize(g_bars[bi].levels);
+   }
+
+   int idx = g_bars[bi].level_count;
+   g_bars[bi].levels[idx].price     = price;
+   g_bars[bi].levels[idx].ask_vol   = isBuy  ? vol : 0;
+   g_bars[bi].levels[idx].bid_vol   = isSell ? vol : 0;
+   g_bars[bi].levels[idx].total_vol = vol;
+   g_bars[bi].levels[idx].delta     =
+      g_bars[bi].levels[idx].ask_vol - g_bars[bi].levels[idx].bid_vol;
+   g_bars[bi].level_count++;
+   g_bars[bi].total_vol += vol;
+   if(isBuy)  g_bars[bi].total_delta += vol;
+   if(isSell) g_bars[bi].total_delta -= vol;
+   g_bars[bi].sorted = false;
+   g_dirty = true;
+}
+
+//+------------------------------------------------------------------+
+void Classify(const MqlTick &t, bool &isBuy, bool &isSell)
+{
    isBuy = false; isSell = false;
-   bool hasTrades = (SymbolInfoDouble(Symbol(), SYMBOL_LAST) > 0.0);
-   if(hasTrades)
-     {
+   if(g_hasTrades)
+   {
       isBuy  = (t.flags & TICK_FLAG_BUY)  == TICK_FLAG_BUY;
       isSell = (t.flags & TICK_FLAG_SELL) == TICK_FLAG_SELL;
       if(!isBuy && !isSell)
-        {
+      {
          if(t.last >= t.ask) isBuy = true;
          else if(t.last <= t.bid) isSell = true;
-        }
-     }
+      }
+   }
    else
-     {
+   {
       if(t.bid > g_prevBid)      isBuy  = true;
       else if(t.bid < g_prevBid) isSell = true;
       else                       isBuy  = true;
-     }
-  }
+   }
+}
 
 //+------------------------------------------------------------------+
-//| Format volume as human-readable string (508, 1.23K, 12.5K, etc.) |
+int LoadHistory(datetime t0, datetime t1)
+{
+   MqlTick ticks[];
+   uint flag = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
+   int copied = CopyTicksRange(_Symbol, ticks, flag,
+                                (long)t0 * 1000, (long)t1 * 1000);
+   if(copied <= 0)
+   {
+      Print("FP: No ticks. copied=", copied);
+      return -1;
+   }
+
+   g_prevBid = ticks[0].bid;
+
+   for(int i = 0; i < copied; i++)
+   {
+      double price;
+      long   vol;
+      if(g_hasTrades)
+      {
+         price = ticks[i].last;
+         vol   = (long)ticks[i].volume;
+         if(vol <= 0 || price == 0.0) continue;
+      }
+      else
+      {
+         price = ticks[i].bid;
+         vol   = 1;
+         if(price == 0.0) continue;
+      }
+
+      bool isBuy, isSell;
+      Classify(ticks[i], isBuy, isSell);
+      g_prevBid = ticks[i].bid;
+
+      int shift = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
+      if(shift < 0) continue;
+      datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
+      Feed(bt, price, vol, isBuy, isSell);
+   }
+
+   int n = ArraySize(g_bars);
+   for(int i = 0; i < n; i++)
+   {
+      SortLevels(g_bars[i].levels, g_bars[i].level_count);
+      g_bars[i].sorted = true;
+   }
+
+   PrintFormat("FP: %d ticks -> %d bars", copied, n);
+   g_dirty = true;
+   if(copied > 0)
+      g_last_tick_time_ms = ticks[copied - 1].time_msc;
+   return copied;
+}
+
 //+------------------------------------------------------------------+
-string FormatVolume(double vol)
-  {
-   if(vol >= 1000000.0)
-     {
-      double m = vol / 1000000.0;
-      if(m >= 100.0)     return DoubleToString(m, 0) + "M";
-      else if(m >= 10.0) return DoubleToString(m, 1) + "M";
-      else               return DoubleToString(m, 2) + "M";
-     }
-   else if(vol >= 1000.0)
-     {
-      double k = vol / 1000.0;
-      if(k >= 100.0)     return DoubleToString(k, 0) + "K";
-      else if(k >= 10.0) return DoubleToString(k, 1) + "K";
-      else               return DoubleToString(k, 2) + "K";
-     }
+void SortLevels(PriceLevel &lv[], int n)
+{
+   if(n <= 1) return;
+   for(int i = 1; i < n; i++)
+   {
+      PriceLevel k = lv[i];
+      int j = i - 1;
+      while(j >= 0 && lv[j].price < k.price) { lv[j + 1] = lv[j]; j--; }
+      lv[j + 1] = k;
+   }
+}
+
+//+------------------------------------------------------------------+
+int FindPOC(const PriceLevel &lv[], int count)
+{
+   int best = -1; long mx = 0;
+   for(int i = 0; i < count; i++)
+      if(lv[i].total_vol > mx) { mx = lv[i].total_vol; best = i; }
+   return best;
+}
+
+//+------------------------------------------------------------------+
+double GetEffectiveVAPercent()
+{
+   return (g_vaPercent > 0.0) ? g_vaPercent : (double)InpVAPercent;
+}
+
+//+------------------------------------------------------------------+
+void FindVA(const PriceLevel &lv[], int count, long totVol, int poc, int &lo, int &hi)
+{
+   lo = poc; hi = poc;
+   if(poc < 0) return;
+   long target = (long)(totVol * GetEffectiveVAPercent() / 100.0);
+   long cur = lv[poc].total_vol;
+   while(cur < target && (lo > 0 || hi < count - 1))
+   {
+      long up = (hi < count - 1) ? lv[hi + 1].total_vol : -1;
+      long dn = (lo > 0)         ? lv[lo - 1].total_vol : -1;
+      if(up >= dn && up != -1) { hi++; cur += up; }
+      else if(dn != -1)        { lo--; cur += dn; }
+      else break;
+   }
+}
+
+//+------------------------------------------------------------------+
+uint FpARGB(color c, int a)
+{
+   return ColorToARGB(c, (uchar)MathMin(MathMax(a, 0), 255));
+}
+
+color LerpColor(color a, color b, double t)
+{
+   if(t < 0.0) t = 0.0; if(t > 1.0) t = 1.0;
+   int r  = (int)((1.0 - t) * (a & 0xFF)         + t * (b & 0xFF));
+   int g  = (int)((1.0 - t) * ((a >> 8) & 0xFF)  + t * ((b >> 8) & 0xFF));
+   int bl = (int)((1.0 - t) * ((a >> 16) & 0xFF) + t * ((b >> 16) & 0xFF));
+   return (color)((bl << 16) | (g << 8) | r);
+}
+
+//+------------------------------------------------------------------+
+void EnsureScratch(int needed)
+{
+   if(g_scratchCap < needed)
+   {
+      ArrayResize(g_scratchY1, needed, 128);
+      ArrayResize(g_scratchY2, needed, 128);
+      g_scratchCap = needed;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Industry Standard Footprint Bar Renderer                         |
+//| Layout: [Bid Vol] | [Ask Vol]  per price level                   |
+//| - Diagonal imbalance detection (Ask@N vs Bid@N-1)                |
+//| - Volume heatmap intensity per side                               |
+//| - Clean POC line                                                  |
+//| - Value Area shading                                              |
+//+------------------------------------------------------------------+
+void DrawBar(int bi, int shift, int barW)
+{
+   int len = g_bars[bi].level_count;
+   if(len == 0) return;
+
+   if(!g_bars[bi].sorted)
+   {
+      SortLevels(g_bars[bi].levels, g_bars[bi].level_count);
+      g_bars[bi].sorted = true;
+   }
+
+   int poc = FindPOC(g_bars[bi].levels, len);
+   int vaLo, vaHi;
+   FindVA(g_bars[bi].levels, len, g_bars[bi].total_vol, poc, vaLo, vaHi);
+
+   datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
+
+   // --- X geometry ---
+   int halfW = (int)(barW * 0.46);
+   if(halfW < 20) halfW = 20;
+
+   int xc, yd;
+   ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price, xc, yd);
+   int x1 = xc - halfW;
+   int x2 = xc + halfW;
+   int cellW = x2 - x1;
+   int midX = (x1 + x2) / 2;
+
+   // --- Y layout ---
+   int natY1, natY2, tmpX;
+   ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price, tmpX, natY1);
+   ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price - g_step, tmpX, natY2);
+   int nativeCellH = MathAbs(natY2 - natY1);
+   if(nativeCellH < 1) nativeCellH = 1;
+   int cellH = (nativeCellH < FP_MIN_CELL_H) ? FP_MIN_CELL_H : nativeCellH;
+
+   int midIdx = len / 2;
+   int anchorY;
+   ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[midIdx].price, tmpX, anchorY);
+
+   EnsureScratch(len);
+
+   g_scratchY1[midIdx] = anchorY - cellH / 2;
+   g_scratchY2[midIdx] = g_scratchY1[midIdx] + cellH;
+
+   for(int i = midIdx - 1; i >= 0; i--)
+   {
+      g_scratchY2[i] = g_scratchY1[i + 1];
+      g_scratchY1[i] = g_scratchY2[i] - cellH;
+   }
+   for(int i = midIdx + 1; i < len; i++)
+   {
+      g_scratchY1[i] = g_scratchY2[i - 1];
+      g_scratchY2[i] = g_scratchY1[i] + cellH;
+   }
+
+   bool skipText = g_hideText || (cellH < 10) || (cellW < 24);
+
+   // Max volumes for intensity scaling (separate per side for better contrast)
+   long maxBidVol = 1, maxAskVol = 1;
+   for(int i = 0; i < len; i++)
+   {
+      if(g_bars[bi].levels[i].bid_vol > maxBidVol)
+         maxBidVol = g_bars[bi].levels[i].bid_vol;
+      if(g_bars[bi].levels[i].ask_vol > maxAskVol)
+         maxAskVol = g_bars[bi].levels[i].ask_vol;
+   }
+
+   // Pre-compute constant colors with opacity applied
+   color darkBase = C'30,30,38';
+   int opaScale = g_opacity;  // master opacity
+   uint colDivider   = FpARGB(C'60,60,70', (180 * opaScale) / 255);
+   uint colCellBorder= FpARGB(C'45,45,55', (140 * opaScale) / 255);
+   uint colPOC       = FpARGB(InpPOCColor, opaScale);
+   uint colWhiteText = FpARGB(clrWhite, (220 * opaScale) / 255);
+   uint colDimText   = FpARGB(C'140,140,150', (200 * opaScale) / 255);
+   uint colImbBuyTxt = FpARGB(InpImbBuyBg, opaScale);
+   uint colImbSellTxt= FpARGB(InpImbSellBg, opaScale);
+
+   // Font setup
+   int fs = 0;
+   if(!skipText)
+   {
+      fs = (int)(cellH * 0.60);
+      if(fs < 6) fs = 6;
+      if(fs > 13) fs = 13;
+      int fsByWidth = (int)(cellW / 4.0);
+      if(fsByWidth < fs) fs = MathMax(6, fsByWidth);
+      canvas.FontSet("Consolas", fs, FW_NORMAL);
+   }
+
+   // ============================================================
+   // SINGLE PASS: Industry standard split Bid | Ask layout
+   // ============================================================
+   // Pre-compute text centers (invariant across loop)
+   int leftCenter  = (x1 + midX) / 2;
+   int rightCenter = (midX + x2) / 2;
+   int imbStripeW  = MathMax(2, cellW / 30);  // scale stripe with cell width
+   uint colImbSellStripe = FpARGB(InpImbSellBg, (220 * opaScale) / 255);
+   uint colImbBuyStripe  = FpARGB(InpImbBuyBg,  (220 * opaScale) / 255);
+   double invMaxBid = 1.0 / (double)maxBidVol;
+   double invMaxAsk = 1.0 / (double)maxAskVol;
+
+   for(int i = 0; i < len; i++)
+   {
+      int y_top = g_scratchY1[i];
+      int y_bot = g_scratchY2[i];
+
+      // Cache level data in locals (avoids repeated struct+array access)
+      long lv_bid = g_bars[bi].levels[i].bid_vol;
+      long lv_ask = g_bars[bi].levels[i].ask_vol;
+
+      bool inVA = (i >= vaLo && i <= vaHi);
+      int alpha = inVA ? (int)InpBgAlpha : (int)InpVAOffAlpha;
+      alpha = (alpha * opaScale) / 255;  // apply master opacity
+
+      // --- Diagonal Imbalance Detection (industry standard) ---
+      bool isAskImb = false;
+      bool isBidImb = false;
+      if(i < len - 1)
+      {
+         long nextBid = g_bars[bi].levels[i + 1].bid_vol;
+         if(nextBid > 0 && (double)lv_ask / (double)nextBid * 100.0 > g_imbRatio)
+            isAskImb = true;
+      }
+      if(i > 0)
+      {
+         long prevAsk = g_bars[bi].levels[i - 1].ask_vol;
+         if(prevAsk > 0 && (double)lv_bid / (double)prevAsk * 100.0 > g_imbRatio)
+            isBidImb = true;
+      }
+
+      // --- LEFT HALF: Bid (Sell) Volume ---
+      {
+         color bidBg = darkBase;
+         if(lv_bid > 0)
+            bidBg = LerpColor(darkBase, InpBidColor, (double)lv_bid * invMaxBid * 0.8);
+
+         canvas.FillRectangle(x1, y_top, midX - 1, y_bot, FpARGB(bidBg, alpha));
+
+         if(isBidImb)
+            canvas.FillRectangle(x1, y_top, x1 + imbStripeW, y_bot, colImbSellStripe);
+      }
+
+      // --- RIGHT HALF: Ask (Buy) Volume ---
+      {
+         color askBg = darkBase;
+         if(lv_ask > 0)
+            askBg = LerpColor(darkBase, InpAskColor, (double)lv_ask * invMaxAsk * 0.8);
+
+         canvas.FillRectangle(midX + 1, y_top, x2, y_bot, FpARGB(askBg, alpha));
+
+         if(isAskImb)
+            canvas.FillRectangle(x2 - imbStripeW, y_top, x2, y_bot, colImbBuyStripe);
+      }
+
+      // --- Center divider line ---
+      canvas.Line(midX, y_top, midX, y_bot, colDivider);
+
+      // --- Subtle horizontal separator (bottom of cell) ---
+      canvas.Line(x1, y_bot, x2, y_bot, colCellBorder);
+
+      // --- POC ---
+      if(i == poc)
+      {
+         canvas.Line(x1, y_top, x1, y_bot, colPOC);
+         canvas.Line(x2, y_top, x2, y_bot, colPOC);
+         canvas.Line(x1, y_top, x2, y_top, colPOC);
+         canvas.Line(x1, y_bot, x2, y_bot, colPOC);
+      }
+
+      // --- Text: Bid vol on left, Ask vol on right ---
+      if(!skipText)
+      {
+         int yy = (y_top + y_bot) / 2;
+
+         if(lv_bid > 0)
+         {
+            uint bidTCol = isBidImb ? colImbSellTxt : colWhiteText;
+            canvas.TextOut(leftCenter, yy, IntegerToString(lv_bid), bidTCol, TA_CENTER | TA_VCENTER);
+         }
+
+         if(lv_ask > 0)
+         {
+            uint askTCol = isAskImb ? colImbBuyTxt : colWhiteText;
+            canvas.TextOut(rightCenter, yy, IntegerToString(lv_ask), askTCol, TA_CENTER | TA_VCENTER);
+         }
+      }
+   }
+
+   // ============================================================
+   // Summary Row: Delta bar (clean, industry standard)
+   // ============================================================
+   int lastCellBot = g_scratchY2[len - 1];
+   int sy = lastCellBot + 2;
+   int sh = skipText ? 12 : 16;
+
+   long d = g_bars[bi].total_delta;
+   color dc = (d >= 0) ? InpDeltaPosColor : InpDeltaNegColor;
+
+   canvas.FillRectangle(x1, sy, x2, sy + sh, FpARGB(dc, (180 * opaScale) / 255));
+   canvas.Line(x1, sy, x2, sy, colCellBorder);
+
+   if(!skipText)
+   {
+      canvas.FontSet("Consolas", 9, FW_NORMAL);
+      string deltaStr = (d >= 0 ? "+" : "") + IntegerToString(d);
+      canvas.TextOut(xc, sy + sh / 2, deltaStr,
+                     FpARGB(clrWhite, (240 * opaScale) / 255), TA_CENTER | TA_VCENTER);
+
+      sy += sh + 1;
+      canvas.FillRectangle(x1, sy, x2, sy + sh - 2, FpARGB(C'35,35,42', (180 * opaScale) / 255));
+      canvas.TextOut(xc, sy + (sh - 2) / 2,
+                     "V:" + IntegerToString(g_bars[bi].total_vol),
+                     colDimText, TA_CENTER | TA_VCENTER);
+   }
    else
-     {
-      return DoubleToString(vol, 0);
-     }
-  }
+   {
+      canvas.FontSet("Consolas", 7, FW_NORMAL);
+      canvas.TextOut(xc, sy + sh / 2, IntegerToString(d),
+                     FpARGB(clrWhite, (230 * opaScale) / 255), TA_CENTER | TA_VCENTER);
+   }
+}
 
 //+------------------------------------------------------------------+
-//| Calculate how many rows to skip between labels to avoid overlap  |
+//| Master render                                                     |
 //+------------------------------------------------------------------+
-int CalcLabelSkip(int steps, double range_bottom, double range_top, double resolution)
-  {
-   if(steps <= 0) return 1;
+void Render()
+{
+   int cw = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
+   int ch = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
+   if(cw <= 0 || ch <= 0) return;
 
-   int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   double chart_price_min = ChartGetDouble(0, CHART_PRICE_MIN);
-   double chart_price_max = ChartGetDouble(0, CHART_PRICE_MAX);
-   double chart_price_range = chart_price_max - chart_price_min;
+   if(canvas.Width() != cw || canvas.Height() != ch)
+      canvas.Resize(cw, ch);
 
-   if(chart_price_range <= 0 || chart_height <= 0)
-      return MathMax(1, steps / 30);
+   canvas.Erase(0x00000000);
 
-   double pixels_per_point = (double)chart_height / chart_price_range;
-   double pixels_per_step = pixels_per_point * resolution;
+   int visBars  = (int)ChartGetInteger(g_chart, CHART_VISIBLE_BARS);
+   if(visBars < 1) visBars = 1;
+   int barW     = cw / visBars;
+   int firstVis = (int)ChartGetInteger(g_chart, CHART_FIRST_VISIBLE_BAR);
+   int totalBars = ArraySize(g_bars);
+   if(totalBars == 0) { canvas.Update(); return; }
 
-   double label_height = (double)(InpValueFontSize + 3);
+   g_hideText = (barW < 26);
 
-   if(pixels_per_step >= label_height)
-      return 1;
+   // Info label (top-left, subtle)
+   canvas.FontSet("Consolas", 9, FW_NORMAL);
+   int opaPct = (g_opacity * 100) / 255;
+   string tsLabel = "Tick: " + DoubleToString(g_step, _Digits)
+                    + "  Imb: " + DoubleToString(g_imbRatio, 0) + "%"
+                    + "  VA: " + DoubleToString(GetEffectiveVAPercent(), 0) + "%"
+                    + "  Opa: " + IntegerToString(opaPct) + "%";
+   canvas.TextOut(5, 5, tsLabel, FpARGB(C'160,160,170', 180), TA_LEFT | TA_TOP);
 
-   int skip = (int)MathCeil(label_height / pixels_per_step);
-   return MathMax(1, skip);
-  }
+   // --- Control panel ---
+   int panelH = FP_PANEL_H;
+   int btnW   = FP_PANEL_BTN_W;
+   int btnGap = FP_PANEL_BTN_GAP;
+   int pad    = FP_PANEL_PAD;
+   int panelW = pad + (btnW * 9 + btnGap * 8) + pad;
 
-//+------------------------------------------------------------------+
-//| Custom indicator initialization                                  |
+   g_panelX2 = cw - FP_PANEL_MARGIN;
+   g_panelX1 = g_panelX2 - panelW;
+   g_panelY1 = ch - panelH - FP_PANEL_MARGIN;
+   g_panelY2 = g_panelY1 + panelH;
+
+   canvas.FillRectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2, FpARGB(C'20,20,28', 200));
+   canvas.Rectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2, FpARGB(C'70,70,80', 200));
+
+   // Button positions
+   g_btnZoomOutX1 = g_panelX1 + pad;
+   g_btnZoomOutY1 = g_panelY1 + pad;
+   g_btnZoomOutX2 = g_btnZoomOutX1 + btnW;
+   g_btnZoomOutY2 = g_panelY2 - pad;
+
+   g_btnZoomInX1  = g_btnZoomOutX2 + btnGap;
+   g_btnZoomInY1  = g_btnZoomOutY1;
+   g_btnZoomInX2  = g_btnZoomInX1 + btnW;
+   g_btnZoomInY2  = g_btnZoomOutY2;
+
+   g_btnScaleFixX1 = g_btnZoomInX2 + btnGap;
+   g_btnScaleFixY1 = g_btnZoomOutY1;
+   g_btnScaleFixX2 = g_btnScaleFixX1 + btnW;
+   g_btnScaleFixY2 = g_btnZoomOutY2;
+
+   g_btnTickX1 = g_btnScaleFixX2 + btnGap;
+   g_btnTickY1 = g_btnZoomOutY1;
+   g_btnTickX2 = g_btnTickX1 + btnW;
+   g_btnTickY2 = g_btnZoomOutY2;
+
+   g_btnImbX1  = g_btnTickX2 + btnGap;
+   g_btnImbY1  = g_btnZoomOutY1;
+   g_btnImbX2  = g_btnImbX1 + btnW;
+   g_btnImbY2  = g_btnZoomOutY2;
+
+   g_btnOpaX1  = g_btnImbX2 + btnGap;
+   g_btnOpaY1  = g_btnZoomOutY1;
+   g_btnOpaX2  = g_btnOpaX1 + btnW;
+   g_btnOpaY2  = g_btnZoomOutY2;
+
+   g_btnShowX1 = g_btnOpaX2 + btnGap;
+   g_btnShowY1 = g_btnZoomOutY1;
+   g_btnShowX2 = g_btnShowX1 + btnW;
+   g_btnShowY2 = g_btnZoomOutY2;
+
+   g_btnRefreshX1 = g_btnShowX2 + btnGap;
+   g_btnRefreshY1 = g_btnZoomOutY1;
+   g_btnRefreshX2 = g_btnRefreshX1 + btnW;
+   g_btnRefreshY2 = g_btnZoomOutY2;
+
+   g_btnVAX1 = g_btnRefreshX2 + btnGap;
+   g_btnVAY1 = g_btnZoomOutY1;
+   g_btnVAX2 = g_btnVAX1 + btnW;
+   g_btnVAY2 = g_btnZoomOutY2;
+
+   // Hover detection
+   bool hoveredTick    = (g_mouseX >= g_btnTickX1    && g_mouseX <= g_btnTickX2    &&
+                          g_mouseY >= g_btnTickY1    && g_mouseY <= g_btnTickY2);
+   bool hoveredImb     = (g_mouseX >= g_btnImbX1     && g_mouseX <= g_btnImbX2     &&
+                          g_mouseY >= g_btnImbY1     && g_mouseY <= g_btnImbY2);
+   bool hoveredZoomIn  = (g_mouseX >= g_btnZoomInX1  && g_mouseX <= g_btnZoomInX2  &&
+                          g_mouseY >= g_btnZoomInY1  && g_mouseY <= g_btnZoomInY2);
+   bool hoveredZoomOut = (g_mouseX >= g_btnZoomOutX1 && g_mouseX <= g_btnZoomOutX2 &&
+                          g_mouseY >= g_btnZoomOutY1 && g_mouseY <= g_btnZoomOutY2);
+   bool hoveredScaleFix= (g_mouseX >= g_btnScaleFixX1 && g_mouseX <= g_btnScaleFixX2 &&
+                          g_mouseY >= g_btnScaleFixY1 && g_mouseY <= g_btnScaleFixY2);
+   bool hoveredOpa     = (g_mouseX >= g_btnOpaX1  && g_mouseX <= g_btnOpaX2  &&
+                          g_mouseY >= g_btnOpaY1  && g_mouseY <= g_btnOpaY2);
+   bool hoveredShow    = (g_mouseX >= g_btnShowX1 && g_mouseX <= g_btnShowX2 &&
+                          g_mouseY >= g_btnShowY1 && g_mouseY <= g_btnShowY2);
+   bool hoveredRefresh = (g_mouseX >= g_btnRefreshX1 && g_mouseX <= g_btnRefreshX2 &&
+                          g_mouseY >= g_btnRefreshY1 && g_mouseY <= g_btnRefreshY2);
+   bool hoveredVA      = (g_mouseX >= g_btnVAX1 && g_mouseX <= g_btnVAX2 &&
+                          g_mouseY >= g_btnVAY1 && g_mouseY <= g_btnVAY2);
+
+   uint baseFill   = FpARGB(C'35,35,45', 230);
+   uint hoverFill  = FpARGB(C'55,55,70', 250);
+   uint baseBorder = FpARGB(C'80,80,90', 200);
+   uint hoverBorder= FpARGB(C'140,140,160', 255);
+
+   bool scaleFixOn = (bool)ChartGetInteger(g_chart, CHART_SCALEFIX, 0);
+   int  btnCenterX = btnW / 2;
+   int  btnCenterY = g_btnZoomOutY1 + (panelH - 6) / 2;
+
+   canvas.FontSet("Consolas", 9, FW_NORMAL);
+
+   // 1. Zoom Out
+   canvas.FillRectangle(g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2,
+                        hoveredZoomOut ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2,
+                    hoveredZoomOut ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnZoomOutX1 + btnCenterX, btnCenterY,
+                  "-", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 2. Zoom In
+   canvas.FillRectangle(g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2,
+                        hoveredZoomIn ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2,
+                    hoveredZoomIn ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnZoomInX1 + btnCenterX, btnCenterY,
+                  "+", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 3. Scale fix
+   uint fixFill   = scaleFixOn ? FpARGB(C'20,90,50', 230)   : baseFill;
+   uint fixBorder = scaleFixOn ? FpARGB(C'80,200,120', 230) : baseBorder;
+   if(hoveredScaleFix) { fixFill = hoverFill; fixBorder = hoverBorder; }
+   canvas.FillRectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, fixFill);
+   canvas.Rectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, fixBorder);
+   canvas.TextOut(g_btnScaleFixX1 + btnCenterX, btnCenterY,
+                  "Fix", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 4. Tick size (displays current: 1K / 1.5K / 2K)
+   canvas.FillRectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
+                        hoveredTick ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
+                    hoveredTick ? hoverBorder : baseBorder);
+   int tickPoints = (int)MathRound(g_step / _Point);
+   string tickLabel;
+   if(tickPoints >= FP_TICK_PRESET_3) tickLabel = "2K";
+   else if(tickPoints >= FP_TICK_PRESET_2) tickLabel = "1.5K";
+   else if(tickPoints >= FP_TICK_PRESET_1) tickLabel = "1K";
+   else tickLabel = IntegerToString(tickPoints);  // custom points
+   canvas.TextOut(g_btnTickX1 + btnCenterX, btnCenterY,
+                  tickLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 5. Imbalance threshold
+   canvas.FillRectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
+                        hoveredImb ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
+                    hoveredImb ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnImbX1 + btnCenterX, btnCenterY,
+                  "Imb", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 6. Opacity control
+   canvas.FillRectangle(g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2,
+                        hoveredOpa ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2,
+                    hoveredOpa ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnOpaX1 + btnCenterX, btnCenterY,
+                  "Opa", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 7. Show/Hide toggle
+   uint showFill   = g_visible ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
+   uint showBorder = g_visible ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
+   if(hoveredShow) { showFill = hoverFill; showBorder = hoverBorder; }
+   canvas.FillRectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, showFill);
+   canvas.Rectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, showBorder);
+   canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
+                  g_visible ? "ON" : "OFF", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 8. Refresh (reload tick data)
+   canvas.FillRectangle(g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2,
+                        hoveredRefresh ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2,
+                    hoveredRefresh ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnRefreshX1 + btnCenterX, btnCenterY,
+                  "Rld", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 9. VA% (Value Area: 70% -> 80% -> 90% -> 70%)
+   canvas.FillRectangle(g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2,
+                        hoveredVA ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2,
+                    hoveredVA ? hoverBorder : baseBorder);
+   double vaPct = GetEffectiveVAPercent();
+   canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
+                  IntegerToString((int)vaPct) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   if(!g_visible)
+   {
+      canvas.Update();
+      g_dirty = false;
+      return;
+   }
+
+   for(int v = 0; v < visBars; v++)
+   {
+      int shift = firstVis - v;
+      if(shift < 0) continue;
+
+      datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
+      int idx = FindBarIndex(bt);
+      if(idx >= 0)
+         DrawBar(idx, shift, barW);
+   }
+
+   canvas.Update();
+   g_dirty = false;
+}
+
 //+------------------------------------------------------------------+
 int OnInit()
-  {
-   if(ObjectFind(0, RECT_NAME) < 0)
-      CreateSelector();
-   CalculateAndDraw();
-   return(INIT_SUCCEEDED);
-  }
+{
+   g_tick = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(g_tick <= 0.0) g_tick = _Point;
+   // Use input directly (in points). Min 1, max 10000 to avoid bad aggregation.
+   int pts = MathMax(1, MathMin(10000, InpTickSize));
+   g_step = pts * _Point;
+   g_chart   = ChartID();
+   g_sub     = 0;
+   g_prevBid = 0.0;
+   g_dirty   = true;
+   g_hideText = false;
+   g_imbRatio = InpImbalanceRatio;
 
-//+------------------------------------------------------------------+
-//| Custom indicator deinitialization                                |
+   g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
+   PrintFormat("FP v10: %s  tick=%s  step=%s  mode=%s",
+               _Symbol, DoubleToString(g_tick, _Digits),
+               DoubleToString(g_step, _Digits),
+               g_hasTrades ? "Trades" : "Forex");
+
+   int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
+   int h = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
+   if(w < 1) w = 800;
+   if(h < 1) h = 600;
+
+   if(!canvas.CreateBitmapLabel(g_name, 0, 0, w, h,
+                                 COLOR_FORMAT_ARGB_NORMALIZE))
+   {
+      Print("FP ERR: Canvas creation failed");
+      return INIT_FAILED;
+   }
+   ObjectSetInteger(g_chart, g_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(g_chart, g_name, OBJPROP_BACK, false);
+   canvas.Erase(0x00000000);
+   canvas.Update();
+
+   datetime startTime = iTime(_Symbol, PERIOD_CURRENT,
+                              MathMin(InpHistoryBars, iBars(_Symbol, PERIOD_CURRENT) - 1));
+   datetime endTime   = TimeCurrent();
+   LoadHistory(startTime, endTime);
+
+   return INIT_SUCCEEDED;
+}
+
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
-  {
-   ObjectsDeleteAll(0, LINE_PREFIX);
-   ObjectsDeleteAll(0, LABEL_PREFIX);
-   ObjectDelete(0, RECT_NAME);
-   ObjectDelete(0, POC_OBJ_NAME);
-   ObjectDelete(0, VAH_OBJ_NAME);
-   ObjectDelete(0, VAL_OBJ_NAME);
-  }
+{
+   canvas.Destroy();
+   ObjectDelete(g_chart, g_name);
+   ArrayFree(g_bars);
+   ArrayFree(g_scratchY1);
+   ArrayFree(g_scratchY2);
+   g_scratchCap = 0;
+}
 
-//+------------------------------------------------------------------+
-//| Custom indicator iteration — dynamic: recalc on new ticks/bars    |
 //+------------------------------------------------------------------+
 int OnCalculate(const int rates_total,
                 const int prev_calculated,
                 const datetime &time[],
-                const double &open[],
-                const double &high[],
-                const double &low[],
-                const double &close[],
-                const long &tick_volume[],
-                const long &volume[],
-                const int &spread[])
-  {
-   if(ObjectFind(0, RECT_NAME) < 0)
-     {
-      CreateSelector();
-      CalculateAndDraw();
-      return rates_total;
-     }
-
-   if(InpDynamic)
-     {
-      ulong now_ms = GetTickCount();
-      if(now_ms - g_last_render_ms >= VP_RENDER_THROTTLE_MS)
-        {
-         CalculateAndDraw();
-         g_last_render_ms = now_ms;
-        }
-     }
-   return rates_total;
-  }
-
-//+------------------------------------------------------------------+
-//| ChartEvent handler                                               |
-//+------------------------------------------------------------------+
-void OnChartEvent(const int id,
-                  const long &lparam,
-                  const double &dparam,
-                  const string &sparam)
-  {
-   if(id == CHARTEVENT_CHART_CHANGE)
-     {
-      if(InpDynamic && ObjectFind(0, RECT_NAME) >= 0)
-         CalculateAndDraw();
-      return;
-     }
-   if(id == CHARTEVENT_OBJECT_DRAG || id == CHARTEVENT_OBJECT_CHANGE)
-     {
-      if(sparam == RECT_NAME)
-         CalculateAndDraw();
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Create the interactive selection rectangle                       |
-//+------------------------------------------------------------------+
-void CreateSelector()
-  {
-   datetime time_current = TimeCurrent();
-   datetime time_start   = iTime(Symbol(), PERIOD_CURRENT, InpLookBackBars);
-   if(time_start == 0)
-      time_start = time_current - InpLookBackBars * PeriodSeconds();
-
-   double price_high = iHigh(Symbol(), PERIOD_CURRENT, iHighest(Symbol(), PERIOD_CURRENT, MODE_HIGH, InpLookBackBars, 0));
-   double price_low  = iLow(Symbol(), PERIOD_CURRENT, iLowest(Symbol(), PERIOD_CURRENT, MODE_LOW, InpLookBackBars, 0));
-
-   if(price_high == 0) price_high = SymbolInfoDouble(Symbol(), SYMBOL_BID) + 100 * _Point;
-   if(price_low  == 0) price_low  = SymbolInfoDouble(Symbol(), SYMBOL_BID) - 100 * _Point;
-
-   ObjectCreate(0, RECT_NAME, OBJ_RECTANGLE, 0, time_start, price_high, time_current, price_low);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_COLOR, InpColorSelector);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_STYLE, STYLE_DOT);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_FILL, false);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_BACK, false);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_SELECTABLE, true);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_SELECTED, true);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_HIDDEN, false);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_ZORDER, 10);
-  }
-
-//+------------------------------------------------------------------+
-//| Zero-lag: build volume profile from tick data (like Footprint)    |
-//| Fills buckets_up[], buckets_down[], range_bottom, resolution, steps |
-//| Returns tick count or -1 on failure                               |
-//+------------------------------------------------------------------+
-int GatherDataTicks(datetime start_time, datetime end_time,
-                    double &buckets_up[], double &buckets_down[],
-                    double &range_bottom, double &resolution, int &steps)
-  {
+                const double   &open[],
+                const double   &high[],
+                const double   &low[],
+                const double   &close[],
+                const long     &tick_volume[],
+                const long     &volume[],
+                const int      &spread[])
+{
    MqlTick ticks[];
-   uint    flag = (SymbolInfoDouble(Symbol(), SYMBOL_LAST) > 0.0) ? COPY_TICKS_ALL : COPY_TICKS_INFO;
-   long    from_ms = (long)start_time * 1000;
-   long    to_ms   = (long)end_time   * 1000;
-   if(to_ms <= from_ms) to_ms = (long)TimeCurrent() * 1000;
+   uint flag = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
 
-   int copied = CopyTicksRange(Symbol(), ticks, flag, from_ms, to_ms);
-   if(copied <= 0) return -1;
+   long now_msc = (long)TimeCurrent() * 1000;
+   long from_msc = g_last_tick_time_ms;
 
-   double min_price = ticks[0].last;
-   double max_price = ticks[0].last;
-   if(flag == COPY_TICKS_INFO)
-     { min_price = ticks[0].bid; max_price = ticks[0].bid; }
+   if(from_msc == 0)
+   {
+      long lookback = 60000;
+      if(now_msc > lookback)
+         from_msc = now_msc - lookback;
+      else
+         from_msc = now_msc;
+   }
 
-   for(int i = 1; i < copied; i++)
-     {
-      double p = (flag == COPY_TICKS_ALL) ? ticks[i].last : ticks[i].bid;
-      if(p <= 0) continue;
-      if(p < min_price) min_price = p;
-      if(p > max_price) max_price = p;
-     }
-
-   double price_range = max_price - min_price;
-   if(price_range <= 0) price_range = _Point;
-
-   if(InpRowMode == ROW_MODE_TICKS)
-      resolution = MathMax(InpRowValue, 1) * _Point;
-   else
-      resolution = MathMax(price_range / MathMax(InpRowValue, 1), _Point);
-
-   range_bottom = MathFloor(min_price / resolution) * resolution;
-   double range_top = MathCeil(max_price / resolution) * resolution;
-   steps = (int)MathCeil((range_top - range_bottom) / resolution);
-   if(steps <= 0) steps = 1;
-   if(steps > 5000)
-     {
-      resolution = price_range / 5000.0;
-      range_bottom = MathFloor(min_price / resolution) * resolution;
-      range_top    = MathCeil(max_price / resolution) * resolution;
-      steps = 5000;
-     }
-
-   ArrayResize(buckets_up,   steps);
-   ArrayResize(buckets_down, steps);
-   ArrayInitialize(buckets_up,   0.0);
-   ArrayInitialize(buckets_down, 0.0);
-
-   g_prevBid = ticks[0].bid;
-   for(int i = 0; i < copied; i++)
-     {
-      double price = (flag == COPY_TICKS_ALL) ? ticks[i].last : ticks[i].bid;
-      long   vol   = (flag == COPY_TICKS_ALL) ? (long)ticks[i].volume : 1;
-      if(price <= 0 || vol <= 0) continue;
-
-      bool isBuy, isSell;
-      ClassifyTick(ticks[i], isBuy, isSell);
-      if(ticks[i].bid != 0.0) g_prevBid = ticks[i].bid;
-
-      int idx = (int)((price - range_bottom) / resolution);
-      if(idx < 0)       idx = 0;
-      if(idx >= steps)  idx = steps - 1;
-
-      if(isBuy)  buckets_up[idx]   += (double)vol;
-      if(isSell) buckets_down[idx] += (double)vol;
-     }
-
+   int copied = CopyTicksRange(_Symbol, ticks, flag, from_msc, now_msc);
    if(copied > 0)
-      g_last_tick_time_ms = (long)ticks[copied - 1].time_msc;
-   return copied;
-  }
+   {
+      if(g_prevBid == 0.0)
+         g_prevBid = ticks[0].bid;
 
-//+------------------------------------------------------------------+
-//| Gather OHLCV data from the configured timeframe (Bar mode)         |
-//| Returns: bar count, or -1 on failure                              |
-//+------------------------------------------------------------------+
-int GatherData(datetime start_time, datetime end_time,
-               double &highs[], double &lows[],
-               double &opens[], double &closes[],
-               long   &volumes[])
-  {
-   ENUM_TIMEFRAMES tf = InpDataTimeframe;
+      for(int i = 0; i < copied; i++)
+      {
+         if(ticks[i].time_msc <= g_last_tick_time_ms)
+            continue;
 
-   int start_idx = iBarShift(Symbol(), tf, start_time, false);
-   int end_idx   = iBarShift(Symbol(), tf, end_time, false);
-
-   if(start_idx == -1 || end_idx == -1)
-     {
-      Print("[VP] iBarShift failed: start=", start_idx, " end=", end_idx);
-      return(-1);
-     }
-
-   if(start_idx < end_idx)
-     { int temp = start_idx; start_idx = end_idx; end_idx = temp; }
-
-   int count = start_idx - end_idx + 1;
-   if(count <= 0) count = 1;
-
-   if(CopyHigh(Symbol(), tf, end_idx, count, highs)   != count) { Print("[VP] CopyHigh failed");   return(-1); }
-   if(CopyLow(Symbol(), tf, end_idx, count, lows)     != count) { Print("[VP] CopyLow failed");    return(-1); }
-   if(CopyOpen(Symbol(), tf, end_idx, count, opens)    != count) { Print("[VP] CopyOpen failed");   return(-1); }
-   if(CopyClose(Symbol(), tf, end_idx, count, closes)  != count) { Print("[VP] CopyClose failed");  return(-1); }
-
-   //--- Volume: try requested type first, fall back if it fails
-   if(InpVolumeType == VOLUME_REAL)
-     {
-      int copied = CopyRealVolume(Symbol(), tf, end_idx, count, volumes);
-      if(copied != count)
-        {
-         bool all_zero = true;
-         if(copied > 0)
-           {
-            for(int i = 0; i < copied; i++)
-              { if(volumes[i] > 0) { all_zero = false; break; } }
-           }
-
-         if(copied <= 0 || all_zero)
-           {
-            Print("[VP] Real volume unavailable, falling back to tick volume");
-            if(CopyTickVolume(Symbol(), tf, end_idx, count, volumes) != count)
-              { Print("[VP] CopyTickVolume fallback also failed"); return(-1); }
-           }
+         double price;
+         long   vol;
+         if(g_hasTrades)
+         {
+            price = ticks[i].last;
+            vol   = (long)ticks[i].volume;
+            if(vol <= 0 || price == 0.0) continue;
+         }
          else
-           {
-            Print("[VP] CopyRealVolume partial: got ", copied, " of ", count);
-            return(-1);
-           }
-        }
-      else
-        {
-         bool all_zero = true;
-         for(int i = 0; i < count; i++)
-           { if(volumes[i] > 0) { all_zero = false; break; } }
+         {
+            price = ticks[i].bid;
+            vol   = 1;
+            if(price == 0.0) continue;
+         }
 
-         if(all_zero)
-           {
-            Print("[VP] Real volume is all zeros, falling back to tick volume");
-            if(CopyTickVolume(Symbol(), tf, end_idx, count, volumes) != count)
-              { Print("[VP] CopyTickVolume fallback also failed"); return(-1); }
-           }
-        }
-     }
-   else
-     {
-      if(CopyTickVolume(Symbol(), tf, end_idx, count, volumes) != count)
-        { Print("[VP] CopyTickVolume failed"); return(-1); }
-     }
+         bool isBuy, isSell;
+         Classify(ticks[i], isBuy, isSell);
 
-   return(count);
-  }
+         if(ticks[i].bid != 0.0)
+            g_prevBid = ticks[i].bid;
 
-//+------------------------------------------------------------------+
-//| Distribute volume to the CLOSE PRICE bucket only                 |
-//+------------------------------------------------------------------+
-void DistributeVolumeClose(int count,
-                           const double &highs[], const double &lows[],
-                           const double &opens[], const double &closes[],
-                           const long   &volumes[],
-                           double range_bottom, double resolution, int steps,
-                           double &buckets_up[], double &buckets_down[])
-  {
-   for(int i = 0; i < count; i++)
-     {
-      double vol = (double)volumes[i];
-      if(vol <= 0) continue;
+         int sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
+         if(sh >= 0)
+         {
+            datetime bt = iTime(_Symbol, PERIOD_CURRENT, sh);
+            Feed(bt, price, vol, isBuy, isSell);
+         }
 
-      bool is_up = (closes[i] >= opens[i]);
+         g_last_tick_time_ms = ticks[i].time_msc;
+      }
+   }
 
-      int idx = (int)((closes[i] - range_bottom) / resolution);
-      if(idx < 0)       idx = 0;
-      if(idx >= steps)  idx = steps - 1;
-
-      if(is_up) buckets_up[idx]   += vol;
-      else      buckets_down[idx] += vol;
-     }
-  }
+   if(g_dirty)
+   {
+      ulong now_ticks = GetTickCount();
+      if(now_ticks - g_last_render_ms >= FP_RENDER_THROTTLE_MS)
+      {
+         Render();
+         g_last_render_ms = now_ticks;
+      }
+   }
+   return rates_total;
+}
 
 //+------------------------------------------------------------------+
-//| Distribute volume EVENLY across each bar's H-L range             |
-//+------------------------------------------------------------------+
-void DistributeVolumeEven(int count,
-                          const double &highs[], const double &lows[],
-                          const double &opens[], const double &closes[],
-                          const long   &volumes[],
-                          double range_bottom, double resolution, int steps,
-                          double &buckets_up[], double &buckets_down[])
-  {
-   for(int i = 0; i < count; i++)
-     {
-      double vol = (double)volumes[i];
-      if(vol <= 0) continue;
-
-      bool   is_up = (closes[i] >= opens[i]);
-      double bar_h = highs[i];
-      double bar_l = lows[i];
-
-      int idx_h = (int)((bar_h - range_bottom) / resolution);
-      int idx_l = (int)((bar_l - range_bottom) / resolution);
-      if(idx_l < 0)       idx_l = 0;
-      if(idx_h >= steps)  idx_h = steps - 1;
-
-      int levels_covered = idx_h - idx_l + 1;
-      if(levels_covered <= 0) continue;
-
-      double portion = vol / (double)levels_covered;
-
-      for(int k = idx_l; k <= idx_h; k++)
-        {
-         if(is_up) buckets_up[k]   += portion;
-         else      buckets_down[k] += portion;
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Distribute volume with TRIANGULAR weighting toward Typical Price |
-//+------------------------------------------------------------------+
-void DistributeVolumeTriangular(int count,
-                                const double &highs[], const double &lows[],
-                                const double &opens[], const double &closes[],
-                                const long   &volumes[],
-                                double range_bottom, double resolution, int steps,
-                                double &buckets_up[], double &buckets_down[])
-  {
-   for(int i = 0; i < count; i++)
-     {
-      double vol = (double)volumes[i];
-      if(vol <= 0) continue;
-
-      bool   is_up   = (closes[i] >= opens[i]);
-      double bar_h   = highs[i];
-      double bar_l   = lows[i];
-      double typical = (bar_h + bar_l + closes[i]) / 3.0;
-
-      int idx_h = (int)((bar_h - range_bottom) / resolution);
-      int idx_l = (int)((bar_l - range_bottom) / resolution);
-      if(idx_l < 0)       idx_l = 0;
-      if(idx_h >= steps)  idx_h = steps - 1;
-
-      int levels_covered = idx_h - idx_l + 1;
-      if(levels_covered <= 0) continue;
-
-      if(levels_covered == 1)
-        {
-         if(is_up) buckets_up[idx_l]   += vol;
-         else      buckets_down[idx_l] += vol;
-         continue;
-        }
-
-      double half_range = MathMax(bar_h - typical, typical - bar_l);
-      if(half_range <= 0) half_range = resolution;
-
-      double weights[];
-      ArrayResize(weights, levels_covered);
-      double weight_sum = 0.0;
-
-      for(int k = 0; k < levels_covered; k++)
-        {
-         double price_center = range_bottom + ((idx_l + k) * resolution) + (resolution / 2.0);
-         double dist = MathAbs(price_center - typical);
-         double w = MathMax(0.1, 1.0 - (dist / half_range));
-         weights[k]  = w;
-         weight_sum += w;
-        }
-
-      if(weight_sum <= 0) weight_sum = 1.0;
-
-      for(int k = 0; k < levels_covered; k++)
-        {
-         double portion   = vol * (weights[k] / weight_sum);
-         int    bucket_idx = idx_l + k;
-         if(is_up) buckets_up[bucket_idx]   += portion;
-         else      buckets_down[bucket_idx] += portion;
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Find POC and compute Value Area indices (Industry Standard)      |
-//| Algorithm: Starting from POC, add 2 rows above vs 2 rows below   |
-//+------------------------------------------------------------------+
-void ComputeValueArea(const double &total_volumes[], int steps,
-                       int &poc_idx, double &max_total_vol,
-                       int &va_high_idx, int &va_low_idx)
-  {
-   double grand_total_vol = 0;
-   double poc_vol         = -1;
-   max_total_vol          = 0;
-   poc_idx                = 0;
-
-   // 1. Find POC and Total Volume
-   for(int i = 0; i < steps; i++)
-     {
-      grand_total_vol += total_volumes[i];
-      if(total_volumes[i] > max_total_vol) max_total_vol = total_volumes[i];
-      if(total_volumes[i] > poc_vol)       { poc_vol = total_volumes[i]; poc_idx = i; }
-     }
-
-   if(grand_total_vol <= 0) return;
-
-   double va_target = grand_total_vol * SafeValueAreaPct();
-   double va_accum  = total_volumes[poc_idx];
-   va_high_idx = poc_idx;
-   va_low_idx  = poc_idx;
-
-   // 2. Expand outwards from POC using the 2-row comparison algorithm
-   while(va_accum < va_target && (va_high_idx < steps - 1 || va_low_idx > 0))
-     {
-      double sum_above = 0;
-      if(va_high_idx < steps - 1) sum_above += total_volumes[va_high_idx + 1];
-      if(va_high_idx < steps - 2) sum_above += total_volumes[va_high_idx + 2];
-
-      double sum_below = 0;
-      if(va_low_idx > 0)          sum_below += total_volumes[va_low_idx - 1];
-      if(va_low_idx > 1)          sum_below += total_volumes[va_low_idx - 2];
-
-      if((sum_above >= sum_below || va_low_idx == 0) && va_high_idx < steps - 1)
-        {
-         // Add 1st from above
-         va_high_idx++;
-         va_accum += total_volumes[va_high_idx];
-         // Add 2nd from above (if it exists and still need more)
-         if(va_high_idx < steps - 1 && va_accum < va_target)
-           {
-            va_high_idx++;
-            va_accum += total_volumes[va_high_idx];
-           }
-        }
-      else if(va_low_idx > 0)
-        {
-         // Add 1st from below
-         va_low_idx--;
-         va_accum += total_volumes[va_low_idx];
-         // Add 2nd from below (if it exists and still need more)
-         if(va_low_idx > 0 && va_accum < va_target)
-           {
-            va_low_idx--;
-            va_accum += total_volumes[va_low_idx];
-           }
-        }
-      else break;
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Determine bar colors based on zone (POC / VA / Outside)          |
-//+------------------------------------------------------------------+
-void GetBarColors(int idx, int poc_idx, int va_low_idx, int va_high_idx,
-                  color &col_up, color &col_down)
-  {
-   // POC bar highlight
-   if(InpHighlightPOCBar && idx == poc_idx)
-     {
-      col_up   = InpColorPOCBar;
-      col_down = InpColorPOCBar;
+void OnChartEvent(const int id, const long &lparam,
+                  const double &dparam, const string &sparam)
+{
+   if(id == CHARTEVENT_KEYDOWN)
       return;
-     }
 
-   // Inside Value Area
-   if(idx >= va_low_idx && idx <= va_high_idx)
-     {
-      col_up   = InpColorVAUp;
-      col_down = InpColorVADown;
-      return;
-     }
+   if(id == CHARTEVENT_CHART_CHANGE)
+   {
+      g_dirty = true;
+      Render();
+   }
 
-   // Outside Value Area
-   col_up   = InpColorOutUp;
-   col_down = InpColorOutDown;
-  }
+   if(id == CHARTEVENT_MOUSE_MOVE)
+   {
+      int newMX = (int)lparam;
+      int newMY = (int)dparam;
 
-//+------------------------------------------------------------------+
-//| Draw histogram bars and value labels (zone-aware: POC / VA)       |
-//+------------------------------------------------------------------+
-void DrawBars(int steps, double range_bottom, double resolution,
-              const double &buckets_up[], const double &buckets_down[],
-              double max_total_vol,
-              datetime start_time, datetime rect_full_time,
-              int poc_idx, int va_low_idx, int va_high_idx)
-  {
-   double max_width_factor = SafeWidthFactor();
+      bool wasNearPanel = (g_mouseX >= g_panelX1 - 10 && g_mouseX <= g_panelX2 + 10 &&
+                           g_mouseY >= g_panelY1 - 10 && g_mouseY <= g_panelY2 + 10);
+      bool nowNearPanel = (newMX >= g_panelX1 - 10 && newMX <= g_panelX2 + 10 &&
+                           newMY >= g_panelY1 - 10 && newMY <= g_panelY2 + 10);
 
-   // Calculate label skip interval to prevent overlap
-   double range_top = range_bottom + (steps * resolution);
-   int label_skip = 1;
-   if(InpShowValues)
-      label_skip = CalcLabelSkip(steps, range_bottom, range_top, resolution);
+      g_mouseX = newMX;
+      g_mouseY = newMY;
 
-   int label_count = 0;
+      if(wasNearPanel || nowNearPanel)
+      {
+         ulong now_ticks = GetTickCount();
+         if(now_ticks - g_last_render_ms >= FP_RENDER_THROTTLE_MS)
+         {
+            Render();
+            g_last_render_ms = now_ticks;
+         }
+      }
+   }
 
-   for(int i = 0; i < steps; i++)
-     {
-      double vol_up    = buckets_up[i];
-      double vol_down  = buckets_down[i];
-      double vol_total = vol_up + vol_down;
+   if(id == CHARTEVENT_CLICK)
+   {
+      int mx = (int)lparam;
+      int my = (int)dparam;
 
-      string obj_down  = LINE_PREFIX  + "D_" + IntegerToString(i);
-      string obj_up    = LINE_PREFIX  + "U_" + IntegerToString(i);
+      // Tick button: cycle 1000 -> 1500 -> 2000 -> 1000
+      if(mx >= g_btnTickX1 && mx <= g_btnTickX2 &&
+         my >= g_btnTickY1 && my <= g_btnTickY2)
+      {
+         int curPoints = (int)MathRound(g_step / _Point);
+         int nextPoints = FP_TICK_PRESET_1;
+         if(curPoints <= FP_TICK_PRESET_1) nextPoints = FP_TICK_PRESET_2;
+         else if(curPoints <= FP_TICK_PRESET_2) nextPoints = FP_TICK_PRESET_3;
+         else nextPoints = FP_TICK_PRESET_1;
 
-      if(vol_total <= 0.01)
-        {
-         ObjectDelete(0, obj_down);
-         ObjectDelete(0, obj_up);
-         continue;
-        }
+         g_step = nextPoints * _Point;
+         ArrayFree(g_bars);
 
-      // Determine colors based on zone
-      color col_up_bar, col_down_bar;
-      GetBarColors(i, poc_idx, va_low_idx, va_high_idx, col_up_bar, col_down_bar);
+         datetime startTime = iTime(_Symbol, PERIOD_CURRENT,
+                                    MathMin(InpHistoryBars, iBars(_Symbol, PERIOD_CURRENT) - 1));
+         datetime endTime   = TimeCurrent();
+         LoadHistory(startTime, endTime);
+         g_dirty = true;
+      }
 
-      double price_level      = range_bottom + (i * resolution);
-      double total_ratio      = vol_total / max_total_vol;
-      double time_width_total = (double)rect_full_time * total_ratio * max_width_factor;
-      double up_ratio_val     = (vol_total > 0) ? vol_up / vol_total : 0.5;
-      double time_width_up    = time_width_total * up_ratio_val;
-      double time_width_down  = time_width_total - time_width_up;
+      // Imb button: cycle imbalance ratio
+      if(mx >= g_btnImbX1 && mx <= g_btnImbX2 &&
+         my >= g_btnImbY1 && my <= g_btnImbY2)
+      {
+         if(g_imbRatio <= 200.0)      g_imbRatio = 300.0;
+         else if(g_imbRatio <= 300.0) g_imbRatio = 400.0;
+         else                         g_imbRatio = 200.0;
 
-      datetime t_split = start_time + (datetime)time_width_down;
-      datetime t_end   = start_time + (datetime)time_width_total;
+         g_dirty = true;
+      }
 
-      // Down on Left
-      if(vol_down > 0.01)
-         CreateOrUpdateRect(obj_down, start_time, t_split, price_level, resolution, col_down_bar);
-      else
-         ObjectDelete(0, obj_down);
+      // Zoom-in
+      if(mx >= g_btnZoomInX1 && mx <= g_btnZoomInX2 &&
+         my >= g_btnZoomInY1 && my <= g_btnZoomInY2)
+      {
+         int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
+         if(scale < 5)
+            ChartSetInteger(g_chart, CHART_SCALE, 0, scale + 1);
+      }
 
-      // Up on Right
-      if(vol_up > 0.01)
-         CreateOrUpdateRect(obj_up, t_split, t_end, price_level, resolution, col_up_bar);
-      else
-         ObjectDelete(0, obj_up);
+      // Zoom-out
+      if(mx >= g_btnZoomOutX1 && mx <= g_btnZoomOutX2 &&
+         my >= g_btnZoomOutY1 && my <= g_btnZoomOutY2)
+      {
+         int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
+         if(scale > 0)
+            ChartSetInteger(g_chart, CHART_SCALE, 0, scale - 1);
+      }
 
-      // Volume value label — only render at spaced intervals
-      if(InpShowValues && (i % label_skip == 0))
-        {
-         string obj_label = LABEL_PREFIX + IntegerToString(label_count);
-         double label_price = price_level + (resolution / 2.0);
-         CreateOrUpdateLabel(obj_label, t_end, label_price, FormatVolume(vol_total));
-         label_count++;
-        }
-     }
+      // Scale-fix toggle
+      if(mx >= g_btnScaleFixX1 && mx <= g_btnScaleFixX2 &&
+         my >= g_btnScaleFixY1 && my <= g_btnScaleFixY2)
+      {
+         bool on = (bool)ChartGetInteger(g_chart, CHART_SCALEFIX, 0);
+         ChartSetInteger(g_chart, CHART_SCALEFIX, 0, !on);
+         g_dirty = true;
+      }
 
-   // Cleanup stale bar objects from prior larger step counts
-   if(steps < g_prevSteps)
-     {
-      for(int k = steps; k < g_prevSteps; k++)
-        {
-         ObjectDelete(0, LINE_PREFIX + "D_" + IntegerToString(k));
-         ObjectDelete(0, LINE_PREFIX + "U_" + IntegerToString(k));
-        }
-     }
-   g_prevSteps = steps;
+      // Opacity button: cycle 100% -> 75% -> 50% -> 25% -> 100%
+      if(mx >= g_btnOpaX1 && mx <= g_btnOpaX2 &&
+         my >= g_btnOpaY1 && my <= g_btnOpaY2)
+      {
+         if(g_opacity >= 255)      g_opacity = 190;   // ~75%
+         else if(g_opacity >= 190)  g_opacity = 127;   // ~50%
+         else if(g_opacity >= 127)  g_opacity = 64;    // ~25%
+         else                       g_opacity = 255;   // 100%
+         g_dirty = true;
+      }
 
-   // Cleanup stale label objects
-   if(label_count < g_prevLabelCount)
-     {
-      for(int k = label_count; k < g_prevLabelCount; k++)
-         ObjectDelete(0, LABEL_PREFIX + IntegerToString(k));
-     }
-   g_prevLabelCount = label_count;
-  }
+      // Show/Hide toggle
+      if(mx >= g_btnShowX1 && mx <= g_btnShowX2 &&
+         my >= g_btnShowY1 && my <= g_btnShowY2)
+      {
+         g_visible = !g_visible;
+         g_dirty = true;
+      }
 
-//+------------------------------------------------------------------+
-//| Draw POC, VAH, and VAL key lines                                 |
-//+------------------------------------------------------------------+
-void DrawKeyLines(int poc_idx, int va_high_idx, int va_low_idx,
-                  double range_bottom, double resolution,
-                  datetime start_time, datetime end_time)
-  {
-   double poc_price = range_bottom + (poc_idx * resolution) + (resolution / 2.0);
-   CreateOrUpdateTrendLine(POC_OBJ_NAME, start_time, end_time,
-                           poc_price, InpColorPOCLine, InpPOCStyle, SafePOCWidth());
+      // Refresh: reload tick data (HFT: quick reload after symbol/period change)
+      if(mx >= g_btnRefreshX1 && mx <= g_btnRefreshX2 &&
+         my >= g_btnRefreshY1 && my <= g_btnRefreshY2)
+      {
+         ArrayFree(g_bars);
+         datetime startTime = iTime(_Symbol, PERIOD_CURRENT,
+                                    MathMin(InpHistoryBars, iBars(_Symbol, PERIOD_CURRENT) - 1));
+         datetime endTime   = TimeCurrent();
+         LoadHistory(startTime, endTime);
+         g_dirty = true;
+      }
 
-   if(InpShowVABounds)
-     {
-      double vah_price = range_bottom + (va_high_idx * resolution) + resolution;
-      double val_price = range_bottom + (va_low_idx  * resolution);
-      CreateOrUpdateTrendLine(VAH_OBJ_NAME, start_time, end_time,
-                               vah_price, InpColorVABounds, InpVAStyle, SafeVAWidth());
-      CreateOrUpdateTrendLine(VAL_OBJ_NAME, start_time, end_time,
-                               val_price, InpColorVABounds, InpVAStyle, SafeVAWidth());
-     }
-   else
-     {
-      ObjectDelete(0, VAH_OBJ_NAME);
-      ObjectDelete(0, VAL_OBJ_NAME);
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Main orchestrator — tick (zero-lag) or bar data, then draw       |
-//+------------------------------------------------------------------+
-void CalculateAndDraw()
-  {
-   if(ObjectFind(0, RECT_NAME) < 0) return;
-
-   datetime t1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
-   datetime t2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
-   datetime start_time = MathMin(t1, t2);
-   datetime end_time   = MathMax(t1, t2);
-
-   if(InpUseTicks && InpDynamic)
-     {
-      datetime now_t = TimeCurrent();
-      end_time = MathMax(end_time, now_t);
-      int end_corner = (t1 >= t2) ? 0 : 1;
-      ObjectSetInteger(0, RECT_NAME, OBJPROP_TIME, end_corner, now_t);
-     }
-
-   double buckets_up[], buckets_down[];
-   double range_bottom = 0, resolution = _Point;
-   int    steps = 0;
-
-   if(InpUseTicks)
-     {
-      int tick_count = GatherDataTicks(start_time, end_time,
-                                        buckets_up, buckets_down,
-                                        range_bottom, resolution, steps);
-      if(tick_count <= 0)
-        {
-         ObjectsDeleteAll(0, LINE_PREFIX);
-         ObjectsDeleteAll(0, LABEL_PREFIX);
-         ObjectDelete(0, POC_OBJ_NAME);
-         ObjectDelete(0, VAH_OBJ_NAME);
-         ObjectDelete(0, VAL_OBJ_NAME);
-         return;
-        }
-     }
-   else
-     {
-      double highs[], lows[], opens[], closes[];
-      long   volumes[];
-      int count = GatherData(start_time, end_time, highs, lows, opens, closes, volumes);
-      if(count <= 0)
-        {
-         ObjectsDeleteAll(0, LINE_PREFIX);
-         ObjectsDeleteAll(0, LABEL_PREFIX);
-         ObjectDelete(0, POC_OBJ_NAME);
-         ObjectDelete(0, VAH_OBJ_NAME);
-         ObjectDelete(0, VAL_OBJ_NAME);
-         return;
-        }
-
-      double max_high = highs[ArrayMaximum(highs)];
-      double min_low  = lows[ArrayMinimum(lows)];
-      double price_range = max_high - min_low;
-      if(price_range <= 0) price_range = _Point;
-
-      resolution = GetResolution(price_range);
-      range_bottom = MathFloor(min_low  / resolution) * resolution;
-      double range_top = MathCeil(max_high / resolution) * resolution;
-      steps = (int)MathCeil((range_top - range_bottom) / resolution);
-      if(steps <= 0) steps = 1;
-      if(steps > 5000)
-        {
-         resolution = price_range / 5000.0;
-         range_bottom = MathFloor(min_low / resolution) * resolution;
-         range_top   = MathCeil(max_high / resolution) * resolution;
-         steps = 5000;
-        }
-
-      ArrayResize(buckets_up,   steps);
-      ArrayResize(buckets_down, steps);
-      ArrayInitialize(buckets_up,   0.0);
-      ArrayInitialize(buckets_down, 0.0);
-
-      if(InpDistribution == VP_DIST_CLOSE)
-         DistributeVolumeClose(count, highs, lows, opens, closes, volumes,
-                               range_bottom, resolution, steps, buckets_up, buckets_down);
-      else if(InpDistribution == VP_DIST_TRIANGULAR)
-         DistributeVolumeTriangular(count, highs, lows, opens, closes, volumes,
-                                    range_bottom, resolution, steps, buckets_up, buckets_down);
-      else
-         DistributeVolumeEven(count, highs, lows, opens, closes, volumes,
-                              range_bottom, resolution, steps, buckets_up, buckets_down);
-     }
-
-   double total_volumes[];
-   ArrayResize(total_volumes, steps);
-   for(int i = 0; i < steps; i++)
-      total_volumes[i] = buckets_up[i] + buckets_down[i];
-
-   int    poc_idx = 0, va_high_idx = 0, va_low_idx = 0;
-   double max_total_vol = 0;
-   ComputeValueArea(total_volumes, steps, poc_idx, max_total_vol, va_high_idx, va_low_idx);
-
-   if(max_total_vol <= 0) return;
-
-   datetime rect_full_time = (datetime)MathAbs((long)(end_time - start_time));
-   DrawBars(steps, range_bottom, resolution, buckets_up, buckets_down,
-            max_total_vol, start_time, rect_full_time,
-            poc_idx, va_low_idx, va_high_idx);
-
-   DrawKeyLines(poc_idx, va_high_idx, va_low_idx,
-                range_bottom, resolution, start_time, end_time);
-
-   ChartRedraw();
-  }
-
-//+------------------------------------------------------------------+
-//| Create or update a rectangle object                              |
-//+------------------------------------------------------------------+
-void CreateOrUpdateRect(string name, datetime t1, datetime t2,
-                        double price, double resolution, color col)
-  {
-   if(t1 == t2) return;
-
-   if(ObjectFind(0, name) < 0)
-     {
-      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, price, t2, price + resolution);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-      ObjectSetInteger(0, name, OBJPROP_BACK,  InpBackground);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-      ObjectSetInteger(0, name, OBJPROP_FILL,  InpFill);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-     }
-   else
-     {
-      ObjectSetInteger(0, name, OBJPROP_TIME,  0, t1);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, price);
-      ObjectSetInteger(0, name, OBJPROP_TIME,  1, t2);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 1, price + resolution);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Create or update a horizontal trendline (POC / VAH / VAL)        |
-//+------------------------------------------------------------------+
-void CreateOrUpdateTrendLine(string name, datetime t1, datetime t2,
-                             double price, color col,
-                             ENUM_LINE_STYLE style, int width)
-  {
-   if(ObjectFind(0, name) < 0)
-     {
-      ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
-      ObjectSetInteger(0, name, OBJPROP_COLOR,     col);
-      ObjectSetInteger(0, name, OBJPROP_STYLE,     style);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH,     width);
-      ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-      ObjectSetInteger(0, name, OBJPROP_BACK,      false);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN,    true);
-     }
-   else
-     {
-      ObjectSetInteger(0, name, OBJPROP_TIME,  0, t1);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, price);
-      ObjectSetInteger(0, name, OBJPROP_TIME,  1, t2);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 1, price);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-      ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Create or update a volume value text label                       |
-//+------------------------------------------------------------------+
-void CreateOrUpdateLabel(string name, datetime t, double price, string text)
-  {
-   if(ObjectFind(0, name) < 0)
-     {
-      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
-      ObjectSetString(0,  name, OBJPROP_TEXT,     text);
-      ObjectSetString(0,  name, OBJPROP_FONT,     "Arial");
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpValueFontSize);
-      ObjectSetInteger(0, name, OBJPROP_COLOR,    InpValueColor);
-      ObjectSetInteger(0, name, OBJPROP_ANCHOR,   ANCHOR_LEFT);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN,  true);
-      ObjectSetInteger(0, name, OBJPROP_BACK,    false);
-     }
-   else
-     {
-      ObjectSetInteger(0, name, OBJPROP_TIME,  0, t);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, price);
-      ObjectSetString(0,  name, OBJPROP_TEXT,  text);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, InpValueColor);
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpValueFontSize);
-     }
-  }
+      // VA%: cycle Value Area 70% -> 80% -> 90% -> 70%
+      if(mx >= g_btnVAX1 && mx <= g_btnVAX2 &&
+         my >= g_btnVAY1 && my <= g_btnVAY2)
+      {
+         if(g_vaPercent <= 0.0 || g_vaPercent < 70.0) g_vaPercent = 70.0;
+         else if(g_vaPercent <= 70.0) g_vaPercent = 80.0;
+         else if(g_vaPercent <= 80.0) g_vaPercent = 90.0;
+         else g_vaPercent = 70.0;
+         g_dirty = true;
+      }
+   }
+}
 //+------------------------------------------------------------------+
