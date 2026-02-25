@@ -1,0 +1,1853 @@
+﻿//+------------------------------------------------------------------+
+//|                                              ChartTrader.mq5     |
+//|              Professional Chart Trader - Production Ready         |
+//|    Market/Pending execution, Risk/Manual lot, SL/TP visual lines |
+//|    Drag-and-dock panel, Scale-out, Assign SL/TP, Hotkeys         |
+//+------------------------------------------------------------------+
+#property version   "1.10"
+#property description "Professional Chart Trader. Market/Pending, Risk/Lot, SL/TP lines, Scale-out, Hotkeys."
+
+#include <Trade\Trade.mqh>
+CTrade trade;
+
+// --- TRADING INPUTS ---
+input group "Risk Settings"
+input double   InpDefRiskUnits= 0.001;     // Default Risk Units (1 unit = 0.1%)
+input double   InpRiskStep    = 0.001;     // Risk Adjustment Step
+input int      InpDefSL       = 5000;       // Default SL (points)
+input int      InpDefTP       = 5000;       // Default TP (points)
+input double   InpScalePct    = 50.0;     // Default Scale-out %
+input int      InpAdjStep     = 200;        // Adjustment Step (points)
+input int      InpEntryStep   = 50;         // Entry Line Step (points)
+input int      InpMagic       = 7;    // Magic Number
+input bool     InpIncLotStep  = false;     // Incremental Lot Increase (+1 step)
+
+input group "Panel Colors"
+input color    InpClrBg       = C'8,8,8';           // Panel Background (Near Black)
+input color    InpClrHeader   = C'18,18,18';        // Header Background (Charcoal)
+input color    InpClrGroupBox = C'22,22,22';        // Group Box Background (Charcoal)
+input color    InpClrBorder   = C'52,52,52';        // Border / Separator (Mid Gray)
+input color    InpClrInput    = C'38,38,38';        // Input Box Background (Charcoal)
+input color    InpClrText     = C'248,248,248';     // Label Text (Off-White)
+input color    InpClrTextIn   = C'248,248,248';     // Input Text (Off-White)
+input color    InpClrBuy      = C'58,58,58';        // Buy Button (Dark Grey)
+input color    InpClrSell     = C'38,38,38';        // Sell Button (Charcoal)
+input color    InpClrClose    = C'38,38,38';        // Close Button (Charcoal)
+input color    InpClrScale    = C'38,38,38';       // Scale Out Button (Charcoal)
+input color    InpClrReverse  = C'38,38,38';        // Reverse Button (Charcoal)
+input color    InpClrActive   = C'92,92,92';       // Active Toggle (Medium Gray)
+input color    InpClrInactive = C'24,24,24';        // Inactive Toggle (Dark Charcoal)
+input color    InpClrBtnAdj   = C'42,42,42';        // +/- Adjuster Buttons (Charcoal)
+
+input group "Visual Elements"
+input color    InpClrAsgnSL   = C'42,42,42';        // Assign SL (Charcoal)
+input color    InpClrAsgnTP   = C'42,42,42';       // Assign TP (Charcoal)
+input color    InpClrTimer    = C'255,255,255';     // Timer Color (White)
+input color    InpClrTimerTitle = C'168,168,168';   // Timer Title (Silver)
+input color    InpClrSL       = C'255,255,255';     // SL Line (White)
+input color    InpClrTP       = C'200,200,200';     // TP Line (Light Gray, grayscale)
+
+input group "Information Colors (Grayscale)"
+input color    InpClrInfoPnLBase = C'220,220,220';  // PnL Base (Light Gray)
+input color    InpClrInfoPnLWin  = C'200,200,200';  // PnL Win (Light Gray)
+input color    InpClrInfoPnLLoss = C'140,140,140';  // PnL Loss (Darker Gray)
+input color    InpClrInfoBal     = C'200,200,200';  // Balance (Light Gray)
+input color    InpClrInfoMarg    = C'188,188,188';  // Margin (Silver)
+input color    InpClrInfoSprdBase= C'160,160,160';  // Spread Base
+input color    InpClrInfoSprdGood= C'200,200,200';  // Spread Good (Light Gray)
+input color    InpClrInfoSprdMed = C'170,170,170';  // Spread Medium
+input color    InpClrInfoSprdWide= C'130,130,130';  // Spread Wide (Darker Gray)
+input color    InpClrInfoRRWin   = C'200,200,200';  // R:R Favorable (Light Gray)
+input color    InpClrInfoRRLoss  = C'130,130,130';  // R:R Unfavorable (Darker Gray)
+input color    InpClrInfoPendBase= C'160,160,160';  // Pending Base
+input color    InpClrInfoPendAct = C'210,210,210';  // Pending Active (Lighter)
+input color    InpClrInfoPosBase = C'160,160,160';  // Position Base
+input color    InpClrInfoPosBuy  = C'200,200,200';  // Position Buy (Light Gray)
+input color    InpClrInfoPosSell = C'150,150,150';  // Position Sell (Medium Gray)
+
+input group "Panel Position & Size"
+input int      InpPanelX      = 15;        // Panel X Position
+input int      InpPanelY      = 50;        // Panel Y Position
+input int      InpPanelW      = 300;       // Panel Width (fits Scale Out + all elements)
+input int      InpPanelH      = 370;       // Panel Height (min to fit footer inside)
+input bool     InpShowBalance = true;      // Show Account Balance
+
+input group "Keymapping"
+input int      InpKeyDock     = 89;       // Dock Panel Hotkey ('Y' default)
+
+// --- UI CONSTANTS ---
+#define BTN_H        24
+#define EDIT_H       20         // Input height (consistent, with padding)
+#define FONT_MAIN    "Segoe UI"
+#define HEADER_H     45         // Header bar height (timer + controls)
+#define SEP_H        1          // Separator line height (visual hierarchy)
+#define FOOTER_PAD   10         // Footer top padding (breathing room)
+
+// Layout: consistent spacing, grid-aligned inputs (no overlaps)
+#define CONTAINER_PAD 8         // Padding from panel edges (box-sizing)
+#define ROW_GAP      8         // Gap between all rows
+#define COL_GAP      8         // Gap between sections
+#define GRID_GAP     4         // Gap within input grid (tight)
+#define FOOTER_LEFT  12        // Footer left margin
+#define FOOTER_RIGHT 288       // Max X for footer (InpPanelW - 12)
+#define FOOTER_COL2  148       // Start X for footer right column (clear 2-col grid)
+#define FOOTER_ROW_H 14        // Footer secondary row height (Spread/Pending/R:R/Pos)
+#define INP_ROW_H    (EDIT_H + 2)   // Row height (20 + 2)
+#define INP_MARGIN   CONTAINER_PAD
+#define INP_GAP      COL_GAP
+
+// Grid: 95px fixed label column (prevents shift when toggle changes)
+#define LABEL_W      108       // Fixed label column (Manual Lot, Risk Units, Stop loss, Take profit, Scale)
+#define ARROW_W      18        // ▲/▼ button width
+#define EDIT_MAIN_W  48        // Main numeric edit (Lot/Risk/SL/TP)
+#define EDIT_SCALE_W 42        // Scale edit
+#define TOGGLE_W     18        // ✔/✖ toggle width
+// ACTION_W computed at runtime: colAction to panelRight (aligns SL, TP, Scale Out)
+#define INP_ARROW_W  ARROW_W
+#define INP_EDIT_W   EDIT_MAIN_W
+#define INP_EDIT_SLTP_W EDIT_MAIN_W
+#define INP_EDIT_SCALE_W EDIT_SCALE_W
+#define INP_TOGGLE_W TOGGLE_W
+
+// --- KEY MAP DEFINES ---
+#define KEY_Q 81
+#define KEY_W 87
+#define KEY_E 69
+#define KEY_R 82
+#define KEY_T 84
+#define KEY_F 70
+#define KEY_G 71
+#define KEY_H 72
+#define KEY_J 74
+#define KEY_K 75
+#define KEY_L 76
+#define KEY_Z 90
+#define KEY_X 88
+#define KEY_C 67
+#define KEY_V 86
+#define KEY_B 66
+#define KEY_N 78
+#define KEY_M 77
+#define KEY_S 83
+#define KEY_D 68
+#define KEY_A 65
+#define KEY_O 79
+#define KEY_P 80
+#define KEY_Y 89
+#define KEY_U 85
+#define KEY_I 73
+#define KEY_TAB 9
+#define KEY_BACKSLASH 220
+#define KEY_COMMA     188
+#define KEY_PERIOD    190
+
+// Key map (no overlaps): Q/W=Buy/Sell, E=CloseAll, R=Panel, F=Minimize, Y=Dock(input)
+// G/H=Assign SL/TP, J/K/L=SL toggle/dn/up, B/N/M=TP toggle/dn/up, O/P=Lot/Risk dn/up
+// U/I=Scale dn/up, \=Lot mode, Tab=Market/Pending, ,/.=Entry dn/up
+// V=Flip, S=ScaleOut, Z/X=Close Buys/Sells, C/D=Close Wins/Losses, A=Cancel Pending. T=reserved.
+
+// --- OBJECT NAMES ---
+#define PREFIX       "W_PRO_"
+#define BG_PANEL     PREFIX + "BG"
+#define SEP_HEAD     PREFIX + "SepHead"    // Separator below header
+#define SEP_FOOT     PREFIX + "SepFoot"    // Separator above footer
+#define LBL_T_TITLE  PREFIX + "TimerTitle"
+#define BG_HEADER    PREFIX + "Head"
+#define BG_INPUTS    PREFIX + "Inp"
+#define LBL_PNL      PREFIX + "PnL"
+#define LBL_BALANCE  PREFIX + "Bal"
+#define LBL_TIMER    PREFIX + "Timer"
+#define BTN_MINMAX   PREFIX + "Min"
+#define BTN_RESET    PREFIX + "Reset"
+#define BTN_DOCK     PREFIX + "Dock"
+
+#define LBL_MARG_REQ PREFIX + "MargReq"
+#define LBL_SPREAD   PREFIX + "Spread"
+#define LBL_RR       PREFIX + "RR"
+#define LBL_PEND     PREFIX + "PendCount"
+#define LBL_POS_SUMMARY PREFIX + "PosSum"
+
+#define LINE_SL      PREFIX + "LineSL"
+#define LINE_TP      PREFIX + "LineTP"
+
+// Inputs
+#define EDIT_RISK    PREFIX + "EditRisk"
+#define EDIT_LOT     PREFIX + "EditLot"
+#define EDIT_SL      PREFIX + "EditSL"
+#define EDIT_TP      PREFIX + "EditTP"
+#define EDIT_SCALE   PREFIX + "EditScale" 
+
+// Buttons
+#define BTN_BUY      PREFIX + "Buy"
+#define BTN_SELL     PREFIX + "Sell"
+#define BTN_CLOSE    PREFIX + "Close"
+#define BTN_SCALE    PREFIX + "Scale"   
+#define BTN_REV      PREFIX + "Reverse"
+#define BTN_C_BUY    PREFIX + "CloseBuy"
+#define BTN_C_SELL   PREFIX + "CloseSell"
+#define BTN_C_WIN    PREFIX + "CloseWin"
+#define BTN_C_LOSS   PREFIX + "CloseLoss"
+#define BTN_C_PEND   PREFIX + "ClosePend"
+
+// Toggles & Adjusters
+#define BTN_USE_SL   PREFIX + "UseSL"     
+#define BTN_USE_TP   PREFIX + "UseTP"     
+#define BTN_SL_UP    PREFIX + "SL_Up"
+#define BTN_SL_DN    PREFIX + "SL_Dn"
+#define BTN_TP_UP    PREFIX + "TP_Up"
+#define BTN_TP_DN    PREFIX + "TP_Dn"
+#define BTN_RISK_UP  PREFIX + "Risk_Up"
+#define BTN_RISK_DN  PREFIX + "Risk_Dn"
+#define BTN_SCALE_UP PREFIX + "Scale_Up"
+#define BTN_SCALE_DN PREFIX + "Scale_Dn"
+#define BTN_ASGN_SL  PREFIX + "AsgnSL"
+#define BTN_ASGN_TP  PREFIX + "AsgnTP"
+#define BTN_DIR      PREFIX + "BtnDir"
+#define BTN_MODE     PREFIX + "BtnMode"
+#define LINE_ENTRY   PREFIX + "LineEntry"
+#define BTN_ENTRY_UP PREFIX + "Entry_Up"
+#define BTN_ENTRY_DN PREFIX + "Entry_Dn"
+
+// --- MANUAL LOT MODE TOGGLE ---
+#define BTN_TOGGLE_MODE PREFIX + "BtnToggleMode"
+// --- GLOBAL STATE VARS (Performance Cache) ---
+bool IsPanelVisible = true;
+bool IsMinimized    = false;
+bool IsLongMode     = true;
+bool EnableSL       = true;  
+bool EnableTP       = true;
+int  PanelX         = 15;
+int  PanelY         = 40;
+int  TradeSequence  = 0;
+
+// Internal State Cache (Avoids String Conversions)
+double g_RiskUnits;
+double g_LotSize;
+long   g_SL_Points;
+long   g_TP_Points;
+double g_ScalePct;
+
+// --- OPTIMIZATION CACHE ---
+double last_PnL       = -DBL_MAX;
+int    last_Positions = -1;
+double last_PnLState  = -99;
+bool   last_AlgoState = false;
+double last_Mid       = 0;
+int    last_SL        = -1;
+int    last_TP        = -1;
+double last_Lot       = -1;
+bool   last_Mode      = true;
+
+// --- NEW Execution Types ---
+enum ENUM_EXEC_MODE { MODE_MARKET=0, MODE_PENDING=1 };
+ENUM_EXEC_MODE g_ExecMode = MODE_MARKET;
+double g_PendingPrice = 0; // Absolute price for pending execution
+ENUM_EXEC_MODE last_ExecMode = MODE_MARKET;
+
+// --- Manual Lot Mode ---
+bool g_IsManualLotMode = true; // Default Mode
+
+// --- Dock State ---
+bool g_IsDocked       = false; // When true, panel is locked and drag is prevented
+
+// --- Panel content height (computed in CreateGUI so footer is inside border) ---
+int  g_PanelContentH  = 370;
+
+// --- Drag State ---
+bool g_IsDragging     = false;
+int  g_DragOffsetX    = 0;
+int  g_DragOffsetY    = 0;
+bool g_ChartScrollSaved = true;  // Saved chart scroll state before drag
+
+// --- Click-and-Hold Repeat ---
+int    g_RepeatAction  = 0;     // 0=none, see REPEAT_* defines below
+bool   g_RepeatActive  = false; // Is repeat firing?
+#define REPEAT_NONE      0
+#define REPEAT_RISK_UP   1
+#define REPEAT_RISK_DN   2
+#define REPEAT_SL_UP     3
+#define REPEAT_SL_DN     4
+#define REPEAT_TP_UP     5
+#define REPEAT_TP_DN     6
+#define REPEAT_SCALE_UP  7
+#define REPEAT_SCALE_DN  8
+#define REPEAT_ENTRY_UP  9
+#define REPEAT_ENTRY_DN  10
+
+//+------------------------------------------------------------------+
+//| Initialization                                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   trade.SetExpertMagicNumber(InpMagic);
+   trade.SetAsyncMode(true);
+   trade.SetDeviationInPoints(10);
+   
+   PanelX = InpPanelX;
+   PanelY = InpPanelY;
+   
+   // Initialize State from Inputs
+   g_RiskUnits = InpDefRiskUnits;
+   g_SL_Points = InpDefSL;
+   g_TP_Points = InpDefTP;
+   g_ScalePct  = InpScalePct;
+   g_LotSize   = 0.01; // Default Manual Lot Size
+   g_IsManualLotMode = true; // Enforce default
+   
+   // Enable mouse move events for drag-and-drop
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   
+   CreateGUI();
+   UpdateToggleState(); 
+   
+   UpdateCalculatedLot(); // Initial calculation
+   UpdateRealtimeStatistics(); 
+   ChartRedraw();
+   
+   EventSetTimer(1); 
+   
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) {
+      Alert("Warning: Enable 'Algo Trading' button!");
+   }
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Cleanup                                                          |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   if(g_RepeatActive) StopRepeat();
+   if(g_IsDragging) {
+      g_IsDragging = false;
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, g_ChartScrollSaved);
+   }
+   ObjectsDeleteAll(0, PREFIX);
+   EventKillTimer();
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| OnTimer - Updates Candle Timer & Slow Update Tasks               |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   // --- Click-and-Hold Repeat ---
+   if(g_RepeatActive && g_RepeatAction != REPEAT_NONE) {
+      FireRepeatAction();
+      ChartRedraw();
+      return; 
+   }
+   
+   if(!IsPanelVisible) return;
+   
+   // --- Candle Timer ---
+   datetime timeCurrent = TimeCurrent();
+   datetime timeBar = iTime(_Symbol, _Period, 0);
+   int secondsLeft = (int)(timeBar + PeriodSeconds(_Period) - timeCurrent);
+   
+   if(secondsLeft < 0) secondsLeft = 0;
+   
+   string timerText;
+   if(_Period >= PERIOD_D1) {
+      int hours = secondsLeft / 3600;
+      int minutes = (secondsLeft % 3600) / 60;
+      int seconds = secondsLeft % 60;
+      timerText = StringFormat("%02d:%02d:%02d", hours, minutes, seconds);
+   } else {
+      int minutes = secondsLeft / 60;
+      int seconds = secondsLeft % 60;
+      timerText = StringFormat("%02d:%02d", minutes, seconds);
+   }
+   
+   if(ObjectFind(0, LBL_TIMER) >= 0) {
+      ObjectSetString(0, LBL_TIMER, OBJPROP_TEXT, timerText);
+   }
+
+   // When minimized: still update PnL/position count (header) so they stay live
+   if(IsMinimized) {
+      UpdatePnL();
+      ChartRedraw();
+      return;
+   }
+   
+   // Force Sync occasionally to ensure PnL/Status match on idle ticks
+   UpdateRealtimeStatistics();
+   UpdateSpread();
+   UpdatePendingCount();
+   UpdatePositionSummary();
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Fast Update Loop (OnTick)                                        |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   if(!IsPanelVisible) return;
+   
+   bool needsRedraw = false;
+   
+   // 1. Update PnL (Fast)
+   needsRedraw |= UpdatePnL();
+   
+   // 2. Update Header Status (Fast)
+   needsRedraw |= UpdateHeader();
+   
+   // 3. Update Visual Guide Lines (Price Dependent)
+   needsRedraw |= DrawVisualLines();
+   
+   // 4. Check for Balance Change to trigger Lot Recalc (Optimization)
+   static double lastBalance = 0;
+   double currBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(currBalance != lastBalance) {
+      UpdateCalculatedLot();
+      lastBalance = currBalance;
+      needsRedraw = true; // Lot change affects text
+   }
+   
+   if(needsRedraw) ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Update PnL Only                                                  |
+//+------------------------------------------------------------------+
+bool UpdatePnL() {
+   
+   double pnl = AccountInfoDouble(ACCOUNT_PROFIT);
+   
+   // Count open positions for this symbol opened by this EA (magic)
+   int posCount = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) posCount++;
+   }
+   
+   // Optimization: Only update if value changed
+   if(pnl != last_PnL || posCount != last_Positions) {
+       if(ObjectFind(0, LBL_PNL) >= 0) {
+          string pnlText = "PnL: " + DoubleToString(pnl, 2) + " (" + IntegerToString(posCount) + ")";
+          ObjectSetString(0, LBL_PNL, OBJPROP_TEXT, pnlText);
+          
+          // Color: Green when profit, Red when loss, White when flat
+          color pnlColor = InpClrInfoPnLBase; // Default
+          if(posCount > 0) {
+             if(pnl > 0) pnlColor = InpClrInfoPnLWin;       // Green/Win
+             else if(pnl < 0) pnlColor = InpClrInfoPnLLoss;  // Red/Loss
+          }
+          ObjectSetInteger(0, LBL_PNL, OBJPROP_COLOR, pnlColor);
+       }
+       last_PnL = pnl;
+       last_Positions = posCount;
+       return true; 
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Update Header                                                     |
+//+------------------------------------------------------------------+
+bool UpdateHeader() {
+   bool changed = false;
+   
+   // Use position count from UpdatePnL (runs first in tick cycle via last_Positions)
+   double pnl = AccountInfoDouble(ACCOUNT_PROFIT);
+   double pnlState = (pnl >= 0) ? 1 : -1;
+   
+   // Reset TradeSequence when all positions closed
+   if(last_Positions == 0 && pnlState != last_PnLState) {
+       TradeSequence = 0;
+       changed = true;
+   }
+   last_PnLState = pnlState;
+   return changed;
+}
+
+//+------------------------------------------------------------------+
+//| UpdateRealtimeStatistics - Helper                                |
+//+------------------------------------------------------------------+
+void UpdateRealtimeStatistics()
+{
+   UpdatePnL();
+   UpdateHeader();
+   UpdateMarginInfo();
+   DrawVisualLines();
+   UpdateRR();
+   UpdateBalance();
+}
+
+void UpdateBalance() {
+   if(!IsPanelVisible || IsMinimized || !InpShowBalance) return;
+   if(ObjectFind(0, LBL_BALANCE) < 0) return;
+   
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   string balText;
+   if(bal >= 1000000) balText = "Bal: $" + DoubleToString(bal / 1000000.0, 2) + "M";
+   else if(bal > 99999) balText = "Bal: $" + DoubleToString(bal, 0);
+   else balText = "Bal: $" + DoubleToString(bal, 2);
+   
+   ObjectSetString(0, LBL_BALANCE, OBJPROP_TEXT, balText);
+   ObjectSetInteger(0, LBL_BALANCE, OBJPROP_COLOR, InpClrInfoBal);
+}
+
+//+------------------------------------------------------------------+
+//| Chart Event Handler                                              |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   bool isAlgoOn = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+
+   if(id == CHARTEVENT_KEYDOWN) {
+      int key = (int)lparam;
+      if(key == InpKeyDock) {
+         g_IsDocked = !g_IsDocked;
+         if(ObjectFind(0, BTN_DOCK) >= 0) ObjectSetString(0, BTN_DOCK, OBJPROP_TEXT, g_IsDocked ? "_" : "_");
+         ChartRedraw();
+         return;
+      }
+      switch(key) {
+         case KEY_Q: if(isAlgoOn && IsLongMode) ExecuteOrder(ORDER_TYPE_BUY); break;   // Buy key only in buy mode
+         case KEY_W: if(isAlgoOn && !IsLongMode) ExecuteOrder(ORDER_TYPE_SELL); break; // Sell key only in sell mode
+         case KEY_E: ClosePositions(0); break;                          // Close All
+         case KEY_R: TogglePanel(); break;
+         case KEY_V: FlipSide(); break;
+         case KEY_S: ScaleOut(); break;
+         case KEY_O: AdjustLotOrRisk(-1); break;                        // Decrements Lot/Risk depending on mode
+         case KEY_P: AdjustLotOrRisk(1); break;                         // Increments Lot/Risk depending on mode
+         case KEY_BACKSLASH: ToggleLotMode(); break;                    // Toggle Risk/Lot Mode
+         case KEY_J: EnableSL = !EnableSL; UpdateToggleState(); break;
+         case KEY_K: AdjustEdit(EDIT_SL, -InpAdjStep); break;
+         case KEY_L: AdjustEdit(EDIT_SL, InpAdjStep); break;
+         case KEY_B: EnableTP = !EnableTP; UpdateToggleState(); break;
+         case KEY_N: AdjustEdit(EDIT_TP, -InpAdjStep); break;
+         case KEY_M: AdjustEdit(EDIT_TP, InpAdjStep); break;
+         case KEY_U: AdjustScale(-5); break;
+         case KEY_I: AdjustScale(5); break;
+         case KEY_G: AssignSLToAll(); break;
+         case KEY_H: AssignTPToAll(); break;
+         case KEY_F: { IsMinimized = !IsMinimized; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); } break;
+         case KEY_Z: ClosePositions(1); break;                          // Close Buys
+         case KEY_X: ClosePositions(2); break;                          // Close Sells
+         case KEY_A: ClosePending(); break;                             // Cancel Pending
+
+         case KEY_COMMA: AdjustEntryLine(-InpEntryStep); break;         // Move Entry Down
+         case KEY_PERIOD: AdjustEntryLine(InpEntryStep); break;         // Move Entry Up
+
+         case KEY_TAB: {
+            if(g_ExecMode == MODE_MARKET) g_ExecMode = MODE_PENDING;
+            else g_ExecMode = MODE_MARKET;
+            ObjectsDeleteAll(0, PREFIX + "Line");
+            UpdateToggleState();
+         } break;
+         case KEY_C: ClosePositions(3); break;   // Close Win
+         case KEY_D: ClosePositions(4); break;   // Close Loss
+      }
+      ChartRedraw();
+   }
+
+   if(id == CHARTEVENT_OBJECT_CLICK) {
+      if(sparam == BTN_MINMAX)    { IsMinimized = !IsMinimized; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); ResetBtn(BTN_MINMAX); }
+      else if(sparam == BTN_RESET) { PanelX = InpPanelX; PanelY = InpPanelY; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); UpdateCalculatedLot(); }
+      else if(sparam == BTN_DOCK) { g_IsDocked = !g_IsDocked; ObjectSetString(0, BTN_DOCK, OBJPROP_TEXT, g_IsDocked ? "O" : "O"); ResetBtn(BTN_DOCK); }
+      else if(sparam == BTN_BUY)  { if(isAlgoOn && IsLongMode) ExecuteOrder(ORDER_TYPE_BUY); ResetBtn(BTN_BUY); }
+      else if(sparam == BTN_SELL) { if(isAlgoOn && !IsLongMode) ExecuteOrder(ORDER_TYPE_SELL); ResetBtn(BTN_SELL); }
+      else if(sparam == BTN_CLOSE){ ClosePositions(0); ResetBtn(BTN_CLOSE); }
+      else if(sparam == BTN_C_BUY){ ClosePositions(1); ResetBtn(BTN_C_BUY); }
+      else if(sparam == BTN_C_SELL){ ClosePositions(2); ResetBtn(BTN_C_SELL); }
+      else if(sparam == BTN_C_WIN){ ClosePositions(3); ResetBtn(BTN_C_WIN); }
+      else if(sparam == BTN_C_LOSS){ ClosePositions(4); ResetBtn(BTN_C_LOSS); }
+      else if(sparam == BTN_C_PEND){ ClosePending(); ResetBtn(BTN_C_PEND); }
+      else if(sparam == BTN_REV)  { FlipSide(); ResetBtn(BTN_REV); }
+      else if(sparam == BTN_SCALE){ ScaleOut(); ResetBtn(BTN_SCALE); }
+      else if(sparam == BTN_USE_SL) { EnableSL = !EnableSL; UpdateToggleState(); ResetBtn(BTN_USE_SL); }
+      else if(sparam == BTN_USE_TP) { EnableTP = !EnableTP; UpdateToggleState(); ResetBtn(BTN_USE_TP); }
+      else if(sparam == BTN_SL_UP)   { AdjustEdit(EDIT_SL, InpAdjStep);   ResetBtn(BTN_SL_UP); }
+      else if(sparam == BTN_SL_DN)   { AdjustEdit(EDIT_SL, -InpAdjStep);  ResetBtn(BTN_SL_DN); }
+      else if(sparam == BTN_TP_UP)   { AdjustEdit(EDIT_TP, InpAdjStep);   ResetBtn(BTN_TP_UP); }
+      else if(sparam == BTN_TP_DN)   { AdjustEdit(EDIT_TP, -InpAdjStep);  ResetBtn(BTN_TP_DN); }
+      else if(sparam == BTN_RISK_UP) { AdjustLotOrRisk(1);               ResetBtn(BTN_RISK_UP); }
+      else if(sparam == BTN_RISK_DN) { AdjustLotOrRisk(-1);              ResetBtn(BTN_RISK_DN); }
+      else if(sparam == BTN_SCALE_UP){ AdjustScale(5);                   ResetBtn(BTN_SCALE_UP); }
+      else if(sparam == BTN_SCALE_DN){ AdjustScale(-5);                  ResetBtn(BTN_SCALE_DN); }
+      else if(sparam == BTN_ENTRY_UP){ AdjustEntryLine(InpEntryStep);    ResetBtn(BTN_ENTRY_UP); }
+      else if(sparam == BTN_ENTRY_DN){ AdjustEntryLine(-InpEntryStep);    ResetBtn(BTN_ENTRY_DN); }
+      else if(sparam == BTN_TOGGLE_MODE) { ToggleLotMode(); ResetBtn(BTN_TOGGLE_MODE); }
+
+      else if(sparam == BTN_MODE) {
+         if(g_ExecMode == MODE_MARKET) g_ExecMode = MODE_PENDING;
+         else g_ExecMode = MODE_MARKET;
+         
+         // Force hard refresh of lines
+         ObjectsDeleteAll(0, PREFIX + "Line"); 
+         UpdateToggleState();
+         ResetBtn(BTN_MODE);
+      }
+      else if(sparam == BTN_ASGN_SL) { AssignSLToAll(); ResetBtn(BTN_ASGN_SL); }
+      else if(sparam == BTN_ASGN_TP) { AssignTPToAll(); ResetBtn(BTN_ASGN_TP); }
+      ChartRedraw();
+   }
+   
+   // Handle Line Dragging - Sync back to State
+   if(id == CHARTEVENT_OBJECT_DRAG) {
+      if(_Point <= 0) return;
+      bool changed = false;
+      
+      if(sparam == LINE_ENTRY) {
+         double price = ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE);
+         if(price > 0) {
+            g_PendingPrice = NormalizeDouble(price, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+            changed = true;
+            DrawVisualLines(true);
+         }
+      }
+      else if(sparam == LINE_SL) {
+         double price = ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE);
+         if(price > 0) {
+            double refPrice = 0;
+            if(g_ExecMode == MODE_MARKET) {
+               double curAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+               double curBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+               double mid = (curAsk + curBid) / 2.0;
+               bool newMode = (price < mid);
+               if(newMode != IsLongMode) { IsLongMode = newMode; UpdateToggleState(); }
+               refPrice = IsLongMode ? curAsk : curBid;
+            } else {
+               refPrice = (ObjectFind(0, LINE_ENTRY) >= 0) ? ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE) : g_PendingPrice;
+               bool newMode = (price < refPrice);
+               if(newMode != IsLongMode) { IsLongMode = newMode; UpdateToggleState(); }
+            }
+            
+            g_SL_Points = (long)MathRound(MathAbs(refPrice - price) / _Point);
+            ObjectSetString(0, EDIT_SL, OBJPROP_TEXT, IntegerToString(g_SL_Points));
+            changed = true;
+            DrawVisualLines(true);
+         }
+      }
+      else if(sparam == LINE_TP) {
+         double price = ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE);
+         if(price > 0) {
+            double refPrice = 0;
+            if(g_ExecMode == MODE_MARKET) {
+               double curAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+               double curBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+               double mid = (curAsk + curBid) / 2.0;
+               bool newMode = (price > mid);
+               if(newMode != IsLongMode) { IsLongMode = newMode; UpdateToggleState(); }
+               refPrice = IsLongMode ? curAsk : curBid;
+            } else {
+               refPrice = (ObjectFind(0, LINE_ENTRY) >= 0) ? ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE) : g_PendingPrice;
+               bool newMode = (price > refPrice);
+               if(newMode != IsLongMode) { IsLongMode = newMode; UpdateToggleState(); }
+            }
+            
+            g_TP_Points = (long)MathRound(MathAbs(refPrice - price) / _Point);
+            ObjectSetString(0, EDIT_TP, OBJPROP_TEXT, IntegerToString(g_TP_Points));
+            changed = true;
+            DrawVisualLines(true);
+         }
+      }
+      if(changed) ChartRedraw();
+   }
+
+   // Handle Manual edits in Box (with validation to avoid trading-impact issues)
+   if(id == CHARTEVENT_OBJECT_ENDEDIT) {
+      if(sparam == EDIT_RISK) {
+         if(g_IsManualLotMode) {
+             g_LotSize = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
+             UpdateCalculatedLot(); // Clamps to min/max/step
+         } else {
+             double v = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
+             if(v < 0.001) v = 0.001;
+             g_RiskUnits = v;
+             UpdateCalculatedLot();
+             ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3)); // Sync display after clamp
+         }
+      }
+      else if(sparam == EDIT_SL) { 
+           long v = (long)StringToInteger(ObjectGetString(0, EDIT_SL, OBJPROP_TEXT));
+           if(v < 0) v = 0;
+           if(v > 500000) v = 500000; // Cap to avoid overflow in point math
+           g_SL_Points = v;
+           ObjectSetString(0, EDIT_SL, OBJPROP_TEXT, IntegerToString(g_SL_Points));
+           DrawVisualLines(true); 
+      }
+      else if(sparam == EDIT_TP) { 
+           long v = (long)StringToInteger(ObjectGetString(0, EDIT_TP, OBJPROP_TEXT));
+           if(v < 0) v = 0;
+           if(v > 500000) v = 500000;
+           g_TP_Points = v;
+           ObjectSetString(0, EDIT_TP, OBJPROP_TEXT, IntegerToString(g_TP_Points));
+           DrawVisualLines(true); 
+      }
+      else if(sparam == EDIT_SCALE) {
+           double v = StringToDouble(ObjectGetString(0, EDIT_SCALE, OBJPROP_TEXT));
+           if(v < 5) v = 5;
+           if(v > 100) v = 100;
+           g_ScalePct = v;
+           ObjectSetString(0, EDIT_SCALE, OBJPROP_TEXT, DoubleToString(g_ScalePct, 0));
+      }
+      
+      ChartRedraw();
+   }
+   
+   // --- DRAG-AND-DROP: Panel Movement via Mouse ---
+   if(id == CHARTEVENT_MOUSE_MOVE && IsPanelVisible) {
+      int mouseX = (int)lparam;
+      int mouseY = (int)dparam;
+      int mouseState = (int)StringToInteger(sparam);
+      bool leftDown = (mouseState & 1) != 0;
+      int panelH = IsMinimized ? HEADER_H : g_PanelContentH;
+
+      // Click-and-Hold Repeat via hit-testing (must check before drag)
+      if(leftDown && !g_IsDragging && !IsMinimized) {
+         int hitAction = HitTestAdjuster(mouseX, mouseY);
+         if(hitAction != REPEAT_NONE && !g_RepeatActive) {
+            StartRepeat(hitAction);
+            FireRepeatAction();
+            ChartRedraw();
+         }
+      }
+      if(!leftDown && g_RepeatActive) StopRepeat();
+
+      // Don't start drag if a repeat action is active (user is holding an adjuster button)
+      if(leftDown && !g_IsDragging && !g_IsDocked && !g_RepeatActive) {
+         if(mouseX >= PanelX && mouseX <= PanelX + InpPanelW &&
+            mouseY >= PanelY && mouseY <= PanelY + panelH) {
+            // Exclude drag if mouse is over any interactive button
+            if(HitTestAdjuster(mouseX, mouseY) == REPEAT_NONE) {
+               g_IsDragging = true;
+               g_DragOffsetX = mouseX - PanelX;
+               g_DragOffsetY = mouseY - PanelY;
+               g_ChartScrollSaved = (bool)ChartGetInteger(0, CHART_MOUSE_SCROLL);
+               ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+            }
+         }
+      }
+
+      if(g_IsDragging) {
+         if(leftDown) {
+            // Move panel to follow mouse
+            int newX = mouseX - g_DragOffsetX;
+            int newY = mouseY - g_DragOffsetY;
+            
+            // Clamp to chart boundaries
+            int chartW = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+            int chartH = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+            if(newX < 0) newX = 0;
+            if(newY < 0) newY = 0;
+            if(newX + InpPanelW > chartW) newX = chartW - InpPanelW;
+            if(newY + panelH > chartH) newY = chartH - panelH;
+            
+            // Only rebuild if position actually changed
+            if(newX != PanelX || newY != PanelY) {
+               PanelX = newX;
+               PanelY = newY;
+               CreateGUI();
+               ChartRedraw();
+            }
+         } else {
+            // Mouse released — end drag
+            g_IsDragging = false;
+            ChartSetInteger(0, CHART_MOUSE_SCROLL, g_ChartScrollSaved);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Logic Handlers (Using State Vars)                                |
+//+------------------------------------------------------------------+
+void AdjustLotOrRisk(int direction) {
+   if(g_IsManualLotMode) {
+       // Manual Lot Adjustment
+       double minPool = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+       double maxPool = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+       double stepPool = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+       
+       // Change by 0.01 regardless of step if possible, otherwise by step
+       double change = (stepPool > 0.01) ? stepPool : 0.01;
+       
+       g_LotSize += (direction * change);
+       
+       // Snap to step
+       if(stepPool > 0) g_LotSize = MathFloor(g_LotSize / stepPool + 0.5) * stepPool;
+       
+       if(g_LotSize < minPool) g_LotSize = minPool;
+       if(g_LotSize > maxPool) g_LotSize = maxPool;
+       
+       ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_LotSize, 2));
+       UpdateCalculatedLot(); // Update margin/info
+   } else {
+       // Risk Adjustment
+       g_RiskUnits += (direction * InpRiskStep);
+       if(g_RiskUnits < 0.001) g_RiskUnits = 0.001;
+       
+       ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3));
+       UpdateCalculatedLot();
+   }
+}
+
+void ToggleLotMode() {
+   g_IsManualLotMode = !g_IsManualLotMode;
+   // Refresh UI (short labels fit 95px column, no clipping)
+   if(ObjectFind(0, BTN_TOGGLE_MODE) >= 0) {
+        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TEXT, g_IsManualLotMode ? "Manual Lot O/P" : "Risk Units O/P");
+        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (O/P adjust)" : "Risk Units mode (O/P adjust)");
+   }
+   
+   // Refresh Value in Edit Box
+   if(g_IsManualLotMode) {
+       ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_LotSize, 2));
+   } else {
+       ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3));
+   }
+   
+   // Hard refresh of inputs to reset read-only status or labels if we change them heavily
+   // For now, EDIT_RISK is used for both. EDIT_LOT acts as secondary info.
+   UpdateCalculatedLot();
+}
+
+void UpdateCalculatedLot() {
+   if(IsMinimized) return;
+   
+   double min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double max = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(min <= 0) min = 0.01;
+   if(max <= 0) max = 100.0;
+   if(step <= 0) step = 0.01;
+    
+   if(!g_IsManualLotMode) {
+      double accountCapital = AccountInfoDouble(ACCOUNT_BALANCE);
+      if(accountCapital <= 0) { g_LotSize = min; }
+      else {
+         double riskPct = g_RiskUnits * 0.1; 
+         double riskAmount = accountCapital * (riskPct / 100.0);
+         double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+         
+         if(tickValue > 0 && tickSize > 0 && point > 0) {
+            long riskPts = (g_SL_Points > 0) ? g_SL_Points : 100;
+            double denominator = riskPts * point * (tickValue / tickSize);
+            if(denominator > 0) {
+               double lot = riskAmount / denominator;
+               if(lot < min) lot = min;
+               if(lot > max) lot = max;
+               lot = MathFloor(lot / step + 0.5) * step;
+               
+               if(InpIncLotStep && TradeSequence > 0) {
+                  lot += (TradeSequence * step);
+                  if(lot > max) lot = max;
+               }
+               g_LotSize = lot;
+            }
+         }
+      }
+   } else {
+      if(g_LotSize < min) g_LotSize = min;
+      if(g_LotSize > max) g_LotSize = max;
+      g_LotSize = MathFloor(g_LotSize / step + 0.5) * step;
+   }
+   
+   ObjectSetString(0, EDIT_LOT, OBJPROP_TEXT, DoubleToString(g_LotSize, 2));
+   if(g_IsManualLotMode)
+      ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_LotSize, 2));
+
+   UpdateMarginInfo();
+   UpdateBalance();
+   DrawVisualLines();
+}
+
+void UpdateMarginInfo() {
+   if(!IsPanelVisible || IsMinimized) return;
+   if(g_LotSize <= 0) return;
+   if(ObjectFind(0, LBL_MARG_REQ) < 0) return;
+   
+   double requiredMargin = 0;
+   double askPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(askPrice > 0 && !OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, g_LotSize, askPrice, requiredMargin))
+      requiredMargin = 0;  // keep 0 on failure
+   
+   string margText;
+   if(requiredMargin >= 1000000) margText = "$" + DoubleToString(requiredMargin / 1000000.0, 1) + "M";
+   else if(requiredMargin >= 1000) margText = "$" + DoubleToString(requiredMargin / 1000.0, 1) + "K";
+   else margText = "$" + DoubleToString(requiredMargin, 2);
+   ObjectSetString(0, LBL_MARG_REQ, OBJPROP_TEXT, "Required Margin: " + margText);
+}
+
+void AdjustScale(double change) {
+   g_ScalePct += change;
+   if(g_ScalePct < 5) g_ScalePct = 5;
+   if(g_ScalePct > 100) g_ScalePct = 100;
+   
+   ObjectSetString(0, EDIT_SCALE, OBJPROP_TEXT, DoubleToString(g_ScalePct, 0));
+}
+
+void ScaleOut() {
+   if(g_ScalePct <= 0 || g_ScalePct > 100) return;
+   
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double stepVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(minVol <= 0) minVol = 0.01;
+   if(stepVol <= 0) stepVol = 0.01;
+   
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         double vol = PositionGetDouble(POSITION_VOLUME);
+         double closeVol = vol * (g_ScalePct / 100.0);
+         closeVol = MathFloor(closeVol / stepVol) * stepVol;
+         if(closeVol >= minVol) {
+            if(!trade.PositionClosePartial(ticket, closeVol))
+               PrintFormat("ScaleOut Error ticket %I64u: %d", ticket, GetLastError());
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Adjust Entry Line Helper (Absolute Price)                        |
+//+------------------------------------------------------------------+
+void AdjustEntryLine(int step) {
+   if(g_ExecMode == MODE_MARKET) return;
+   
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0) return;
+
+   if(g_PendingPrice <= 0) g_PendingPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + (100 * point);
+
+   g_PendingPrice += (step * point);
+   if(g_PendingPrice <= 0) g_PendingPrice = point;
+   
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   g_PendingPrice = NormalizeDouble(g_PendingPrice, digits);
+   
+   DrawVisualLines(true);
+}
+
+//+------------------------------------------------------------------+
+//| Adjust Edit Helper (Updates State & GUI)                         |
+//+------------------------------------------------------------------+
+void AdjustEdit(string name, int step) {
+   if(name == EDIT_SL) {
+      g_SL_Points += step;
+      if(g_SL_Points < 0) g_SL_Points = 0;
+      ObjectSetString(0, name, OBJPROP_TEXT, IntegerToString(g_SL_Points));
+   }
+   else if(name == EDIT_TP) {
+      g_TP_Points += step;
+      if(g_TP_Points < 0) g_TP_Points = 0;
+      ObjectSetString(0, name, OBJPROP_TEXT, IntegerToString(g_TP_Points));
+   }
+   
+   DrawVisualLines(true);
+   UpdateRR();
+}
+
+void AssignSLToAll() {
+   if(g_SL_Points <= 0) return;
+   if(_Point <= 0) return;
+
+   bool useVisualSL = (ObjectFind(0, LINE_SL) >= 0);
+   double visualSLPrice = useVisualSL ? ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) : 0;
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      
+      double newSL = 0;
+      if(useVisualSL) {
+         newSL = visualSLPrice;
+      } else {
+         long type = PositionGetInteger(POSITION_TYPE);
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         newSL = (type == POSITION_TYPE_BUY) ? openPrice - g_SL_Points * _Point : openPrice + g_SL_Points * _Point;
+      }
+      newSL = NormalizeDouble(newSL, digits);
+      if(newSL > 0 && !trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP)))
+         PrintFormat("AssignSL pos %I64u Error: %d", ticket, GetLastError());
+   }
+
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(!OrderSelect(ticket)) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol || OrderGetInteger(ORDER_MAGIC) != InpMagic) continue;
+      
+      long type = OrderGetInteger(ORDER_TYPE);
+      double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+      
+      double newSL = 0;
+      if(useVisualSL) {
+         newSL = visualSLPrice;
+      } else {
+         if(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT)
+            newSL = openPrice - g_SL_Points * _Point;
+         else if(type == ORDER_TYPE_SELL_STOP || type == ORDER_TYPE_SELL_LIMIT)
+            newSL = openPrice + g_SL_Points * _Point;
+      }
+      
+      if(newSL > 0) {
+         newSL = NormalizeDouble(newSL, digits);
+         if(!trade.OrderModify(ticket, openPrice, newSL, OrderGetDouble(ORDER_TP), (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME), (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION)))
+            PrintFormat("AssignSL pend %I64u Error: %d", ticket, GetLastError());
+      }
+   }
+}
+
+void AssignTPToAll() {
+   if(g_TP_Points <= 0) return;
+   if(_Point <= 0) return;
+
+   bool useVisualTP = (ObjectFind(0, LINE_TP) >= 0);
+   double visualTPPrice = useVisualTP ? ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) : 0;
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      
+      double newTP = 0;
+      if(useVisualTP) {
+         newTP = visualTPPrice;
+      } else {
+         long type = PositionGetInteger(POSITION_TYPE);
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         newTP = (type == POSITION_TYPE_BUY) ? openPrice + g_TP_Points * _Point : openPrice - g_TP_Points * _Point;
+      }
+      newTP = NormalizeDouble(newTP, digits);
+      if(newTP > 0 && !trade.PositionModify(ticket, PositionGetDouble(POSITION_SL), newTP))
+         PrintFormat("AssignTP pos %I64u Error: %d", ticket, GetLastError());
+   }
+
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(!OrderSelect(ticket)) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol || OrderGetInteger(ORDER_MAGIC) != InpMagic) continue;
+      
+      long type = OrderGetInteger(ORDER_TYPE);
+      double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+      
+      double newTP = 0;
+      if(useVisualTP) {
+         newTP = visualTPPrice;
+      } else {
+         if(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT)
+            newTP = openPrice + g_TP_Points * _Point;
+         else if(type == ORDER_TYPE_SELL_STOP || type == ORDER_TYPE_SELL_LIMIT)
+            newTP = openPrice - g_TP_Points * _Point;
+      }
+      
+      if(newTP > 0) {
+         newTP = NormalizeDouble(newTP, digits);
+         if(!trade.OrderModify(ticket, openPrice, OrderGetDouble(ORDER_SL), newTP, (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME), (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION)))
+            PrintFormat("AssignTP pend %I64u Error: %d", ticket, GetLastError());
+      }
+   }
+}
+
+void ExecuteOrder(ENUM_ORDER_TYPE type) {
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) { Alert("AutoTrading OFF!"); return; }
+   
+   UpdateCalculatedLot();
+   
+   double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(g_LotSize < minVol || g_LotSize <= 0) {
+      Print("ExecuteOrder aborted: lot size ", g_LotSize, " below minimum ", minVol);
+      return;
+   }
+   
+   double sl = 0, tp = 0;
+   double price = 0;
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0) { Print("ExecuteOrder aborted: invalid SYMBOL_POINT"); return; }
+   
+   bool useVisualSL = (ObjectFind(0, LINE_SL) >= 0);
+   bool useVisualTP = (ObjectFind(0, LINE_TP) >= 0);
+   
+   if(g_ExecMode == MODE_MARKET) {
+      price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   } else {
+      if(ObjectFind(0, LINE_ENTRY) >= 0)
+         price = ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE);
+      else {
+         if(g_PendingPrice == 0) g_PendingPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + (100 * point);
+         price = g_PendingPrice;
+      }
+   }
+   price = NormalizeDouble(price, digits);
+   if(price <= 0) { Print("ExecuteOrder aborted: invalid price"); return; }
+   
+   if(EnableSL) {
+      if(useVisualSL)
+         sl = ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE);
+      else if(g_SL_Points > 0)
+         sl = (type == ORDER_TYPE_BUY) ? price - g_SL_Points * point : price + g_SL_Points * point;
+      if(sl > 0) sl = NormalizeDouble(sl, digits);
+   }
+   
+   if(EnableTP) {
+      if(useVisualTP)
+         tp = ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE);
+      else if(g_TP_Points > 0)
+         tp = (type == ORDER_TYPE_BUY) ? price + g_TP_Points * point : price - g_TP_Points * point;
+      if(tp > 0) tp = NormalizeDouble(tp, digits);
+   }
+   
+   // Sanity: SL must be on correct side of price
+   if(sl > 0) {
+      if(type == ORDER_TYPE_BUY && sl >= price) { Print("SL above buy price, clearing SL"); sl = 0; }
+      if(type == ORDER_TYPE_SELL && sl <= price) { Print("SL below sell price, clearing SL"); sl = 0; }
+   }
+   if(tp > 0) {
+      if(type == ORDER_TYPE_BUY && tp <= price) { Print("TP below buy price, clearing TP"); tp = 0; }
+      if(type == ORDER_TYPE_SELL && tp >= price) { Print("TP above sell price, clearing TP"); tp = 0; }
+   }
+   
+   if(g_ExecMode == MODE_MARKET) {
+      bool ok = false;
+      if(type == ORDER_TYPE_BUY)
+         ok = trade.Buy(g_LotSize, _Symbol, 0, sl, tp, "Buy");
+      else
+         ok = trade.Sell(g_LotSize, _Symbol, 0, sl, tp, "Sell");
+      
+      if(ok) TradeSequence++;
+      else   PrintFormat("Market %s Error: %d", (type == ORDER_TYPE_BUY ? "Buy" : "Sell"), GetLastError());
+   } else {
+      ENUM_ORDER_TYPE pendingType;
+      string comment;
+      double curAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double curBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      
+      if(type == ORDER_TYPE_BUY) {
+         pendingType = (price > curAsk) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_BUY_LIMIT;
+         comment = (pendingType == ORDER_TYPE_BUY_STOP) ? "Buy Stop" : "Buy Limit";
+      } else {
+         pendingType = (price < curBid) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_SELL_LIMIT;
+         comment = (pendingType == ORDER_TYPE_SELL_STOP) ? "Sell Stop" : "Sell Limit";
+      }
+      
+      // OrderOpen signature: symbol, type, volume, limitPrice, price, sl, tp, ...
+      // For LIMIT orders: limitPrice = the trigger price, price = 0
+      // For STOP orders:  limitPrice = 0, price = the trigger price
+      double paramLimit = 0.0;
+      double paramPrice = price;
+      if(pendingType == ORDER_TYPE_BUY_LIMIT || pendingType == ORDER_TYPE_SELL_LIMIT) {
+         paramLimit = price;
+         paramPrice = price;
+      }
+      
+      if(trade.OrderOpen(_Symbol, pendingType, g_LotSize, paramLimit, paramPrice, sl, tp, ORDER_TIME_GTC, 0, comment))
+         TradeSequence++;
+      else
+         PrintFormat("OrderOpen %s Error: %d", comment, GetLastError());
+   }
+}
+
+// Filter: 0=All, 1=Buy, 2=Sell, 3=Win, 4=Loss
+void ClosePositions(int filter) {
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         bool shouldClose = false;
+         long type = PositionGetInteger(POSITION_TYPE);
+         double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+         
+         if(filter == 0) shouldClose = true;
+         else if(filter == 1 && type == POSITION_TYPE_BUY) shouldClose = true;
+         else if(filter == 2 && type == POSITION_TYPE_SELL) shouldClose = true;
+         else if(filter == 3 && profit > 0) shouldClose = true;
+         else if(filter == 4 && profit < 0) shouldClose = true;
+         
+         if(shouldClose) {
+            if(!trade.PositionClose(ticket))
+               PrintFormat("Close Error ticket %I64u: %d", ticket, GetLastError());
+         }
+      }
+   }
+}
+
+void ClosePending() {
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderSelect(ticket) && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic) {
+         if(!trade.OrderDelete(ticket))
+            PrintFormat("ClosePending Error ticket %I64u: %d", ticket, GetLastError());
+      }
+   }
+}
+
+// V = Flip Buy/Sell intention only (no effect on open positions or pending orders)
+void FlipSide() {
+   IsLongMode = !IsLongMode;
+   DrawVisualLines(true);
+   UpdateToggleState();
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Visual Lines - Optimized                                         |
+//+------------------------------------------------------------------+
+bool DrawVisualLines(bool forceUpdate = false) {
+   if(!IsPanelVisible) {
+      if(ObjectFind(0, LINE_SL) >= 0) ObjectDelete(0, LINE_SL);
+      if(ObjectFind(0, LINE_TP) >= 0) ObjectDelete(0, LINE_TP);
+      if(ObjectFind(0, LINE_ENTRY) >= 0) ObjectDelete(0, LINE_ENTRY);
+      return false;
+   }
+   
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ask <= 0 || bid <= 0 || _Point <= 0) return false;
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   
+   double entryPrice = 0;
+   
+   if(g_ExecMode == MODE_MARKET) {
+      entryPrice = IsLongMode ? ask : bid;
+      if(ObjectFind(0, LINE_ENTRY) >= 0) ObjectDelete(0, LINE_ENTRY);
+   } else {
+       // PENDING - Absolute Price
+       double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+       if(g_PendingPrice == 0) g_PendingPrice = ask + (100 * point);
+       
+       entryPrice = g_PendingPrice;
+       
+       if(ObjectFind(0, LINE_ENTRY) < 0) {
+           ObjectCreate(0, LINE_ENTRY, OBJ_HLINE, 0, 0, entryPrice);
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_COLOR, C'220,220,220'); // Light Gray (grayscale)
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_STYLE, STYLE_SOLID);
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_WIDTH, 2); // Bolder Price Line
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_SELECTABLE, true);
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_SELECTED, true);
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_ZORDER, 100);   // On top for easy drag
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_BACK, false);   // Foreground
+       } else {
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_ZORDER, 100);
+           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_BACK, false);
+           if((forceUpdate || !ObjectGetInteger(0, LINE_ENTRY, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE) != entryPrice) {
+               ObjectMove(0, LINE_ENTRY, 0, 0, entryPrice);
+           }
+       }
+   }
+
+   // Optimization Check
+   if(entryPrice == last_Mid && g_SL_Points == last_SL && g_TP_Points == last_TP && g_LotSize == last_Lot && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && !forceUpdate) {
+      return false;
+   }
+   
+   last_Mid  = entryPrice; 
+   last_SL   = (int)g_SL_Points;
+   last_TP   = (int)g_TP_Points;
+   last_Lot  = g_LotSize;
+   last_Mode = IsLongMode;
+   last_ExecMode = g_ExecMode;
+   
+   bool changed = false;
+
+   // --- SL Logic ---
+   if(EnableSL && g_SL_Points > 0) {
+      double price = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
+      price = NormalizeDouble(price, digits);
+      
+      double profit = 0;
+      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, price, profit)) profit = 0;
+      
+      string slTooltip = StringFormat("SL: %d pts (%s %.2f)", g_SL_Points, (profit >= 0 ? "+" : ""), profit);
+      
+      if(ObjectFind(0, LINE_SL) < 0) {
+         ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, price);
+         ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, InpClrSL);
+         ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, 2); // Bolder SL Line
+         ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTABLE, true);
+         ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTED, true);
+         ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, 100);   // On top for easy drag
+         ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);   // Foreground
+         ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, slTooltip);
+         changed = true;
+      } else {
+         ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, 100);
+         ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
+         if(ObjectGetString(0, LINE_SL, OBJPROP_TOOLTIP) != slTooltip) {
+             ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, slTooltip);
+             changed = true;
+         }
+         if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != price) {
+             ObjectMove(0, LINE_SL, 0, 0, price);
+             changed = true;
+         }
+      }
+   } else {
+      if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
+   }
+
+   // --- TP Logic ---
+   if(EnableTP && g_TP_Points > 0) {
+      double price = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
+      price = NormalizeDouble(price, digits);
+      
+      double profit = 0;
+      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, price, profit)) profit = 0;
+      
+      string tpTooltip = StringFormat("TP: %d pts (%s %.2f)", g_TP_Points, (profit >= 0 ? "+" : ""), profit);
+      
+      if(ObjectFind(0, LINE_TP) < 0) {
+          ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, price);
+          ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, InpClrTP);
+          ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_DOT);
+          ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, 2); // Bolder TP Line
+          ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
+          ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
+          ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, 100);   // On top for easy drag
+          ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);   // Foreground
+          ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, tpTooltip);
+          changed = true;
+      } else {
+          ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, 100);
+          ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
+          if(ObjectGetString(0, LINE_TP, OBJPROP_TOOLTIP) != tpTooltip) {
+              ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, tpTooltip);
+              changed = true;
+          }
+          if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != price) {
+              ObjectMove(0, LINE_TP, 0, 0, price);
+              changed = true;
+          }
+      }
+   } else {
+      if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
+   }
+   return changed;
+}
+
+void UpdateToggleState() {
+   if(IsMinimized) return;
+   
+   if(ObjectFind(0, BTN_USE_SL) >= 0) {
+      ObjectSetInteger(0, BTN_USE_SL, OBJPROP_BGCOLOR, EnableSL ? InpClrActive : InpClrInactive);
+      ObjectSetString(0, BTN_USE_SL, OBJPROP_TEXT, EnableSL ? "✔" : "✖");
+   }
+   if(ObjectFind(0, BTN_USE_TP) >= 0) {
+      ObjectSetInteger(0, BTN_USE_TP, OBJPROP_BGCOLOR, EnableTP ? InpClrActive : InpClrInactive);
+      ObjectSetString(0, BTN_USE_TP, OBJPROP_TEXT, EnableTP ? "✔" : "✖");
+   }
+       
+   if(ObjectFind(0, BTN_MODE) >= 0) {
+      string mText = (g_ExecMode == MODE_PENDING) ? "Pending (TAB)(,/.)" : "Market (TAB)";
+      ObjectSetString(0, BTN_MODE, OBJPROP_TEXT, mText);
+      ObjectSetString(0, BTN_MODE, OBJPROP_TOOLTIP, "TAB to Toggle Mode. Drag line to adjust price.");
+      ObjectSetInteger(0, BTN_MODE, OBJPROP_BGCOLOR, (g_ExecMode != MODE_MARKET) ? InpClrActive : InpClrHeader);
+   }
+   
+   if(g_ExecMode == MODE_MARKET) {
+      if(ObjectFind(0, BTN_ENTRY_UP) >= 0) ObjectDelete(0, BTN_ENTRY_UP);
+      if(ObjectFind(0, BTN_ENTRY_DN) >= 0) ObjectDelete(0, BTN_ENTRY_DN);
+   }
+   
+   // Only rebuild GUI when mode/direction changes require layout changes (entry arrows appear/disappear)
+   if(IsPanelVisible && !IsMinimized) {
+      static ENUM_EXEC_MODE s_lastMode = MODE_MARKET;
+      static bool s_lastLong = true;
+      if(g_ExecMode != s_lastMode || IsLongMode != s_lastLong) {
+         CreateGUI();
+         s_lastMode = g_ExecMode;
+         s_lastLong = IsLongMode;
+      }
+   }
+   
+   UpdateCalculatedLot();
+   DrawVisualLines(true);
+   ChartRedraw();
+}
+
+void ResetBtn(string name) { ObjectSetInteger(0, name, OBJPROP_STATE, false); }
+
+//+------------------------------------------------------------------+
+//| Click-and-Hold Repeat System                                      |
+//+------------------------------------------------------------------+
+bool IsMouseOverBtn(string btnName, int mx, int my) {
+   if(ObjectFind(0, btnName) < 0) return false;
+   int bx = (int)ObjectGetInteger(0, btnName, OBJPROP_XDISTANCE);
+   int by = (int)ObjectGetInteger(0, btnName, OBJPROP_YDISTANCE);
+   int bw = (int)ObjectGetInteger(0, btnName, OBJPROP_XSIZE);
+   int bh = (int)ObjectGetInteger(0, btnName, OBJPROP_YSIZE);
+   return (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh);
+}
+
+int HitTestAdjuster(int mx, int my) {
+   if(IsMouseOverBtn(BTN_SL_UP, mx, my))    return REPEAT_SL_UP;
+   if(IsMouseOverBtn(BTN_SL_DN, mx, my))    return REPEAT_SL_DN;
+   if(IsMouseOverBtn(BTN_TP_UP, mx, my))    return REPEAT_TP_UP;
+   if(IsMouseOverBtn(BTN_TP_DN, mx, my))    return REPEAT_TP_DN;
+   if(IsMouseOverBtn(BTN_RISK_UP, mx, my))  return REPEAT_RISK_UP;
+   if(IsMouseOverBtn(BTN_RISK_DN, mx, my))  return REPEAT_RISK_DN;
+   if(IsMouseOverBtn(BTN_SCALE_UP, mx, my)) return REPEAT_SCALE_UP;
+   if(IsMouseOverBtn(BTN_SCALE_DN, mx, my)) return REPEAT_SCALE_DN;
+   if(IsMouseOverBtn(BTN_ENTRY_UP, mx, my)) return REPEAT_ENTRY_UP;
+   if(IsMouseOverBtn(BTN_ENTRY_DN, mx, my)) return REPEAT_ENTRY_DN;
+   return REPEAT_NONE;
+}
+
+void StartRepeat(int action) {
+   g_RepeatAction = action;
+   g_RepeatActive = true;
+   EventKillTimer();
+   EventSetMillisecondTimer(120); // Fast repeat ~8 adjustments/sec
+}
+
+void StopRepeat() {
+   g_RepeatActive = false;
+   g_RepeatAction = REPEAT_NONE;
+   EventKillTimer();
+   EventSetTimer(1); // Restore normal 1-second timer
+   
+   // Reset all adjuster button states
+   ResetBtn(BTN_SL_UP); ResetBtn(BTN_SL_DN);
+   ResetBtn(BTN_TP_UP); ResetBtn(BTN_TP_DN);
+   ResetBtn(BTN_RISK_UP); ResetBtn(BTN_RISK_DN);
+   ResetBtn(BTN_SCALE_UP); ResetBtn(BTN_SCALE_DN);
+   ResetBtn(BTN_ENTRY_UP); ResetBtn(BTN_ENTRY_DN);
+   ChartRedraw();
+}
+
+void FireRepeatAction() {
+   switch(g_RepeatAction) {
+      case REPEAT_RISK_UP:  AdjustLotOrRisk(1); break;
+      case REPEAT_RISK_DN:  AdjustLotOrRisk(-1); break;
+      case REPEAT_SL_UP:    AdjustEdit(EDIT_SL, InpAdjStep); break;
+      case REPEAT_SL_DN:    AdjustEdit(EDIT_SL, -InpAdjStep); break;
+      case REPEAT_TP_UP:    AdjustEdit(EDIT_TP, InpAdjStep); break;
+      case REPEAT_TP_DN:    AdjustEdit(EDIT_TP, -InpAdjStep); break;
+      case REPEAT_SCALE_UP: AdjustScale(5); break;
+      case REPEAT_SCALE_DN: AdjustScale(-5); break;
+      case REPEAT_ENTRY_UP: AdjustEntryLine(InpEntryStep); break;
+      case REPEAT_ENTRY_DN: AdjustEntryLine(-InpEntryStep); break;
+   }
+}
+//+------------------------------------------------------------------+
+//| GUI Creation                                                     |
+//+------------------------------------------------------------------+
+void CreateGUI() {
+   // Reset Cache to force UI update
+   last_PnL       = -DBL_MAX;
+   last_Positions = -1;
+   last_PnLState  = -99;
+   last_AlgoState = !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED); // Force mismatch
+   last_Mid       = 0;
+   last_SL        = -1; // Force line redraw
+   
+   if(!IsPanelVisible) return;
+   int y = PanelY;
+   int panelH = IsMinimized ? HEADER_H : MathMax(InpPanelH, 370);  // ensure min height for footer
+
+   ObjectCreate(0, BG_PANEL, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_XDISTANCE, PanelX); ObjectSetInteger(0, BG_PANEL, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_XSIZE, InpPanelW);    ObjectSetInteger(0, BG_PANEL, OBJPROP_YSIZE, panelH);
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_BGCOLOR, InpClrBg);
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_COLOR, InpClrBorder);
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_ZORDER, 0);
+
+   ObjectCreate(0, BG_HEADER, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, BG_HEADER, OBJPROP_XDISTANCE, PanelX); ObjectSetInteger(0, BG_HEADER, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, BG_HEADER, OBJPROP_XSIZE, InpPanelW);    ObjectSetInteger(0, BG_HEADER, OBJPROP_YSIZE, HEADER_H);
+   ObjectSetInteger(0, BG_HEADER, OBJPROP_BGCOLOR, InpClrHeader);
+   ObjectSetInteger(0, BG_HEADER, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, BG_HEADER, OBJPROP_COLOR, InpClrBorder);
+   ObjectSetInteger(0, BG_HEADER, OBJPROP_ZORDER, 1);
+
+   // Header row: single baseline for PnL and Timer (same font size = same row)
+   int hPad = CONTAINER_PAD;
+   const int HEADER_LBL_FONT = 10;   // Same size for PnL and Timer so they align on one row
+   int headerRowY = y + 10;
+
+   CreateLbl(LBL_PNL, "PnL: 0.00 (0)", PanelX + hPad, headerRowY, InpClrInfoPnLBase, HEADER_LBL_FONT, true);
+
+   int btnGroupLeft = PanelX + InpPanelW - hPad - 58;  // Left edge of Dock button
+   int timerGap = 8;
+   int timerW = 58;  // Width for "00:00" / "00:00:00" at same font as PnL
+   CreateLbl(LBL_TIMER, "00:00", btnGroupLeft - timerGap - timerW, headerRowY, InpClrTimer, HEADER_LBL_FONT, true);
+
+   // Header buttons (top-right, with padding)
+   int btnY = y + 13;
+   CreateBtn(BTN_MINMAX, IsMinimized ? "_" : "_", PanelX + InpPanelW - hPad - 18, btnY - 9, 18, 18, InpClrInactive, 9);
+   ObjectSetString(0, BTN_MINMAX, OBJPROP_TOOLTIP, "Minimize (F) / Hide (R)");
+   CreateBtn(BTN_RESET, "_", PanelX + InpPanelW - hPad - 38, btnY - 9, 18, 18, InpClrInactive, 10);
+   ObjectSetString(0, BTN_RESET, OBJPROP_TOOLTIP, "Reset Position to Default");
+   CreateBtn(BTN_DOCK, g_IsDocked ? "_" : "_", PanelX + InpPanelW - hPad - 58, btnY - 9, 18, 18, InpClrInactive, 9);
+   {
+      string keyHint = (InpKeyDock >= 32 && InpKeyDock <= 126) ? CharToString((uchar)InpKeyDock) : IntegerToString(InpKeyDock);
+      ObjectSetString(0, BTN_DOCK, OBJPROP_TOOLTIP, "Dock/Lock Panel (" + keyHint + ")");
+   }
+
+   if(IsMinimized) return;
+
+   // Thin separator below header (visual hierarchy)
+   int sepY = y + HEADER_H;
+   ObjectCreate(0, SEP_HEAD, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_XDISTANCE, PanelX);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_YDISTANCE, sepY);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_XSIZE, InpPanelW);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_YSIZE, SEP_H);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_BGCOLOR, InpClrBorder);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_COLOR, InpClrBorder);
+   ObjectSetInteger(0, SEP_HEAD, OBJPROP_ZORDER, 1);
+
+   y += HEADER_H + SEP_H + ROW_GAP;  // Gap before inputs (header + separator + padding)
+   
+   // --- INPUT SECTION: Strict grid — 95px label column, prevents shift/clipping ---
+   int inpLeft = PanelX + CONTAINER_PAD;
+   int colLabel = inpLeft;
+   int colArrow1 = inpLeft + LABEL_W + GRID_GAP;
+   int colEdit   = colArrow1 + ARROW_W + GRID_GAP;
+   int colArrow2 = colEdit + EDIT_MAIN_W + GRID_GAP;
+   int colToggle = colArrow2 + ARROW_W + GRID_GAP;
+   int colAction = colToggle + TOGGLE_W + GRID_GAP;
+   int panelRight = PanelX + InpPanelW - CONTAINER_PAD;
+   int actionW = panelRight - colAction;  // Aligns SL, TP, Scale Out to same right edge
+   int inputsHeight = 4 * (INP_ROW_H + ROW_GAP) - ROW_GAP + 16;  // 4 rows + top/bottom pad
+   
+   ObjectCreate(0, BG_INPUTS, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, BG_INPUTS, OBJPROP_XDISTANCE, PanelX); ObjectSetInteger(0, BG_INPUTS, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, BG_INPUTS, OBJPROP_XSIZE, InpPanelW);  ObjectSetInteger(0, BG_INPUTS, OBJPROP_YSIZE, inputsHeight);
+   ObjectSetInteger(0, BG_INPUTS, OBJPROP_BGCOLOR, InpClrGroupBox); ObjectSetInteger(0, BG_INPUTS, OBJPROP_BORDER_TYPE, BORDER_FLAT); ObjectSetInteger(0, BG_INPUTS, OBJPROP_ZORDER, 1);
+
+   y += 8;  // Internal top padding
+   
+   // Row 1: Mode Toggle & Lot/Risk Inputs (label column aligned with Stop loss / Take profit)
+   CreateBtn(BTN_TOGGLE_MODE, g_IsManualLotMode ? "Manual Lot O/P" : "Risk Units O/P", colLabel, y, LABEL_W, EDIT_H, InpClrGroupBox, 8);
+   ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_BORDER_COLOR, InpClrGroupBox);
+   ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_COLOR, InpClrText);
+   ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_ALIGN, ALIGN_LEFT);
+   ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (O/P adjust)" : "Risk Units mode (O/P adjust)"); 
+   CreateBtn(BTN_RISK_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
+   CreateEdit(EDIT_RISK, g_IsManualLotMode ? DoubleToString(g_LotSize, 2) : DoubleToString(g_RiskUnits, 3), colEdit, y, EDIT_MAIN_W);
+   CreateBtn(BTN_RISK_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
+   CreateLbl(PREFIX+"L1", "Lot", colToggle, y + 2, InpClrText, 8, true);
+   CreateEdit(EDIT_LOT, DoubleToString(g_LotSize, 2), colAction, y, EDIT_MAIN_W);
+   ObjectSetInteger(0, EDIT_LOT, OBJPROP_READONLY, true); 
+   if(g_IsManualLotMode) {
+      ObjectSetInteger(0, EDIT_LOT, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, EDIT_LOT, OBJPROP_SELECTED, false);
+   }
+
+   // Row 2: Stop loss (grid-aligned)
+   y += INP_ROW_H + ROW_GAP;
+   CreateLbl(PREFIX+"L2", "SL (J) (K) (L)", colLabel, y + 2, InpClrText, 8, false); 
+   CreateBtn(BTN_SL_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
+   CreateEdit(EDIT_SL, IntegerToString(g_SL_Points), colEdit, y, EDIT_MAIN_W); 
+   CreateBtn(BTN_SL_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
+   CreateBtn(BTN_USE_SL, EnableSL ? "✔" : "✖", colToggle, y, TOGGLE_W, EDIT_H, EnableSL ? InpClrActive : InpClrInactive, 8);
+   CreateBtn(BTN_ASGN_SL, "SL (G)", colAction, y, actionW, EDIT_H, InpClrAsgnSL, 8);
+   ObjectSetString(0, BTN_ASGN_SL, OBJPROP_TOOLTIP, "Apply SL line to all positions/pending (key: G)");
+
+   // Row 3: Take profit (grid-aligned)
+   y += INP_ROW_H + ROW_GAP;
+   CreateLbl(PREFIX+"L3", "TP (B) (N) (M)", colLabel, y + 2, InpClrText, 8, false); 
+   CreateBtn(BTN_TP_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
+   CreateEdit(EDIT_TP, IntegerToString(g_TP_Points), colEdit, y, EDIT_MAIN_W); 
+   CreateBtn(BTN_TP_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
+   CreateBtn(BTN_USE_TP, EnableTP ? "✔" : "✖", colToggle, y, TOGGLE_W, EDIT_H, EnableTP ? InpClrActive : InpClrInactive, 8);
+   CreateBtn(BTN_ASGN_TP, "TP (H)", colAction, y, actionW, EDIT_H, InpClrAsgnTP, 8);
+   ObjectSetString(0, BTN_ASGN_TP, OBJPROP_TOOLTIP, "Apply TP line to all positions/pending (key: H)");
+
+   // Row 4: Scale Out (grid-aligned)
+   y += INP_ROW_H + ROW_GAP;
+   CreateLbl(PREFIX+"L4", "Scale", colLabel, y + 2, InpClrText, 8, false);
+   CreateBtn(BTN_SCALE_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
+   CreateEdit(EDIT_SCALE, DoubleToString(g_ScalePct, 0), colEdit, y, EDIT_SCALE_W);
+   CreateBtn(BTN_SCALE_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
+   CreateBtn(BTN_SCALE, "Scale Out (S)", colToggle, y, panelRight - colToggle, EDIT_H, InpClrScale, 8);
+   ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (key: S)");
+
+   y += INP_ROW_H + ROW_GAP;  // Row gap before action block
+   
+   // Mode row: Market / Pending toggle
+   int pad = CONTAINER_PAD;
+   int arrowW = 20;
+   string modeText = "Market (TAB)";
+   if(g_ExecMode == MODE_PENDING) modeText = "Pending (TAB)(,/.)";
+   
+   if(g_ExecMode == MODE_PENDING) {
+      CreateBtn(BTN_MODE, modeText, PanelX + pad, y, 140, EDIT_H + 4, InpClrHeader, 8);
+      CreateBtn(BTN_ENTRY_DN, "▼", PanelX + 145, y, arrowW, EDIT_H + 4, InpClrActive, 8);
+      CreateBtn(BTN_ENTRY_UP, "▲", PanelX + 167, y, arrowW, EDIT_H + 4, InpClrActive, 8);
+      ObjectSetString(0, BTN_ENTRY_DN, OBJPROP_TOOLTIP, "Move Entry Line Down ( , )");
+      ObjectSetString(0, BTN_ENTRY_UP, OBJPROP_TOOLTIP, "Move Entry Line Up ( . )");
+   } else {
+      CreateBtn(BTN_MODE, modeText, PanelX + pad, y, InpPanelW - 2 * pad, EDIT_H + 4, InpClrHeader, 8);
+      if(ObjectFind(0, BTN_ENTRY_UP) >= 0) ObjectDelete(0, BTN_ENTRY_UP);
+      if(ObjectFind(0, BTN_ENTRY_DN) >= 0) ObjectDelete(0, BTN_ENTRY_DN);
+   }
+
+   y += EDIT_H + 4 + ROW_GAP;
+   int btnW = (InpPanelW - 2 * pad - COL_GAP) / 2; 
+   int fullBtnW = InpPanelW - 2 * pad;
+   
+   // --- PRIMARY BUTTON: Only show Buy in buy mode, Sell in sell mode ---
+   if(IsLongMode) {
+      CreateBtn(BTN_BUY, "BUY (Q)", PanelX + pad, y, fullBtnW, BTN_H, InpClrBuy, 10);
+      if(ObjectFind(0, BTN_SELL) >= 0) ObjectDelete(0, BTN_SELL);
+   } else {
+      CreateBtn(BTN_SELL, "SELL (W)", PanelX + pad, y, fullBtnW, BTN_H, InpClrSell, 10);
+      if(ObjectFind(0, BTN_BUY) >= 0) ObjectDelete(0, BTN_BUY);
+   }
+   
+   y += BTN_H + ROW_GAP; 
+   CreateBtn(BTN_REV, "FLIP (V)", PanelX + pad, y, btnW, 24, InpClrReverse, 9);
+   ObjectSetString(0, BTN_REV, OBJPROP_TOOLTIP, "Flip Buy/Sell intention only (key: V). No effect on positions or pending.");
+   CreateBtn(BTN_CLOSE, "Close All (E)", PanelX + pad + btnW + COL_GAP, y, btnW, 24, InpClrClose, 9);
+   ObjectSetString(0, BTN_CLOSE, OBJPROP_TOOLTIP, "Close all positions (key: E)");
+   
+   // --- CLOSE BY SIDE / RESULT ---
+   y += 24 + ROW_GAP;
+   int btnW2 = (InpPanelW - 2 * pad - COL_GAP) / 2;
+   CreateBtn(BTN_C_BUY, "Close Buys (Z)", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_BUY, OBJPROP_TOOLTIP, "Close all Buy positions (key: Z)");
+   CreateBtn(BTN_C_SELL, "Close Sells (X)", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_SELL, OBJPROP_TOOLTIP, "Close all Sell positions (key: X)");
+   y += 20 + ROW_GAP;
+   CreateBtn(BTN_C_WIN, "Close Wins (C)", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_WIN, OBJPROP_TOOLTIP, "Close positions in profit (key: C)");
+   CreateBtn(BTN_C_LOSS, "Close Losses (D)", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_LOSS, OBJPROP_TOOLTIP, "Close positions in loss (key: D)");
+   
+   y += 20 + ROW_GAP;
+   CreateBtn(BTN_C_PEND, "Cancel Pending (A)", PanelX + pad, y, fullBtnW, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_PEND, OBJPROP_TOOLTIP, "Cancel all pending orders (key: A)");
+
+   // --- FOOTER: Separator + stats (same order, cleaner hierarchy) ---
+   y += 20 + FOOTER_PAD;
+   ObjectCreate(0, SEP_FOOT, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_XDISTANCE, PanelX);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_XSIZE, InpPanelW);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_YSIZE, SEP_H);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_BGCOLOR, InpClrBorder);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_COLOR, InpClrBorder);
+   ObjectSetInteger(0, SEP_FOOT, OBJPROP_ZORDER, 1);
+   y += SEP_H + 6;
+
+   int fLeft = PanelX + FOOTER_LEFT;
+   int fCol2 = PanelX + FOOTER_COL2;   // Right column for 2-col footer grid (no overlap)
+
+   // Footer Row 1: Balance (left) — PnL/position count moved to header
+   if(InpShowBalance) CreateLbl(LBL_BALANCE, "Bal: $...", fLeft, y, InpClrInfoBal, 8, true);
+
+   y += FOOTER_ROW_H;
+   // Footer Row 2: Spread (left) | Pending (right) — organized 2-col
+   CreateLbl(LBL_SPREAD, "Spread: 0", fLeft, y, InpClrInfoSprdBase, 8, false);
+   CreateLbl(LBL_PEND, "Pending: 0", fCol2, y, InpClrInfoPendBase, 8, false);
+
+   y += FOOTER_ROW_H;
+   // Footer Row 3: R:R (left) | Position (right) — organized 2-col
+   CreateLbl(LBL_RR, "R:R = 1:0", fLeft, y, InpClrInfoRRWin, 8, false);
+   CreateLbl(LBL_POS_SUMMARY, "—", fCol2, y, InpClrInfoPosBase, 8, false);
+
+   y += FOOTER_ROW_H;
+   // Footer Row 4: Required Margin (full width)
+   CreateLbl(LBL_MARG_REQ, "Required Margin: $0", fLeft, y, InpClrInfoMarg, 8, false);
+
+   // Panel height: auto-sized to fit all content (Required Margin inside border)
+   int contentBottom = y + 18 + CONTAINER_PAD;  // Label height + bottom padding
+   g_PanelContentH = contentBottom - PanelY;
+   if(g_PanelContentH < 370) g_PanelContentH = 370;
+   ObjectSetInteger(0, BG_PANEL, OBJPROP_YSIZE, g_PanelContentH);
+
+   // Initialize delighter displays
+   UpdateRR();
+   UpdateSpread();
+   UpdatePendingCount();
+}
+void CreateEdit(string name, string text, int x, int y, int w) {
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, EDIT_H);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, InpClrInput);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpClrTextIn);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, InpClrBorder);
+   ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_CENTER);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetString(0, name, OBJPROP_FONT, FONT_MAIN);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 2);
+}
+
+void CreateBtn(string name, string text, int x, int y, int w, int h, color bg, int fontSize=9) {
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, InpClrText);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, InpClrBorder);
+   ObjectSetString(0, name, OBJPROP_FONT, FONT_MAIN);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetInteger(0, name, OBJPROP_STATE, false);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 2);
+}
+
+void CreateLbl(string name, string text, int x, int y, color clr, int fontSize=8, bool bold=false) {
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetString(0, name, OBJPROP_FONT, bold ? FONT_MAIN + " Bold" : FONT_MAIN);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 2);
+}
+
+void TogglePanel() {
+   IsPanelVisible = !IsPanelVisible;
+   
+   // Reset drag state on toggle
+   if(g_IsDragging) {
+      g_IsDragging = false;
+      ChartSetInteger(0, CHART_MOUSE_SCROLL, g_ChartScrollSaved);
+   }
+   
+   if(IsPanelVisible) { 
+      CreateGUI(); 
+      UpdateToggleState(); 
+      UpdateCalculatedLot();
+      DrawVisualLines(); 
+      ChartRedraw(); 
+   }
+    else { 
+       ObjectsDeleteAll(0, PREFIX); 
+       ChartRedraw(); 
+    }
+}
+
+//+------------------------------------------------------------------+
+//| DELIGHTER: Live Spread Display                                   |
+//+------------------------------------------------------------------+
+void UpdateSpread() {
+   if(!IsPanelVisible) return;
+   if(ObjectFind(0, LBL_SPREAD) < 0) return;
+   
+   long spreadPts = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   string spreadText = "Spread: " + IntegerToString(spreadPts);
+   ObjectSetString(0, LBL_SPREAD, OBJPROP_TEXT, spreadText);
+   
+   // Color code: low spread green, high spread red
+   color spreadClr = InpClrInfoSprdBase; // Default grey
+   if(spreadPts <= 20) spreadClr = InpClrInfoSprdGood;       // Good
+   else if(spreadPts <= 50) spreadClr = InpClrInfoSprdMed;  // Medium
+   else spreadClr = InpClrInfoSprdWide;                       // Wide
+   ObjectSetInteger(0, LBL_SPREAD, OBJPROP_COLOR, spreadClr);
+}
+
+//+------------------------------------------------------------------+
+//| DELIGHTER: Risk:Reward Ratio Display                             |
+//+------------------------------------------------------------------+
+void UpdateRR() {
+   if(!IsPanelVisible) return;
+   if(ObjectFind(0, LBL_RR) < 0) return;
+   
+   if(g_SL_Points > 0 && g_TP_Points > 0 && EnableSL && EnableTP) {
+      double rr = (double)g_TP_Points / (double)g_SL_Points;
+      string rrText = StringFormat("R:R = 1:%.1f", rr);
+      ObjectSetString(0, LBL_RR, OBJPROP_TEXT, rrText);
+      
+      // Color: favorable (>=1) green, unfavorable red
+      color rrClr = (rr >= 1.0) ? InpClrInfoRRWin : InpClrInfoRRLoss;
+      ObjectSetInteger(0, LBL_RR, OBJPROP_COLOR, rrClr);
+   } else {
+      ObjectSetString(0, LBL_RR, OBJPROP_TEXT, " ");
+      ObjectSetInteger(0, LBL_RR, OBJPROP_COLOR, InpClrHeader); // Hide completely (match header bg)
+   }
+}
+
+//+------------------------------------------------------------------+
+//| DELIGHTER: Live Pending Order Count                              |
+//+------------------------------------------------------------------+
+void UpdatePendingCount() {
+   if(!IsPanelVisible) return;
+   if(ObjectFind(0, LBL_PEND) < 0) return;
+   
+   int pendCount = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderSelect(ticket) && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic) pendCount++;
+   }
+   
+   string pendText = "Pending: " + IntegerToString(pendCount);
+   ObjectSetString(0, LBL_PEND, OBJPROP_TEXT, pendText);
+   
+   // Color: grey when 0, cyan when active
+   color pendClr = (pendCount > 0) ? InpClrInfoPendAct : InpClrInfoPendBase;
+   ObjectSetInteger(0, LBL_PEND, OBJPROP_COLOR, pendClr);
+}
+
+//+------------------------------------------------------------------+
+//| DELIGHTER: Position Summary (Net Volume)                         |
+//+------------------------------------------------------------------+
+void UpdatePositionSummary() {
+   if(!IsPanelVisible) return;
+   if(ObjectFind(0, LBL_POS_SUMMARY) < 0) return;
+   
+   double netVol = 0;
+   int buyCount = 0;
+   int sellCount = 0;
+   
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+             netVol += PositionGetDouble(POSITION_VOLUME);
+             buyCount++;
+         } else {
+             netVol -= PositionGetDouble(POSITION_VOLUME);
+             sellCount++;
+         }
+      }
+   }
+   
+   string text = "";
+   color clr = InpClrInfoPosBase;
+   
+   if(buyCount == 0 && sellCount == 0) {
+       text = " "; // Hide if flat (no open orders)
+   } else {
+       if(netVol > 0) {
+           text = "BUY " + DoubleToString(netVol, 2);
+           clr = InpClrInfoPosBuy; // Green
+       } else if(netVol < 0) {
+           text = "SELL " + DoubleToString(MathAbs(netVol), 2);
+           clr = InpClrInfoPosSell; // Red
+       } else {
+           text = "FLAT " + DoubleToString(MathAbs(netVol), 2); // Hedged perfectly?
+       }
+   }
+   
+   ObjectSetString(0, LBL_POS_SUMMARY, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, LBL_POS_SUMMARY, OBJPROP_COLOR, clr);
+}
