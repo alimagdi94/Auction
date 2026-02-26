@@ -1329,11 +1329,15 @@ bool DrawVisualLines(bool forceUpdate = false) {
     if(tRef <= 0) tRef = TimeCurrent();
     datetime tLabel = (datetime)((long)tRef - periodSec * ZONE_LABEL_BAR_OFFSET);
 
-     // --- SL Logic (only draw line + label when preview is ON) ---
-     double slPrice = 0;
-     if(g_ShowPreview && EnableSL && g_SL_Points > 0) {
-        slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
-        slPrice = NormalizeDouble(slPrice, digits);
+      // --- SL Logic (only draw line + label when preview is ON) ---
+      double slPrice = 0;
+      if(g_ShowPreview && EnableSL && g_SL_Points > 0) {
+         if(!forceUpdate && ObjectFind(0, LINE_SL) >= 0) {
+            slPrice = ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE);
+         } else {
+            slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
+         }
+         slPrice = NormalizeDouble(slPrice, digits);
         
         double slProfit = 0;
         if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
@@ -1356,9 +1360,10 @@ bool DrawVisualLines(bool forceUpdate = false) {
         if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)
            ObjectMove(0, LINE_SL, 0, 0, slPrice);
         
-        // Preview labels (text only, no background rectangle)
-        string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-        string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
+         // Preview labels (text only, no background rectangle)
+         string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+         long current_sl_pts = (long)MathRound(MathAbs(slPrice - entryPrice) / _Point);
+         string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)current_sl_pts, slProfit);
         int sx = 0, sy = 0;
         if(ChartTimePriceToXY(0, 0, tLabel, slPrice, sx, sy)) {
            if(ObjectFind(0, LBL_ZONE_SL) < 0) {
@@ -1379,11 +1384,15 @@ bool DrawVisualLines(bool forceUpdate = false) {
         if(TryDeleteObj(LBL_ZONE_SL)) changed = true;
      }
 
-     // --- TP Logic (only draw line + label when preview is ON) ---
-     double tpPrice = 0;
-     if(g_ShowPreview && EnableTP && g_TP_Points > 0) {
-        tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
-        tpPrice = NormalizeDouble(tpPrice, digits);
+      // --- TP Logic (only draw line + label when preview is ON) ---
+      double tpPrice = 0;
+      if(g_ShowPreview && EnableTP && g_TP_Points > 0) {
+         if(!forceUpdate && ObjectFind(0, LINE_TP) >= 0) {
+            tpPrice = ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE);
+         } else {
+            tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
+         }
+         tpPrice = NormalizeDouble(tpPrice, digits);
         
         double tpProfit = 0;
         if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
@@ -1406,9 +1415,10 @@ bool DrawVisualLines(bool forceUpdate = false) {
         if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)
            ObjectMove(0, LINE_TP, 0, 0, tpPrice);
         
-        // Preview labels (text only, no background rectangle)
-        string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-        string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
+         // Preview labels (text only, no background rectangle)
+         string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+         long current_tp_pts = (long)MathRound(MathAbs(tpPrice - entryPrice) / _Point);
+         string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)current_tp_pts, tpProfit);
         int tx = 0, ty = 0;
         if(ChartTimePriceToXY(0, 0, tLabel, tpPrice, tx, ty)) {
            if(ObjectFind(0, LBL_ZONE_TP) < 0) {
