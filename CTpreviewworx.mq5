@@ -43,7 +43,6 @@ input group "Visual Elements"
 input color    InpClrAsgnSL   = C'42,42,42';        // Assign SL (Charcoal)
 input color    InpClrAsgnTP   = C'42,42,42';       // Assign TP (Charcoal)
 input color    InpClrTimer    = C'255,255,255';     // Timer Color (White)
-input color    InpClrTimerTitle = C'168,168,168';   // Timer Title (Silver)
 input color    InpClrSL       = C'255,255,255';     // SL Line (White)
 input color    InpClrTP       = C'200,200,200';     // TP Line (Light Gray, grayscale)
 
@@ -52,7 +51,6 @@ input bool     InpShowPreview = true;               // Show zone preview by defa
 input color    InpClrZoneTPLabel = C'0,160,120';    // Target label text
 input color    InpClrZoneSLLabel = C'160,0,0';      // Stop label text
 input color    InpClrZoneHandle  = C'0,120,215';    // Preview line color (blue)
-input color    InpClrZoneLabelBg = C'30,30,30';     // Label background
 input color    InpClrZonePnLBox  = C'180,60,60';    // P&L text when loss
 
 input group "Information Colors (Grayscale)"
@@ -81,8 +79,36 @@ input int      InpPanelH      = 370;       // Panel Height (min to fit footer in
 input bool     InpShowBalance = true;      // Show Account Balance
 
 input group "Keymapping"
-input int      InpKeyDock     = 89;       // Dock Panel Hotkey ('Y' default)
-input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' default)
+input int      InpKeyBuy      = 81;        // Buy (Q)
+input int      InpKeySell     = 87;        // Sell (W)
+input int      InpKeyCloseAll = 69;        // Close All (E)
+input int      InpKeyPanel    = 82;        // Toggle Panel (R)
+input int      InpKeyMinimize = 70;        // Minimize (F)
+input int      InpKeyFlip     = 86;        // Flip Side (V)
+input int      InpKeyScaleOut = 83;        // Scale Out (S)
+input int      InpKeyLotDn    = 79;        // Lot/Risk Down (O)
+input int      InpKeyLotUp    = 80;        // Lot/Risk Up (P)
+input int      InpKeyLotMode  = 220;       // Toggle Lot Mode (\)
+input int      InpKeySLToggle = 74;        // Toggle SL (J)
+input int      InpKeySLDn     = 75;        // SL Down (K)
+input int      InpKeySLUp     = 76;        // SL Up (L)
+input int      InpKeyTPToggle = 66;        // Toggle TP (B)
+input int      InpKeyTPDn     = 78;        // TP Down (N)
+input int      InpKeyTPUp     = 77;        // TP Up (M)
+input int      InpKeyScaleDn  = 85;        // Scale Down (U)
+input int      InpKeyScaleUp  = 73;        // Scale Up (I)
+input int      InpKeyAsgnSL   = 71;        // Assign SL (G)
+input int      InpKeyAsgnTP   = 72;        // Assign TP (H)
+input int      InpKeyCloseBuys= 90;        // Close Buys (Z)
+input int      InpKeyCloseSells= 88;       // Close Sells (X)
+input int      InpKeyCloseWins= 67;        // Close Wins (C)
+input int      InpKeyCloseLoss= 68;        // Close Losses (D)
+input int      InpKeyCancelPnd= 65;        // Cancel Pending (A)
+input int      InpKeyEntryDn  = 188;       // Entry Down (,)
+input int      InpKeyEntryUp  = 190;       // Entry Up (.)
+input int      InpKeyExecMode = 9;         // Toggle Market/Pending (TAB)
+input int      InpKeyDock     = 89;        // Dock Panel (Y)
+input int      InpKeyPreview  = 84;        // Toggle Preview (T)
 
 // --- UI CONSTANTS ---
 #define BTN_H        24
@@ -99,69 +125,34 @@ input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' def
 #define COL_GAP      8         // Gap between sections
 #define GRID_GAP     4         // Gap within input grid (tight)
 #define FOOTER_LEFT  12        // Footer left margin
-#define FOOTER_RIGHT 288       // Max X for footer (InpPanelW - 12)
 #define FOOTER_COL2  148       // Start X for footer right column (clear 2-col grid)
 #define FOOTER_ROW_H 14        // Footer secondary row height (Spread/Pending/R:R/Pos)
 #define INP_ROW_H    (EDIT_H + 2)   // Row height (20 + 2)
-#define INP_MARGIN   CONTAINER_PAD
-#define INP_GAP      COL_GAP
 
 // Grid: 95px fixed label column (prevents shift when toggle changes)
-#define LABEL_W      108       // Fixed label column (Manual Lot, Risk Units, Stop loss, Take profit, Scale)
-#define ARROW_W      18        // ▲/▼ button width
+#define LABEL_W      108       // Fixed label column
+#define ARROW_W      18        // Arrow button width
 #define EDIT_MAIN_W  48        // Main numeric edit (Lot/Risk/SL/TP)
 #define EDIT_SCALE_W 42        // Scale edit
-#define TOGGLE_W     18        // ✔/✖ toggle width
-// ACTION_W computed at runtime: colAction to panelRight (aligns SL, TP, Scale Out)
-#define INP_ARROW_W  ARROW_W
-#define INP_EDIT_W   EDIT_MAIN_W
-#define INP_EDIT_SLTP_W EDIT_MAIN_W
-#define INP_EDIT_SCALE_W EDIT_SCALE_W
-#define INP_TOGGLE_W TOGGLE_W
+#define TOGGLE_W     18        // Toggle width
+// ACTION_W computed at runtime: colAction to panelRight
 
-// --- KEY MAP DEFINES ---
-#define KEY_Q 81
-#define KEY_W 87
-#define KEY_E 69
-#define KEY_R 82
-#define KEY_T 84
-#define KEY_F 70
-#define KEY_G 71
-#define KEY_H 72
-#define KEY_J 74
-#define KEY_K 75
-#define KEY_L 76
-#define KEY_Z 90
-#define KEY_X 88
-#define KEY_C 67
-#define KEY_V 86
-#define KEY_B 66
-#define KEY_N 78
-#define KEY_M 77
-#define KEY_S 83
-#define KEY_D 68
-#define KEY_A 65
-#define KEY_O 79
-#define KEY_P 80
-#define KEY_Y 89
-#define KEY_U 85
-#define KEY_I 73
-#define KEY_TAB 9
-#define KEY_BACKSLASH 220
-#define KEY_COMMA     188
-#define KEY_PERIOD    190
-
-// Key map (no overlaps): Q/W=Buy/Sell, E=CloseAll, R=Panel, F=Minimize, Y=Dock(input)
-// G/H=Assign SL/TP, J/K/L=SL toggle/dn/up, B/N/M=TP toggle/dn/up, O/P=Lot/Risk dn/up
-// U/I=Scale dn/up, \=Lot mode, Tab=Market/Pending, ,/.=Entry dn/up
-// V=Flip, S=ScaleOut, Z/X=Close Buys/Sells, C/D=Close Wins/Losses, A=Cancel Pending. T=reserved.
+// --- Key Name Helper (converts keycode to display string) ---
+string KN(int key) {
+   if(key == 9)   return "TAB";
+   if(key == 188) return ",";
+   if(key == 190) return ".";
+   if(key == 192) return "`";
+   if(key == 220) return "\\";
+   if(key >= 32 && key <= 126) return CharToString((uchar)key);
+   return IntegerToString(key);
+}
 
 // --- OBJECT NAMES ---
 #define PREFIX       "W_PRO_"
 #define BG_PANEL     PREFIX + "BG"
 #define SEP_HEAD     PREFIX + "SepHead"    // Separator below header
 #define SEP_FOOT     PREFIX + "SepFoot"    // Separator above footer
-#define LBL_T_TITLE  PREFIX + "TimerTitle"
 #define BG_HEADER    PREFIX + "Head"
 #define BG_INPUTS    PREFIX + "Inp"
 #define LBL_PNL      PREFIX + "PnL"
@@ -224,7 +215,6 @@ input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' def
 #define BTN_SCALE_DN PREFIX + "Scale_Dn"
 #define BTN_ASGN_SL  PREFIX + "AsgnSL"
 #define BTN_ASGN_TP  PREFIX + "AsgnTP"
-#define BTN_DIR      PREFIX + "BtnDir"
 #define BTN_MODE     PREFIX + "BtnMode"
 #define LINE_ENTRY   PREFIX + "LineEntry"
 #define BTN_ENTRY_UP PREFIX + "Entry_Up"
@@ -252,11 +242,9 @@ double g_ScalePct;
 // --- OPTIMIZATION CACHE ---
 double last_PnL       = -DBL_MAX;
 int    last_Positions = -1;
-double last_PnLState  = -99;
-bool   last_AlgoState = false;
 double last_Mid       = 0;
-int    last_SL        = -1;
-int    last_TP        = -1;
+long   last_SL        = -1;
+long   last_TP        = -1;
 double last_Lot       = -1;
 bool   last_Mode      = true;
 
@@ -440,14 +428,16 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool UpdatePnL() {
    
-   double pnl = AccountInfoDouble(ACCOUNT_PROFIT);
-   
-   // Count open positions for this symbol opened by this EA (magic)
+   // Compute PnL and position count for THIS symbol + magic only
+   double pnl = 0;
    int posCount = 0;
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) posCount++;
+      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         pnl += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+         posCount++;
+      }
    }
    
    // Optimization: Only update if value changed
@@ -477,16 +467,13 @@ bool UpdatePnL() {
 bool UpdateHeader() {
    bool changed = false;
    
-   // Use position count from UpdatePnL (runs first in tick cycle via last_Positions)
-   double pnl = AccountInfoDouble(ACCOUNT_PROFIT);
-   double pnlState = (pnl >= 0) ? 1 : -1;
-   
-   // Reset TradeSequence when all positions closed
-   if(last_Positions == 0 && pnlState != last_PnLState) {
+   // Reset TradeSequence when positions transition from open to closed
+   static int s_prevPosCount = 0;
+   if(s_prevPosCount > 0 && last_Positions == 0) {
        TradeSequence = 0;
        changed = true;
    }
-   last_PnLState = pnlState;
+   s_prevPosCount = last_Positions;
    return changed;
 }
 
@@ -538,47 +525,44 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       if(key == InpKeyPreview) {
          g_ShowPreview = !g_ShowPreview;
          if(ObjectFind(0, BTN_PREVIEW) >= 0)
-            ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)");
+            ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? ("Preview On (" + KN(InpKeyPreview) + ")") : ("Preview Off (" + KN(InpKeyPreview) + ")"));
          DrawVisualLines(true);
          ChartRedraw();
          return;
       }
-      switch(key) {
-         case KEY_Q: if(isAlgoOn && IsLongMode) ExecuteOrder(ORDER_TYPE_BUY); break;   // Buy key only in buy mode
-         case KEY_W: if(isAlgoOn && !IsLongMode) ExecuteOrder(ORDER_TYPE_SELL); break; // Sell key only in sell mode
-         case KEY_E: ClosePositions(0); break;                          // Close All
-         case KEY_R: TogglePanel(); break;
-         case KEY_V: FlipSide(); break;
-         case KEY_S: ScaleOut(); break;
-         case KEY_O: AdjustLotOrRisk(-1); break;                        // Decrements Lot/Risk depending on mode
-         case KEY_P: AdjustLotOrRisk(1); break;                         // Increments Lot/Risk depending on mode
-         case KEY_BACKSLASH: ToggleLotMode(); break;                    // Toggle Risk/Lot Mode
-         case KEY_J: EnableSL = !EnableSL; UpdateToggleState(); break;
-         case KEY_K: AdjustEdit(EDIT_SL, -InpAdjStep); break;
-         case KEY_L: AdjustEdit(EDIT_SL, InpAdjStep); break;
-         case KEY_B: EnableTP = !EnableTP; UpdateToggleState(); break;
-         case KEY_N: AdjustEdit(EDIT_TP, -InpAdjStep); break;
-         case KEY_M: AdjustEdit(EDIT_TP, InpAdjStep); break;
-         case KEY_U: AdjustScale(-5); break;
-         case KEY_I: AdjustScale(5); break;
-         case KEY_G: AssignSLToAll(); break;
-         case KEY_H: AssignTPToAll(); break;
-         case KEY_F: { IsMinimized = !IsMinimized; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); } break;
-         case KEY_Z: ClosePositions(1); break;                          // Close Buys
-         case KEY_X: ClosePositions(2); break;                          // Close Sells
-         case KEY_A: ClosePending(); break;                             // Cancel Pending
-
-         case KEY_COMMA: AdjustEntryLine(-InpEntryStep); break;         // Move Entry Down
-         case KEY_PERIOD: AdjustEntryLine(InpEntryStep); break;         // Move Entry Up
-
-         case KEY_TAB: {
-            if(g_ExecMode == MODE_MARKET) g_ExecMode = MODE_PENDING;
-            else g_ExecMode = MODE_MARKET;
-            ObjectsDeleteAll(0, PREFIX + "Line");
-            UpdateToggleState();
-         } break;
-         case KEY_C: ClosePositions(3); break;   // Close Win
-         case KEY_D: ClosePositions(4); break;   // Close Loss
+      // All hotkeys use configurable input parameters
+      if(key == InpKeyBuy)       { if(isAlgoOn && IsLongMode) ExecuteOrder(ORDER_TYPE_BUY); }
+      else if(key == InpKeySell) { if(isAlgoOn && !IsLongMode) ExecuteOrder(ORDER_TYPE_SELL); }
+      else if(key == InpKeyCloseAll) { ClosePositions(0); }
+      else if(key == InpKeyPanel)    { TogglePanel(); }
+      else if(key == InpKeyFlip)     { FlipSide(); }
+      else if(key == InpKeyScaleOut) { ScaleOut(); }
+      else if(key == InpKeyLotDn)    { AdjustLotOrRisk(-1); }
+      else if(key == InpKeyLotUp)    { AdjustLotOrRisk(1); }
+      else if(key == InpKeyLotMode)  { ToggleLotMode(); }
+      else if(key == InpKeySLToggle) { EnableSL = !EnableSL; UpdateToggleState(); }
+      else if(key == InpKeySLDn)     { AdjustEdit(EDIT_SL, -InpAdjStep); }
+      else if(key == InpKeySLUp)     { AdjustEdit(EDIT_SL, InpAdjStep); }
+      else if(key == InpKeyTPToggle) { EnableTP = !EnableTP; UpdateToggleState(); }
+      else if(key == InpKeyTPDn)     { AdjustEdit(EDIT_TP, -InpAdjStep); }
+      else if(key == InpKeyTPUp)     { AdjustEdit(EDIT_TP, InpAdjStep); }
+      else if(key == InpKeyScaleDn)  { AdjustScale(-5); }
+      else if(key == InpKeyScaleUp)  { AdjustScale(5); }
+      else if(key == InpKeyAsgnSL)   { AssignSLToAll(); }
+      else if(key == InpKeyAsgnTP)   { AssignTPToAll(); }
+      else if(key == InpKeyMinimize) { IsMinimized = !IsMinimized; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); }
+      else if(key == InpKeyCloseBuys)  { ClosePositions(1); }
+      else if(key == InpKeyCloseSells) { ClosePositions(2); }
+      else if(key == InpKeyCloseWins)  { ClosePositions(3); }
+      else if(key == InpKeyCloseLoss)  { ClosePositions(4); }
+      else if(key == InpKeyCancelPnd)  { ClosePending(); }
+      else if(key == InpKeyEntryDn)    { AdjustEntryLine(-InpEntryStep); }
+      else if(key == InpKeyEntryUp)    { AdjustEntryLine(InpEntryStep); }
+      else if(key == InpKeyExecMode) {
+         if(g_ExecMode == MODE_MARKET) g_ExecMode = MODE_PENDING;
+         else g_ExecMode = MODE_MARKET;
+         ObjectsDeleteAll(0, PREFIX + "Line");
+         UpdateToggleState();
       }
       ChartRedraw();
    }
@@ -835,8 +819,9 @@ void ToggleLotMode() {
    g_IsManualLotMode = !g_IsManualLotMode;
    // Refresh UI (short labels fit 95px column, no clipping)
    if(ObjectFind(0, BTN_TOGGLE_MODE) >= 0) {
-        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TEXT, g_IsManualLotMode ? "Manual Lot O/P" : "Risk Units O/P");
-        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (O/P adjust)" : "Risk Units mode (O/P adjust)");
+        string lotKeys = KN(InpKeyLotDn) + "/" + KN(InpKeyLotUp);
+        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TEXT, g_IsManualLotMode ? ("Manual Lot " + lotKeys) : ("Risk Units " + lotKeys));
+        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (" + lotKeys + " adjust)" : "Risk Units mode (" + lotKeys + " adjust)");
    }
    
    // Refresh Value in Edit Box
@@ -1187,7 +1172,7 @@ void ExecuteOrder(ENUM_ORDER_TYPE type) {
       double paramPrice = price;
       if(pendingType == ORDER_TYPE_BUY_LIMIT || pendingType == ORDER_TYPE_SELL_LIMIT) {
          paramLimit = price;
-         paramPrice = price;
+         paramPrice = 0.0;  // LIMIT orders: limitPrice = trigger, price = 0
       }
       
       if(trade.OrderOpen(_Symbol, pendingType, g_LotSize, paramLimit, paramPrice, sl, tp, ORDER_TIME_GTC, 0, comment))
@@ -1295,8 +1280,8 @@ bool DrawVisualLines(bool forceUpdate = false) {
    }
    
    last_Mid  = entryPrice; 
-   last_SL   = (int)g_SL_Points;
-   last_TP   = (int)g_TP_Points;
+   last_SL   = g_SL_Points;
+   last_TP   = g_TP_Points;
    last_Lot  = g_LotSize;
    last_Mode = IsLongMode;
    last_ExecMode = g_ExecMode;
@@ -1483,9 +1468,11 @@ void UpdateToggleState() {
    }
        
    if(ObjectFind(0, BTN_MODE) >= 0) {
-      string mText = (g_ExecMode == MODE_PENDING) ? "Pending (TAB)(,/.)" : "Market (TAB)";
+      string mText = (g_ExecMode == MODE_PENDING) 
+         ? ("Pending (" + KN(InpKeyExecMode) + ")(" + KN(InpKeyEntryDn) + "/" + KN(InpKeyEntryUp) + ")")
+         : ("Market (" + KN(InpKeyExecMode) + ")");
       ObjectSetString(0, BTN_MODE, OBJPROP_TEXT, mText);
-      ObjectSetString(0, BTN_MODE, OBJPROP_TOOLTIP, "TAB to Toggle Mode. Drag line to adjust price.");
+      ObjectSetString(0, BTN_MODE, OBJPROP_TOOLTIP, KN(InpKeyExecMode) + " to Toggle Mode. Drag line to adjust price.");
       ObjectSetInteger(0, BTN_MODE, OBJPROP_BGCOLOR, (g_ExecMode != MODE_MARKET) ? InpClrActive : InpClrHeader);
    }
    
@@ -1581,8 +1568,6 @@ void CreateGUI() {
    // Reset Cache to force UI update
    last_PnL       = -DBL_MAX;
    last_Positions = -1;
-   last_PnLState  = -99;
-   last_AlgoState = !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED); // Force mismatch
    last_Mid       = 0;
    last_SL        = -1; // Force line redraw
    
@@ -1618,17 +1603,14 @@ void CreateGUI() {
    int timerW = 58;  // Width for "00:00" / "00:00:00" at same font as PnL
    CreateLbl(LBL_TIMER, "00:00", btnGroupLeft - timerGap - timerW, headerRowY, InpClrTimer, HEADER_LBL_FONT, true);
 
-   // Header buttons (top-right): M=Minimize, R=Reset, D=Dock (ASCII letters)
+   // Header buttons (top-right): M=Minimize, R=Reset, D=Dock
    int btnY = y + 13;
    CreateBtn(BTN_MINMAX, "M", PanelX + InpPanelW - hPad - 18, btnY - 9, 18, 18, InpClrInactive, 9);
-   ObjectSetString(0, BTN_MINMAX, OBJPROP_TOOLTIP, "Minimize (F) / Hide (R)");
+   ObjectSetString(0, BTN_MINMAX, OBJPROP_TOOLTIP, "Minimize (" + KN(InpKeyMinimize) + ") / Hide (" + KN(InpKeyPanel) + ")");
    CreateBtn(BTN_RESET, "R", PanelX + InpPanelW - hPad - 38, btnY - 9, 18, 18, InpClrInactive, 10);
    ObjectSetString(0, BTN_RESET, OBJPROP_TOOLTIP, "Reset Position to Default");
    CreateBtn(BTN_DOCK, g_IsDocked ? "L" : "D", PanelX + InpPanelW - hPad - 58, btnY - 9, 18, 18, g_IsDocked ? InpClrActive : InpClrInactive, 9);
-   {
-      string keyHint = (InpKeyDock >= 32 && InpKeyDock <= 126) ? CharToString((uchar)InpKeyDock) : IntegerToString(InpKeyDock);
-      ObjectSetString(0, BTN_DOCK, OBJPROP_TOOLTIP, "Dock/Lock Panel (" + keyHint + ")");
-   }
+   ObjectSetString(0, BTN_DOCK, OBJPROP_TOOLTIP, "Dock/Lock Panel (" + KN(InpKeyDock) + ")");
 
    if(IsMinimized) return;
 
@@ -1666,12 +1648,12 @@ void CreateGUI() {
 
    y += 8;  // Internal top padding
    
-   // Row 1: Mode Toggle & Lot/Risk Inputs (label column aligned with Stop loss / Take profit)
-   CreateBtn(BTN_TOGGLE_MODE, g_IsManualLotMode ? "Manual Lot O/P" : "Risk Units O/P", colLabel, y, LABEL_W, EDIT_H, InpClrGroupBox, 8);
+   string lotKeys = KN(InpKeyLotDn) + "/" + KN(InpKeyLotUp);
+   CreateBtn(BTN_TOGGLE_MODE, g_IsManualLotMode ? ("Manual Lot " + lotKeys) : ("Risk Units " + lotKeys), colLabel, y, LABEL_W, EDIT_H, InpClrGroupBox, 8);
    ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_BORDER_COLOR, InpClrGroupBox);
    ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_COLOR, InpClrText);
    ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_ALIGN, ALIGN_LEFT);
-   ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (O/P adjust)" : "Risk Units mode (O/P adjust)"); 
+   ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (" + lotKeys + " adjust)" : "Risk Units mode (" + lotKeys + " adjust)"); 
    CreateBtn(BTN_RISK_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
    CreateEdit(EDIT_RISK, g_IsManualLotMode ? DoubleToString(g_LotSize, 2) : DoubleToString(g_RiskUnits, 3), colEdit, y, EDIT_MAIN_W);
    CreateBtn(BTN_RISK_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
@@ -1685,23 +1667,23 @@ void CreateGUI() {
 
    // Row 2: Stop loss (grid-aligned)
    y += INP_ROW_H + ROW_GAP;
-   CreateLbl(PREFIX+"L2", "SL (J) (K) (L)", colLabel, y + 2, InpClrText, 8, false); 
+   CreateLbl(PREFIX+"L2", "SL (" + KN(InpKeySLToggle) + ") (" + KN(InpKeySLDn) + ") (" + KN(InpKeySLUp) + ")", colLabel, y + 2, InpClrText, 8, false); 
    CreateBtn(BTN_SL_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateEdit(EDIT_SL, IntegerToString(g_SL_Points), colEdit, y, EDIT_MAIN_W); 
    CreateBtn(BTN_SL_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateBtn(BTN_USE_SL, EnableSL ? "✔" : "✖", colToggle, y, TOGGLE_W, EDIT_H, EnableSL ? InpClrActive : InpClrInactive, 8);
-   CreateBtn(BTN_ASGN_SL, "SL (G)", colAction, y, actionW, EDIT_H, InpClrAsgnSL, 8);
-   ObjectSetString(0, BTN_ASGN_SL, OBJPROP_TOOLTIP, "Apply SL line to all positions/pending (key: G)");
+   CreateBtn(BTN_ASGN_SL, "SL (" + KN(InpKeyAsgnSL) + ")", colAction, y, actionW, EDIT_H, InpClrAsgnSL, 8);
+   ObjectSetString(0, BTN_ASGN_SL, OBJPROP_TOOLTIP, "Apply SL to all positions/pending (" + KN(InpKeyAsgnSL) + ")");
 
    // Row 3: Take profit (grid-aligned)
    y += INP_ROW_H + ROW_GAP;
-   CreateLbl(PREFIX+"L3", "TP (B) (N) (M)", colLabel, y + 2, InpClrText, 8, false); 
+   CreateLbl(PREFIX+"L3", "TP (" + KN(InpKeyTPToggle) + ") (" + KN(InpKeyTPDn) + ") (" + KN(InpKeyTPUp) + ")", colLabel, y + 2, InpClrText, 8, false); 
    CreateBtn(BTN_TP_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateEdit(EDIT_TP, IntegerToString(g_TP_Points), colEdit, y, EDIT_MAIN_W); 
    CreateBtn(BTN_TP_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateBtn(BTN_USE_TP, EnableTP ? "✔" : "✖", colToggle, y, TOGGLE_W, EDIT_H, EnableTP ? InpClrActive : InpClrInactive, 8);
-   CreateBtn(BTN_ASGN_TP, "TP (H)", colAction, y, actionW, EDIT_H, InpClrAsgnTP, 8);
-   ObjectSetString(0, BTN_ASGN_TP, OBJPROP_TOOLTIP, "Apply TP line to all positions/pending (key: H)");
+   CreateBtn(BTN_ASGN_TP, "TP (" + KN(InpKeyAsgnTP) + ")", colAction, y, actionW, EDIT_H, InpClrAsgnTP, 8);
+   ObjectSetString(0, BTN_ASGN_TP, OBJPROP_TOOLTIP, "Apply TP to all positions/pending (" + KN(InpKeyAsgnTP) + ")");
 
    // Row 4: Scale Out (grid-aligned)
    y += INP_ROW_H + ROW_GAP;
@@ -1709,28 +1691,29 @@ void CreateGUI() {
    CreateBtn(BTN_SCALE_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
    CreateEdit(EDIT_SCALE, DoubleToString(g_ScalePct, 0), colEdit, y, EDIT_SCALE_W);
    CreateBtn(BTN_SCALE_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
-   CreateBtn(BTN_SCALE, "Scale Out (S)", colToggle, y, panelRight - colToggle, EDIT_H, InpClrScale, 8);
-   ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (key: S)");
+   CreateBtn(BTN_SCALE, "Scale Out (" + KN(InpKeyScaleOut) + ")", colToggle, y, panelRight - colToggle, EDIT_H, InpClrScale, 8);
+   ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (" + KN(InpKeyScaleOut) + ")");
 
    y += INP_ROW_H + ROW_GAP;
-   // Preview toggle: show/hide zone (Target/Stop) preview on chart
-   CreateBtn(BTN_PREVIEW, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)", colLabel, y, panelRight - colLabel, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
-   ObjectSetString(0, BTN_PREVIEW, OBJPROP_TOOLTIP, "Toggle zone preview on chart (key: P)");
+   // Preview toggle
+   string pvKey = KN(InpKeyPreview);
+   CreateBtn(BTN_PREVIEW, g_ShowPreview ? ("Preview On (" + pvKey + ")") : ("Preview Off (" + pvKey + ")"), colLabel, y, panelRight - colLabel, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
+   ObjectSetString(0, BTN_PREVIEW, OBJPROP_TOOLTIP, "Toggle zone preview on chart (" + pvKey + ")");
 
    y += INP_ROW_H + ROW_GAP;  // Row gap before action block
    
    // Mode row: Market / Pending toggle
    int pad = CONTAINER_PAD;
    int arrowW = 20;
-   string modeText = "Market (TAB)";
-   if(g_ExecMode == MODE_PENDING) modeText = "Pending (TAB)(,/.)";
+   string modeText = "Market (" + KN(InpKeyExecMode) + ")";
+   if(g_ExecMode == MODE_PENDING) modeText = "Pending (" + KN(InpKeyExecMode) + ")(" + KN(InpKeyEntryDn) + "/" + KN(InpKeyEntryUp) + ")";
    
    if(g_ExecMode == MODE_PENDING) {
       CreateBtn(BTN_MODE, modeText, PanelX + pad, y, 140, EDIT_H + 4, InpClrHeader, 8);
       CreateBtn(BTN_ENTRY_DN, "▼", PanelX + 145, y, arrowW, EDIT_H + 4, InpClrActive, 8);
       CreateBtn(BTN_ENTRY_UP, "▲", PanelX + 167, y, arrowW, EDIT_H + 4, InpClrActive, 8);
-      ObjectSetString(0, BTN_ENTRY_DN, OBJPROP_TOOLTIP, "Move Entry Line Down ( , )");
-      ObjectSetString(0, BTN_ENTRY_UP, OBJPROP_TOOLTIP, "Move Entry Line Up ( . )");
+      ObjectSetString(0, BTN_ENTRY_DN, OBJPROP_TOOLTIP, "Move Entry Line Down (" + KN(InpKeyEntryDn) + ")");
+      ObjectSetString(0, BTN_ENTRY_UP, OBJPROP_TOOLTIP, "Move Entry Line Up (" + KN(InpKeyEntryUp) + ")");
    } else {
       CreateBtn(BTN_MODE, modeText, PanelX + pad, y, InpPanelW - 2 * pad, EDIT_H + 4, InpClrHeader, 8);
       if(ObjectFind(0, BTN_ENTRY_UP) >= 0) ObjectDelete(0, BTN_ENTRY_UP);
@@ -1743,35 +1726,35 @@ void CreateGUI() {
    
    // --- PRIMARY BUTTON: Only show Buy in buy mode, Sell in sell mode ---
    if(IsLongMode) {
-      CreateBtn(BTN_BUY, "BUY (Q)", PanelX + pad, y, fullBtnW, BTN_H, InpClrBuy, 10);
+      CreateBtn(BTN_BUY, "BUY (" + KN(InpKeyBuy) + ")", PanelX + pad, y, fullBtnW, BTN_H, InpClrBuy, 10);
       if(ObjectFind(0, BTN_SELL) >= 0) ObjectDelete(0, BTN_SELL);
    } else {
-      CreateBtn(BTN_SELL, "SELL (W)", PanelX + pad, y, fullBtnW, BTN_H, InpClrSell, 10);
+      CreateBtn(BTN_SELL, "SELL (" + KN(InpKeySell) + ")", PanelX + pad, y, fullBtnW, BTN_H, InpClrSell, 10);
       if(ObjectFind(0, BTN_BUY) >= 0) ObjectDelete(0, BTN_BUY);
    }
    
    y += BTN_H + ROW_GAP; 
-   CreateBtn(BTN_REV, "FLIP (V)", PanelX + pad, y, btnW, 24, InpClrReverse, 9);
-   ObjectSetString(0, BTN_REV, OBJPROP_TOOLTIP, "Flip Buy/Sell intention only (key: V). No effect on positions or pending.");
-   CreateBtn(BTN_CLOSE, "Close All (E)", PanelX + pad + btnW + COL_GAP, y, btnW, 24, InpClrClose, 9);
-   ObjectSetString(0, BTN_CLOSE, OBJPROP_TOOLTIP, "Close all positions (key: E)");
+   CreateBtn(BTN_REV, "FLIP (" + KN(InpKeyFlip) + ")", PanelX + pad, y, btnW, 24, InpClrReverse, 9);
+   ObjectSetString(0, BTN_REV, OBJPROP_TOOLTIP, "Flip Buy/Sell intention (" + KN(InpKeyFlip) + ")");
+   CreateBtn(BTN_CLOSE, "Close All (" + KN(InpKeyCloseAll) + ")", PanelX + pad + btnW + COL_GAP, y, btnW, 24, InpClrClose, 9);
+   ObjectSetString(0, BTN_CLOSE, OBJPROP_TOOLTIP, "Close all positions (" + KN(InpKeyCloseAll) + ")");
    
    // --- CLOSE BY SIDE / RESULT ---
    y += 24 + ROW_GAP;
    int btnW2 = (InpPanelW - 2 * pad - COL_GAP) / 2;
-   CreateBtn(BTN_C_BUY, "Close Buys (Z)", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_BUY, OBJPROP_TOOLTIP, "Close all Buy positions (key: Z)");
-   CreateBtn(BTN_C_SELL, "Close Sells (X)", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_SELL, OBJPROP_TOOLTIP, "Close all Sell positions (key: X)");
+   CreateBtn(BTN_C_BUY, "Close Buys (" + KN(InpKeyCloseBuys) + ")", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_BUY, OBJPROP_TOOLTIP, "Close all Buy positions (" + KN(InpKeyCloseBuys) + ")");
+   CreateBtn(BTN_C_SELL, "Close Sells (" + KN(InpKeyCloseSells) + ")", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_SELL, OBJPROP_TOOLTIP, "Close all Sell positions (" + KN(InpKeyCloseSells) + ")");
    y += 20 + ROW_GAP;
-   CreateBtn(BTN_C_WIN, "Close Wins (C)", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_WIN, OBJPROP_TOOLTIP, "Close positions in profit (key: C)");
-   CreateBtn(BTN_C_LOSS, "Close Losses (D)", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_LOSS, OBJPROP_TOOLTIP, "Close positions in loss (key: D)");
+   CreateBtn(BTN_C_WIN, "Close Wins (" + KN(InpKeyCloseWins) + ")", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_WIN, OBJPROP_TOOLTIP, "Close positions in profit (" + KN(InpKeyCloseWins) + ")");
+   CreateBtn(BTN_C_LOSS, "Close Losses (" + KN(InpKeyCloseLoss) + ")", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_LOSS, OBJPROP_TOOLTIP, "Close positions in loss (" + KN(InpKeyCloseLoss) + ")");
    
    y += 20 + ROW_GAP;
-   CreateBtn(BTN_C_PEND, "Cancel Pending (A)", PanelX + pad, y, fullBtnW, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_PEND, OBJPROP_TOOLTIP, "Cancel all pending orders (key: A)");
+   CreateBtn(BTN_C_PEND, "Cancel Pending (" + KN(InpKeyCancelPnd) + ")", PanelX + pad, y, fullBtnW, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_PEND, OBJPROP_TOOLTIP, "Cancel all pending orders (" + KN(InpKeyCancelPnd) + ")");
 
    // --- FOOTER: Separator + stats (same order, cleaner hierarchy) ---
    y += 20 + FOOTER_PAD;
@@ -1891,7 +1874,7 @@ void TogglePanel() {
 //| DELIGHTER: Live Spread Display                                   |
 //+------------------------------------------------------------------+
 void UpdateSpread() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_SPREAD) < 0) return;
    
    long spreadPts = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
@@ -1931,7 +1914,7 @@ void UpdateRR() {
 //| DELIGHTER: Live Pending Order Count                              |
 //+------------------------------------------------------------------+
 void UpdatePendingCount() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_PEND) < 0) return;
    
    int pendCount = 0;
@@ -1953,7 +1936,7 @@ void UpdatePendingCount() {
 //| DELIGHTER: Position Summary (Net Volume)                         |
 //+------------------------------------------------------------------+
 void UpdatePositionSummary() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_POS_SUMMARY) < 0) return;
    
    double netVol = 0;
