@@ -11,6 +11,12 @@
 #property indicator_plots   0
 
 //--- Enums
+enum ENUM_VP_ALIGNMENT
+  {
+   VP_ALIGN_LEFT   = 0, // Align Left
+   VP_ALIGN_RIGHT  = 1  // Align Right
+  };
+
 enum ENUM_VP_DISTRIBUTION
   {
    VP_DIST_CLOSE      = 0,   // Close Price (Fastest)
@@ -34,6 +40,7 @@ sinput ENUM_APPLIED_VOLUME  InpVolumeType        = VOLUME_TICK;   // Volume Type
 sinput ENUM_VP_DISTRIBUTION InpDistribution      = VP_DIST_EVEN;  // Volume Distribution (Bar mode only)
 
 input group "─── PROFILE LAYOUT ───"
+sinput ENUM_VP_ALIGNMENT    InpAlignment         = VP_ALIGN_LEFT;  // Profile Alignment
 sinput ENUM_ROW_MODE        InpRowMode           = ROW_MODE_TICKS; // Row Layout Mode
 sinput int                  InpRowValue          = 10;            // Row Size (Ticks or Count)
 sinput double               InpValueAreaPct      = 70.0;          // Value Area % (Standard is 70)
@@ -679,7 +686,7 @@ void GetBarColors(int idx, int poc_idx, int va_low_idx, int va_high_idx,
 void DrawBars(int steps, double range_bottom, double resolution,
               const double &buckets_up[], const double &buckets_down[],
               double max_total_vol,
-              datetime start_time, datetime rect_full_time,
+              datetime start_time, datetime end_time, datetime rect_full_time,
               int poc_idx, int va_low_idx, int va_high_idx)
   {
    double max_width_factor = SafeWidthFactor();
@@ -718,18 +725,29 @@ void DrawBars(int steps, double range_bottom, double resolution,
       double time_width_up    = time_width_total * up_ratio_val;
       double time_width_down  = time_width_total - time_width_up;
 
-      datetime t_split = start_time + (datetime)time_width_down;
-      datetime t_end   = start_time + (datetime)time_width_total;
+      datetime rect_start, rect_split, rect_end;
+      if(InpAlignment == VP_ALIGN_LEFT)
+        {
+         rect_start = start_time;
+         rect_split = start_time + (datetime)time_width_down;
+         rect_end   = start_time + (datetime)time_width_total;
+        }
+      else
+        {
+         rect_start = end_time - (datetime)time_width_total;
+         rect_split = rect_start + (datetime)time_width_down;
+         rect_end   = end_time;
+        }
 
       // Down on Left
       if(vol_down > VP_MIN_VOLUME)
-         CreateOrUpdateRect(obj_down, start_time, t_split, price_level, resolution, col_down_bar);
+         CreateOrUpdateRect(obj_down, rect_start, rect_split, price_level, resolution, col_down_bar);
       else
          ObjectDelete(0, obj_down);
 
       // Up on Right
       if(vol_up > VP_MIN_VOLUME)
-         CreateOrUpdateRect(obj_up, t_split, t_end, price_level, resolution, col_up_bar);
+         CreateOrUpdateRect(obj_up, rect_split, rect_end, price_level, resolution, col_up_bar);
       else
          ObjectDelete(0, obj_up);
 
@@ -738,7 +756,9 @@ void DrawBars(int steps, double range_bottom, double resolution,
         {
          string obj_label = LABEL_PREFIX + IntegerToString(label_count);
          double label_price = price_level + (resolution / 2.0);
-         CreateOrUpdateLabel(obj_label, t_end, label_price, FormatVolume(vol_total));
+         datetime label_time = (InpAlignment == VP_ALIGN_LEFT) ? rect_end : rect_start;
+         ENUM_ANCHOR_POINT anchor = (InpAlignment == VP_ALIGN_LEFT) ? ANCHOR_LEFT : ANCHOR_RIGHT;
+         CreateOrUpdateLabel(obj_label, label_time, label_price, FormatVolume(vol_total), anchor);
          label_count++;
         }
      }
@@ -878,7 +898,7 @@ void CalculateAndDraw()
 
    datetime rect_full_time = (datetime)MathAbs((long)(end_time - start_time));
    DrawBars(steps, range_bottom, resolution, buckets_up, buckets_down,
-            max_total_vol, start_time, rect_full_time,
+            max_total_vol, start_time, end_time, rect_full_time,
             poc_idx, va_low_idx, va_high_idx);
 
    DrawKeyLines(poc_idx, va_high_idx, va_low_idx,
@@ -948,7 +968,7 @@ void CreateOrUpdateTrendLine(string name, datetime t1, datetime t2,
 //+------------------------------------------------------------------+
 //| Create or update a volume value text label                       |
 //+------------------------------------------------------------------+
-void CreateOrUpdateLabel(string name, datetime t, double price, string text)
+void CreateOrUpdateLabel(string name, datetime t, double price, string text, ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT)
   {
    if(ObjectFind(0, name) < 0)
      {
@@ -957,7 +977,7 @@ void CreateOrUpdateLabel(string name, datetime t, double price, string text)
       ObjectSetString(0,  name, OBJPROP_FONT,     "Arial");
       ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpValueFontSize);
       ObjectSetInteger(0, name, OBJPROP_COLOR,    InpValueColor);
-      ObjectSetInteger(0, name, OBJPROP_ANCHOR,   ANCHOR_LEFT);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR,   anchor);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN,  true);
       ObjectSetInteger(0, name, OBJPROP_BACK,    false);
@@ -969,6 +989,7 @@ void CreateOrUpdateLabel(string name, datetime t, double price, string text)
       ObjectSetString(0,  name, OBJPROP_TEXT,  text);
       ObjectSetInteger(0, name, OBJPROP_COLOR, InpValueColor);
       ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpValueFontSize);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR,   anchor);
      }
   }
 //+------------------------------------------------------------------+
