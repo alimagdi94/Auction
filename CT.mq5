@@ -1,11 +1,11 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                              ChartTrader.mq5     |
 //|              Professional Chart Trader - Production Ready         |
 //|    Market/Pending execution, Risk/Manual lot, SL/TP visual lines |
 //|    Drag-and-dock panel, Scale-out, Assign SL/TP, Hotkeys         |
 //+------------------------------------------------------------------+
-#property version   "1.10"
-#property description "Professional Chart Trader. Market/Pending, Risk/Lot, SL/TP lines, Scale-out, Hotkeys."
+#property version   "1.12"
+#property description "Chart Trader: Zone preview (Target/Stop), draggable handles, P&L/R:R box, Preview (P). Production ready."
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -14,8 +14,8 @@ CTrade trade;
 input group "Risk Settings"
 input double   InpDefRiskUnits= 0.001;     // Default Risk Units (1 unit = 0.1%)
 input double   InpRiskStep    = 0.001;     // Risk Adjustment Step
-input int      InpDefSL       = 5000;       // Default SL (points)
-input int      InpDefTP       = 5000;       // Default TP (points)
+input int      InpDefSL       = 2500;       // Default SL (points)
+input int      InpDefTP       = 1000;       // Default TP (points)
 input double   InpScalePct    = 50.0;     // Default Scale-out %
 input int      InpAdjStep     = 200;        // Adjustment Step (points)
 input int      InpEntryStep   = 50;         // Entry Line Step (points)
@@ -47,6 +47,15 @@ input color    InpClrTimerTitle = C'168,168,168';   // Timer Title (Silver)
 input color    InpClrSL       = C'255,255,255';     // SL Line (White)
 input color    InpClrTP       = C'200,200,200';     // TP Line (Light Gray, grayscale)
 
+input group "Zone Preview (Target/Stop areas)"
+input bool     InpShowPreview = true;               // Show zone preview by default
+input color    InpClrZoneTP   = C'0,90,70';         // Target zone fill (dark teal)
+input color    InpClrZoneSL   = C'100,0,0';         // Stop zone fill (dark red)
+input color    InpClrZoneTPLabel = C'0,160,120';    // Target label text
+input color    InpClrZoneSLLabel = C'160,0,0';      // Stop label text
+input color    InpClrZoneHandle  = C'0,120,215';    // Border/drag handles (blue)
+input color    InpClrZonePnLBox  = C'180,60,60';    // P&L box when loss
+
 input group "Information Colors (Grayscale)"
 input color    InpClrInfoPnLBase = C'220,220,220';  // PnL Base (Light Gray)
 input color    InpClrInfoPnLWin  = C'200,200,200';  // PnL Win (Light Gray)
@@ -74,6 +83,7 @@ input bool     InpShowBalance = true;      // Show Account Balance
 
 input group "Keymapping"
 input int      InpKeyDock     = 89;       // Dock Panel Hotkey ('Y' default)
+input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' default)
 
 // --- UI CONSTANTS ---
 #define BTN_H        24
@@ -169,6 +179,13 @@ input int      InpKeyDock     = 89;       // Dock Panel Hotkey ('Y' default)
 
 #define LINE_SL      PREFIX + "LineSL"
 #define LINE_TP      PREFIX + "LineTP"
+#define ZONE_TP      PREFIX + "ZoneTP"
+#define ZONE_SL      PREFIX + "ZoneSL"
+#define LBL_ZONE_TP  PREFIX + "LblZoneTP"
+#define LBL_ZONE_SL  PREFIX + "LblZoneSL"
+#define LBL_ZONE_PNL PREFIX + "LblZonePnL"
+#define LINE_ENTRY_ZONE PREFIX + "LineEntryZone"   // Entry divider when zones on
+#define BTN_PREVIEW  PREFIX + "Preview"
 
 // Inputs
 #define EDIT_RISK    PREFIX + "EditRisk"
@@ -250,6 +267,9 @@ bool g_IsManualLotMode = true; // Default Mode
 // --- Dock State ---
 bool g_IsDocked       = false; // When true, panel is locked and drag is prevented
 
+// --- Zone Preview State ---
+bool g_ShowPreview    = true;  // Show Target/Stop zones instead of lines (toggle via button/key)
+
 // --- Panel content height (computed in CreateGUI so footer is inside border) ---
 int  g_PanelContentH  = 370;
 
@@ -293,6 +313,7 @@ int OnInit()
    g_ScalePct  = InpScalePct;
    g_LotSize   = 0.01; // Default Manual Lot Size
    g_IsManualLotMode = true; // Enforce default
+   g_ShowPreview     = InpShowPreview;
    
    // Enable mouse move events for drag-and-drop
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
@@ -502,7 +523,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       int key = (int)lparam;
       if(key == InpKeyDock) {
          g_IsDocked = !g_IsDocked;
-         if(ObjectFind(0, BTN_DOCK) >= 0) ObjectSetString(0, BTN_DOCK, OBJPROP_TEXT, g_IsDocked ? "_" : "_");
+         if(ObjectFind(0, BTN_DOCK) >= 0) ObjectSetString(0, BTN_DOCK, OBJPROP_TEXT, "D");
+         ChartRedraw();
+         return;
+      }
+      if(key == InpKeyPreview) {
+         g_ShowPreview = !g_ShowPreview;
+         if(ObjectFind(0, BTN_PREVIEW) >= 0)
+            ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)");
+         DrawVisualLines(true);
          ChartRedraw();
          return;
       }
@@ -585,6 +614,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       }
       else if(sparam == BTN_ASGN_SL) { AssignSLToAll(); ResetBtn(BTN_ASGN_SL); }
       else if(sparam == BTN_ASGN_TP) { AssignTPToAll(); ResetBtn(BTN_ASGN_TP); }
+      else if(sparam == BTN_PREVIEW) {
+         g_ShowPreview = !g_ShowPreview;
+         ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)");
+         DrawVisualLines(true);
+         ResetBtn(BTN_PREVIEW);
+      }
       ChartRedraw();
    }
    
@@ -1205,6 +1240,12 @@ bool DrawVisualLines(bool forceUpdate = false) {
       if(ObjectFind(0, LINE_SL) >= 0) ObjectDelete(0, LINE_SL);
       if(ObjectFind(0, LINE_TP) >= 0) ObjectDelete(0, LINE_TP);
       if(ObjectFind(0, LINE_ENTRY) >= 0) ObjectDelete(0, LINE_ENTRY);
+      if(ObjectFind(0, LINE_ENTRY_ZONE) >= 0) ObjectDelete(0, LINE_ENTRY_ZONE);
+      if(ObjectFind(0, ZONE_TP) >= 0) ObjectDelete(0, ZONE_TP);
+      if(ObjectFind(0, ZONE_SL) >= 0) ObjectDelete(0, ZONE_SL);
+      if(ObjectFind(0, LBL_ZONE_TP) >= 0) ObjectDelete(0, LBL_ZONE_TP);
+      if(ObjectFind(0, LBL_ZONE_SL) >= 0) ObjectDelete(0, LBL_ZONE_SL);
+      if(ObjectFind(0, LBL_ZONE_PNL) >= 0) ObjectDelete(0, LBL_ZONE_PNL);
       return false;
    }
    
@@ -1225,22 +1266,21 @@ bool DrawVisualLines(bool forceUpdate = false) {
        
        entryPrice = g_PendingPrice;
        
+       bool zoneStyle = g_ShowPreview && (EnableSL && g_SL_Points > 0) && (EnableTP && g_TP_Points > 0);
        if(ObjectFind(0, LINE_ENTRY) < 0) {
            ObjectCreate(0, LINE_ENTRY, OBJ_HLINE, 0, 0, entryPrice);
-           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_COLOR, C'220,220,220'); // Light Gray (grayscale)
            ObjectSetInteger(0, LINE_ENTRY, OBJPROP_STYLE, STYLE_SOLID);
-           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_WIDTH, 2); // Bolder Price Line
            ObjectSetInteger(0, LINE_ENTRY, OBJPROP_SELECTABLE, true);
            ObjectSetInteger(0, LINE_ENTRY, OBJPROP_SELECTED, true);
-           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_ZORDER, 100);   // On top for easy drag
-           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_BACK, false);   // Foreground
-       } else {
-           ObjectSetInteger(0, LINE_ENTRY, OBJPROP_ZORDER, 100);
            ObjectSetInteger(0, LINE_ENTRY, OBJPROP_BACK, false);
+       } else {
            if((forceUpdate || !ObjectGetInteger(0, LINE_ENTRY, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE) != entryPrice) {
                ObjectMove(0, LINE_ENTRY, 0, 0, entryPrice);
            }
        }
+       ObjectSetInteger(0, LINE_ENTRY, OBJPROP_COLOR, zoneStyle ? InpClrZoneHandle : (color)C'220,220,220');
+       ObjectSetInteger(0, LINE_ENTRY, OBJPROP_WIDTH, zoneStyle ? 1 : 2);
+       ObjectSetInteger(0, LINE_ENTRY, OBJPROP_ZORDER, zoneStyle ? 250 : 100);
    }
 
    // Optimization Check
@@ -1257,78 +1297,180 @@ bool DrawVisualLines(bool forceUpdate = false) {
    
    bool changed = false;
 
-   // --- SL Logic ---
+   // --- Time range for zone rectangles: left = first visible bar, right = current bar (bar 0) ---
+   int firstBar = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
+   datetime t1 = iTime(_Symbol, _Period, firstBar);   // left edge (oldest visible)
+   datetime t2 = iTime(_Symbol, _Period, 0);          // right edge (current bar)
+   if(t1 <= 0 || t2 <= 0) { t1 = TimeCurrent() - PeriodSeconds(_Period) * 100; t2 = TimeCurrent() + PeriodSeconds(_Period) * 10; }
+
+   // --- SL Logic (line for drag + zone when preview on) ---
+   double slPrice = 0;
    if(EnableSL && g_SL_Points > 0) {
-      double price = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
-      price = NormalizeDouble(price, digits);
+      slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
+      slPrice = NormalizeDouble(slPrice, digits);
       
-      double profit = 0;
-      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, price, profit)) profit = 0;
+      double slProfit = 0;
+      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
+      string slTooltip = StringFormat("SL: %d pts (%s %.2f)", g_SL_Points, (slProfit >= 0 ? "+" : ""), slProfit);
       
-      string slTooltip = StringFormat("SL: %d pts (%s %.2f)", g_SL_Points, (profit >= 0 ? "+" : ""), profit);
+      bool useZones = g_ShowPreview;
+      color lineClr = useZones ? InpClrZoneHandle : InpClrSL;
+      int lineW = useZones ? 1 : 2;
       
       if(ObjectFind(0, LINE_SL) < 0) {
-         ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, price);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, InpClrSL);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_DOT);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, 2); // Bolder SL Line
+         ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, slPrice);
          ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTABLE, true);
          ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTED, true);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, 100);   // On top for easy drag
-         ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);   // Foreground
-         ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, slTooltip);
          changed = true;
+      }
+      ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, lineClr);
+      ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_SOLID);
+      ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, lineW);
+      ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, useZones ? 250 : 100);
+      ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
+      ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, useZones ? "SL (drag to adjust)" : slTooltip);
+      if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)
+         ObjectMove(0, LINE_SL, 0, 0, slPrice);
+      
+      if(useZones) {
+         double slLo = MathMin(entryPrice, slPrice);
+         double slHi = MathMax(entryPrice, slPrice);
+         if(ObjectFind(0, ZONE_SL) >= 0) ObjectDelete(0, ZONE_SL);
+         ObjectCreate(0, ZONE_SL, OBJ_RECTANGLE, 0, t1, slLo, t2, slHi);
+         ObjectSetInteger(0, ZONE_SL, OBJPROP_COLOR, InpClrZoneHandle);
+         ObjectSetInteger(0, ZONE_SL, OBJPROP_BGCOLOR, InpClrZoneSL);
+         ObjectSetInteger(0, ZONE_SL, OBJPROP_FILL, true);
+         ObjectSetInteger(0, ZONE_SL, OBJPROP_BACK, false);
+         ObjectSetInteger(0, ZONE_SL, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, ZONE_SL, OBJPROP_ZORDER, 200);
+         string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+         string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
+         if(ObjectFind(0, LBL_ZONE_SL) < 0) {
+            ObjectCreate(0, LBL_ZONE_SL, OBJ_TEXT, 0, t2, slLo);
+            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);
+            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_COLOR, InpClrZoneSLLabel);
+            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_FONTSIZE, 9);
+            ObjectSetString(0, LBL_ZONE_SL, OBJPROP_FONT, FONT_MAIN);
+            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BACK, false);
+            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ZORDER, 201);
+         }
+         ObjectSetString(0, LBL_ZONE_SL, OBJPROP_TEXT, slText);
+         ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_TIME, t2);
+         ObjectSetDouble(0, LBL_ZONE_SL, OBJPROP_PRICE, slLo);
       } else {
-         ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, 100);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
-         if(ObjectGetString(0, LINE_SL, OBJPROP_TOOLTIP) != slTooltip) {
-             ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, slTooltip);
-             changed = true;
-         }
-         if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != price) {
-             ObjectMove(0, LINE_SL, 0, 0, price);
-             changed = true;
-         }
+         if(ObjectFind(0, ZONE_SL) >= 0) { ObjectDelete(0, ZONE_SL); changed = true; }
+         if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
       }
    } else {
       if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
+      if(ObjectFind(0, ZONE_SL) >= 0) { ObjectDelete(0, ZONE_SL); changed = true; }
+      if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
    }
 
-   // --- TP Logic ---
+   // --- TP Logic (line for drag + zone when preview on) ---
+   double tpPrice = 0;
    if(EnableTP && g_TP_Points > 0) {
-      double price = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
-      price = NormalizeDouble(price, digits);
+      tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
+      tpPrice = NormalizeDouble(tpPrice, digits);
       
-      double profit = 0;
-      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, price, profit)) profit = 0;
+      double tpProfit = 0;
+      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
+      string tpTooltip = StringFormat("TP: %d pts (%s %.2f)", g_TP_Points, (tpProfit >= 0 ? "+" : ""), tpProfit);
       
-      string tpTooltip = StringFormat("TP: %d pts (%s %.2f)", g_TP_Points, (profit >= 0 ? "+" : ""), profit);
+      bool useZones = g_ShowPreview;
+      color lineClr = useZones ? InpClrZoneHandle : InpClrTP;
+      int lineW = useZones ? 1 : 2;
       
       if(ObjectFind(0, LINE_TP) < 0) {
-          ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, price);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, InpClrTP);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_DOT);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, 2); // Bolder TP Line
-          ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, 100);   // On top for easy drag
-          ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);   // Foreground
-          ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, tpTooltip);
-          changed = true;
+         ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, tpPrice);
+         ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
+         ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
+         changed = true;
+      }
+      ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, lineClr);
+      ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_SOLID);
+      ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, lineW);
+      ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, useZones ? 250 : 100);
+      ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
+      ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, useZones ? "TP (drag to adjust)" : tpTooltip);
+      if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)
+         ObjectMove(0, LINE_TP, 0, 0, tpPrice);
+      
+      if(useZones) {
+         double tpLo = MathMin(entryPrice, tpPrice);
+         double tpHi = MathMax(entryPrice, tpPrice);
+         if(ObjectFind(0, ZONE_TP) >= 0) ObjectDelete(0, ZONE_TP);
+         ObjectCreate(0, ZONE_TP, OBJ_RECTANGLE, 0, t1, tpLo, t2, tpHi);
+         ObjectSetInteger(0, ZONE_TP, OBJPROP_COLOR, InpClrZoneHandle);
+         ObjectSetInteger(0, ZONE_TP, OBJPROP_BGCOLOR, InpClrZoneTP);
+         ObjectSetInteger(0, ZONE_TP, OBJPROP_FILL, true);
+         ObjectSetInteger(0, ZONE_TP, OBJPROP_BACK, false);
+         ObjectSetInteger(0, ZONE_TP, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, ZONE_TP, OBJPROP_ZORDER, 200);
+         string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+         string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
+         if(ObjectFind(0, LBL_ZONE_TP) < 0) {
+            ObjectCreate(0, LBL_ZONE_TP, OBJ_TEXT, 0, t2, tpHi);
+            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER);
+            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_COLOR, InpClrZoneTPLabel);
+            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_FONTSIZE, 9);
+            ObjectSetString(0, LBL_ZONE_TP, OBJPROP_FONT, FONT_MAIN);
+            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BACK, false);
+            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ZORDER, 201);
+         }
+         ObjectSetString(0, LBL_ZONE_TP, OBJPROP_TEXT, tpText);
+         ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_TIME, t2);
+         ObjectSetDouble(0, LBL_ZONE_TP, OBJPROP_PRICE, tpHi);
+         
+         // Open P&L / R:R box when we have positions (in target zone area)
+         if(last_Positions > 0 && g_SL_Points > 0 && g_TP_Points > 0) {
+            double rr = (double)g_TP_Points / (double)g_SL_Points;
+            double openPnL = last_PnL;
+            int qty = last_Positions;
+            string pnlStr = StringFormat("Open P&L: %.2f, Qty: %d  Risk/Reward Ratio: %.2f", openPnL, qty, rr);
+            if(ObjectFind(0, LBL_ZONE_PNL) < 0) {
+               ObjectCreate(0, LBL_ZONE_PNL, OBJ_TEXT, 0, t1, (tpLo + tpHi) / 2.0);
+               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_COLOR, openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox);
+               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_FONTSIZE, 9);
+               ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_FONT, FONT_MAIN);
+               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BACK, false);
+               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ZORDER, 201);
+            }
+            ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_TEXT, pnlStr);
+            ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_COLOR, openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox);
+         } else {
+            if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+         }
       } else {
-          ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, 100);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
-          if(ObjectGetString(0, LINE_TP, OBJPROP_TOOLTIP) != tpTooltip) {
-              ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, tpTooltip);
-              changed = true;
-          }
-          if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != price) {
-              ObjectMove(0, LINE_TP, 0, 0, price);
-              changed = true;
-          }
+         if(ObjectFind(0, ZONE_TP) >= 0) { ObjectDelete(0, ZONE_TP); changed = true; }
+         if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
+         if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
       }
    } else {
       if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
+      if(ObjectFind(0, ZONE_TP) >= 0) { ObjectDelete(0, ZONE_TP); changed = true; }
+      if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
+      if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+   }
+
+   // --- Entry divider line when zone preview on (Market: visual only; Pending: styled above) ---
+   bool bothZones = g_ShowPreview && (EnableSL && g_SL_Points > 0) && (EnableTP && g_TP_Points > 0);
+   if(bothZones && g_ExecMode == MODE_MARKET) {
+      if(ObjectFind(0, LINE_ENTRY_ZONE) < 0) {
+         ObjectCreate(0, LINE_ENTRY_ZONE, OBJ_HLINE, 0, 0, entryPrice);
+         ObjectSetInteger(0, LINE_ENTRY_ZONE, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, LINE_ENTRY_ZONE, OBJPROP_COLOR, InpClrZoneHandle);
+         ObjectSetInteger(0, LINE_ENTRY_ZONE, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, LINE_ENTRY_ZONE, OBJPROP_WIDTH, 1);
+         ObjectSetInteger(0, LINE_ENTRY_ZONE, OBJPROP_ZORDER, 250);
+         ObjectSetInteger(0, LINE_ENTRY_ZONE, OBJPROP_BACK, false);
+         ObjectSetString(0, LINE_ENTRY_ZONE, OBJPROP_TOOLTIP, "Entry");
+      } else {
+         ObjectMove(0, LINE_ENTRY_ZONE, 0, 0, entryPrice);
+      }
+   } else {
+      if(ObjectFind(0, LINE_ENTRY_ZONE) >= 0) { ObjectDelete(0, LINE_ENTRY_ZONE); changed = true; }
    }
    return changed;
 }
@@ -1481,13 +1623,13 @@ void CreateGUI() {
    int timerW = 58;  // Width for "00:00" / "00:00:00" at same font as PnL
    CreateLbl(LBL_TIMER, "00:00", btnGroupLeft - timerGap - timerW, headerRowY, InpClrTimer, HEADER_LBL_FONT, true);
 
-   // Header buttons (top-right, with padding)
+   // Header buttons (top-right): M=Minimize, R=Reset, D=Dock (ASCII letters)
    int btnY = y + 13;
-   CreateBtn(BTN_MINMAX, IsMinimized ? "_" : "_", PanelX + InpPanelW - hPad - 18, btnY - 9, 18, 18, InpClrInactive, 9);
+   CreateBtn(BTN_MINMAX, "M", PanelX + InpPanelW - hPad - 18, btnY - 9, 18, 18, InpClrInactive, 9);
    ObjectSetString(0, BTN_MINMAX, OBJPROP_TOOLTIP, "Minimize (F) / Hide (R)");
-   CreateBtn(BTN_RESET, "_", PanelX + InpPanelW - hPad - 38, btnY - 9, 18, 18, InpClrInactive, 10);
+   CreateBtn(BTN_RESET, "R", PanelX + InpPanelW - hPad - 38, btnY - 9, 18, 18, InpClrInactive, 10);
    ObjectSetString(0, BTN_RESET, OBJPROP_TOOLTIP, "Reset Position to Default");
-   CreateBtn(BTN_DOCK, g_IsDocked ? "_" : "_", PanelX + InpPanelW - hPad - 58, btnY - 9, 18, 18, InpClrInactive, 9);
+   CreateBtn(BTN_DOCK, "D", PanelX + InpPanelW - hPad - 58, btnY - 9, 18, 18, InpClrInactive, 9);
    {
       string keyHint = (InpKeyDock >= 32 && InpKeyDock <= 126) ? CharToString((uchar)InpKeyDock) : IntegerToString(InpKeyDock);
       ObjectSetString(0, BTN_DOCK, OBJPROP_TOOLTIP, "Dock/Lock Panel (" + keyHint + ")");
@@ -1519,7 +1661,7 @@ void CreateGUI() {
    int colAction = colToggle + TOGGLE_W + GRID_GAP;
    int panelRight = PanelX + InpPanelW - CONTAINER_PAD;
    int actionW = panelRight - colAction;  // Aligns SL, TP, Scale Out to same right edge
-   int inputsHeight = 4 * (INP_ROW_H + ROW_GAP) - ROW_GAP + 16;  // 4 rows + top/bottom pad
+   int inputsHeight = 5 * (INP_ROW_H + ROW_GAP) - ROW_GAP + 16;  // 5 rows (incl. Preview) + top/bottom pad
    
    ObjectCreate(0, BG_INPUTS, OBJ_RECTANGLE_LABEL, 0, 0, 0);
    ObjectSetInteger(0, BG_INPUTS, OBJPROP_XDISTANCE, PanelX); ObjectSetInteger(0, BG_INPUTS, OBJPROP_YDISTANCE, y);
@@ -1573,6 +1715,12 @@ void CreateGUI() {
    CreateBtn(BTN_SCALE_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
    CreateBtn(BTN_SCALE, "Scale Out (S)", colToggle, y, panelRight - colToggle, EDIT_H, InpClrScale, 8);
    ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (key: S)");
+
+   y += INP_ROW_H + ROW_GAP;
+   // Preview toggle: show/hide zone (Target/Stop) preview on chart
+   CreateBtn(BTN_PREVIEW, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)", colLabel, y, panelRight - colLabel, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
+   ObjectSetString(0, BTN_PREVIEW, OBJPROP_TOOLTIP, "Toggle zone preview on chart (key: P)");
+   ObjectSetInteger(0, BTN_PREVIEW, OBJPROP_BGCOLOR, g_ShowPreview ? InpClrActive : InpClrInactive);
 
    y += INP_ROW_H + ROW_GAP;  // Row gap before action block
    
