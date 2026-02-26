@@ -731,38 +731,38 @@ void HandleEditEnd(const string &sparam)
 {
    if(sparam == EDIT_RISK) {
       if(g_IsManualLotMode) {
-          g_LotSize = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
-          UpdateCalculatedLot();
+         g_LotSize = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
+         UpdateCalculatedLot();
       } else {
-          double v = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
-           if(v < MIN_RISK_UNITS) v = MIN_RISK_UNITS;
-           g_RiskUnits = v;
-          UpdateCalculatedLot();
-          ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3));
+         double v = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
+         if(v < MIN_RISK_UNITS) v = MIN_RISK_UNITS;
+         g_RiskUnits = v;
+         UpdateCalculatedLot();
+         ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3));
       }
    }
    else if(sparam == EDIT_SL) { 
-        long v = (long)StringToInteger(ObjectGetString(0, EDIT_SL, OBJPROP_TEXT));
-         if(v < 0) v = 0;
-         if(v > MAX_SL_TP_POINTS) v = MAX_SL_TP_POINTS;
-        g_SL_Points = v;
-        ObjectSetString(0, EDIT_SL, OBJPROP_TEXT, IntegerToString(g_SL_Points));
-        DrawVisualLines(true); 
+      long v = (long)StringToInteger(ObjectGetString(0, EDIT_SL, OBJPROP_TEXT));
+      if(v < 0) v = 0;
+      if(v > MAX_SL_TP_POINTS) v = MAX_SL_TP_POINTS;
+      g_SL_Points = v;
+      ObjectSetString(0, EDIT_SL, OBJPROP_TEXT, IntegerToString(g_SL_Points));
+      DrawVisualLines(true); 
    }
    else if(sparam == EDIT_TP) { 
-        long v = (long)StringToInteger(ObjectGetString(0, EDIT_TP, OBJPROP_TEXT));
-        if(v < 0) v = 0;
-        if(v > MAX_SL_TP_POINTS) v = MAX_SL_TP_POINTS;
-        g_TP_Points = v;
-        ObjectSetString(0, EDIT_TP, OBJPROP_TEXT, IntegerToString(g_TP_Points));
-        DrawVisualLines(true); 
+      long v = (long)StringToInteger(ObjectGetString(0, EDIT_TP, OBJPROP_TEXT));
+      if(v < 0) v = 0;
+      if(v > MAX_SL_TP_POINTS) v = MAX_SL_TP_POINTS;
+      g_TP_Points = v;
+      ObjectSetString(0, EDIT_TP, OBJPROP_TEXT, IntegerToString(g_TP_Points));
+      DrawVisualLines(true); 
    }
    else if(sparam == EDIT_SCALE) {
-        double v = StringToDouble(ObjectGetString(0, EDIT_SCALE, OBJPROP_TEXT));
-         if(v < SCALE_PCT_MIN) v = SCALE_PCT_MIN;
-         if(v > SCALE_PCT_MAX) v = SCALE_PCT_MAX;
-        g_ScalePct = v;
-        ObjectSetString(0, EDIT_SCALE, OBJPROP_TEXT, DoubleToString(g_ScalePct, 0));
+      double v = StringToDouble(ObjectGetString(0, EDIT_SCALE, OBJPROP_TEXT));
+      if(v < SCALE_PCT_MIN) v = SCALE_PCT_MIN;
+      if(v > SCALE_PCT_MAX) v = SCALE_PCT_MAX;
+      g_ScalePct = v;
+      ObjectSetString(0, EDIT_SCALE, OBJPROP_TEXT, DoubleToString(g_ScalePct, 0));
    }
    ChartRedraw();
 }
