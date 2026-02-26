@@ -4,7 +4,8 @@
 //|    Market/Pending execution, Risk/Manual lot, SL/TP visual lines |
 //|    Drag-and-dock panel, Scale-out, Assign SL/TP, Hotkeys         |
 //+------------------------------------------------------------------+
-#property version   "1.13"
+#property version   "1.14"
+#property copyright "Ali Magdy"
 #property description "Chart Trader: Zone preview (Target/Stop), no black strip, labels offset. Industry-standard refactor."
 
 #include <Trade\Trade.mqh>
@@ -51,6 +52,7 @@ input color    InpClrZoneTPLabel = C'0,160,120';    // Target label text
 input color    InpClrZoneSLLabel = C'160,0,0';      // Stop label text
 input color    InpClrZoneHandle  = C'0,120,215';    // Preview line color (blue)
 input color    InpClrZonePnLBox  = C'180,60,60';    // P&L text when loss
+input int      InpZoneLineWidth  = 2;               // Preview line width (1-5)
 
 input group "Information Colors (Grayscale)"
 input color    InpClrInfoPnLBase = C'220,220,220';  // PnL Base (Light Gray)
@@ -136,6 +138,13 @@ input int      InpKeyPreview  = 84;        // Toggle Preview (T)
 #define TOGGLE_W     18        // Toggle width
 // ACTION_W computed at runtime: colAction to panelRight
 
+// --- Validation / Clamping Limits ---
+#define MAX_SL_TP_POINTS  500000   // Max SL/TP in points (prevents overflow)
+#define DEFAULT_PEND_OFFSET 100    // Default pending entry offset in points
+#define SCALE_PCT_MIN     5.0      // Min scale-out %
+#define SCALE_PCT_MAX     100.0    // Max scale-out %
+#define MIN_RISK_UNITS    0.001    // Min risk units value
+
 // --- Key Name Helper (converts keycode to display string) ---
 string KN(int key) {
    if(key == 9)   return "TAB";
@@ -145,6 +154,25 @@ string KN(int key) {
    if(key == 220) return "\\";
    if(key >= 32 && key <= 126) return CharToString((uchar)key);
    return IntegerToString(key);
+}
+
+// --- Position/Order Ownership Filter (centralizes symbol + magic check) ---
+bool IsOwnPosition(ulong ticket) {
+   return PositionSelectByTicket(ticket) &&
+          PositionGetString(POSITION_SYMBOL) == _Symbol &&
+          PositionGetInteger(POSITION_MAGIC) == InpMagic;
+}
+
+bool IsOwnOrder(ulong ticket) {
+   return OrderSelect(ticket) &&
+          OrderGetString(ORDER_SYMBOL) == _Symbol &&
+          OrderGetInteger(ORDER_MAGIC) == InpMagic;
+}
+
+// --- Safe Object Deletion (returns true if deleted) ---
+bool TryDeleteObj(string name) {
+   if(ObjectFind(0, name) >= 0) { ObjectDelete(0, name); return true; }
+   return false;
 }
 
 // --- OBJECT NAMES ---
@@ -434,7 +462,7 @@ bool UpdatePnL() {
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+      if(IsOwnPosition(ticket)) {
          pnl += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
          posCount++;
       }
@@ -446,11 +474,11 @@ bool UpdatePnL() {
           string pnlText = "PnL: " + DoubleToString(pnl, 2) + " (" + IntegerToString(posCount) + ")";
           ObjectSetString(0, LBL_PNL, OBJPROP_TEXT, pnlText);
           
-          // Color: Green when profit, Red when loss, White when flat
-          color pnlColor = InpClrInfoPnLBase; // Default
-          if(posCount > 0) {
-             if(pnl > 0) pnlColor = InpClrInfoPnLWin;       // Green/Win
-             else if(pnl < 0) pnlColor = InpClrInfoPnLLoss;  // Red/Loss
+           // Color: Lighter when profit, Darker when loss, Base when flat
+           color pnlColor = InpClrInfoPnLBase; // Default
+           if(posCount > 0) {
+              if(pnl > 0) pnlColor = InpClrInfoPnLWin;       // Winning
+              else if(pnl < 0) pnlColor = InpClrInfoPnLLoss;  // Losing
           }
           ObjectSetInteger(0, LBL_PNL, OBJPROP_COLOR, pnlColor);
        }
@@ -685,16 +713,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
              UpdateCalculatedLot(); // Clamps to min/max/step
          } else {
              double v = StringToDouble(ObjectGetString(0, EDIT_RISK, OBJPROP_TEXT));
-             if(v < 0.001) v = 0.001;
-             g_RiskUnits = v;
+              if(v < MIN_RISK_UNITS) v = MIN_RISK_UNITS;
+              g_RiskUnits = v;
              UpdateCalculatedLot();
              ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3)); // Sync display after clamp
          }
       }
       else if(sparam == EDIT_SL) { 
            long v = (long)StringToInteger(ObjectGetString(0, EDIT_SL, OBJPROP_TEXT));
-           if(v < 0) v = 0;
-           if(v > 500000) v = 500000; // Cap to avoid overflow in point math
+            if(v < 0) v = 0;
+            if(v > MAX_SL_TP_POINTS) v = MAX_SL_TP_POINTS;
            g_SL_Points = v;
            ObjectSetString(0, EDIT_SL, OBJPROP_TEXT, IntegerToString(g_SL_Points));
            DrawVisualLines(true); 
@@ -702,15 +730,15 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       else if(sparam == EDIT_TP) { 
            long v = (long)StringToInteger(ObjectGetString(0, EDIT_TP, OBJPROP_TEXT));
            if(v < 0) v = 0;
-           if(v > 500000) v = 500000;
+           if(v > MAX_SL_TP_POINTS) v = MAX_SL_TP_POINTS;
            g_TP_Points = v;
            ObjectSetString(0, EDIT_TP, OBJPROP_TEXT, IntegerToString(g_TP_Points));
            DrawVisualLines(true); 
       }
       else if(sparam == EDIT_SCALE) {
            double v = StringToDouble(ObjectGetString(0, EDIT_SCALE, OBJPROP_TEXT));
-           if(v < 5) v = 5;
-           if(v > 100) v = 100;
+            if(v < SCALE_PCT_MIN) v = SCALE_PCT_MIN;
+            if(v > SCALE_PCT_MAX) v = SCALE_PCT_MAX;
            g_ScalePct = v;
            ObjectSetString(0, EDIT_SCALE, OBJPROP_TEXT, DoubleToString(g_ScalePct, 0));
       }
@@ -808,7 +836,7 @@ void AdjustLotOrRisk(int direction) {
    } else {
        // Risk Adjustment
        g_RiskUnits += (direction * InpRiskStep);
-       if(g_RiskUnits < 0.001) g_RiskUnits = 0.001;
+        if(g_RiskUnits < MIN_RISK_UNITS) g_RiskUnits = MIN_RISK_UNITS;
        
        ObjectSetString(0, EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_RiskUnits, 3));
        UpdateCalculatedLot();
@@ -907,14 +935,14 @@ void UpdateMarginInfo() {
 
 void AdjustScale(double change) {
    g_ScalePct += change;
-   if(g_ScalePct < 5) g_ScalePct = 5;
-   if(g_ScalePct > 100) g_ScalePct = 100;
+    if(g_ScalePct < SCALE_PCT_MIN) g_ScalePct = SCALE_PCT_MIN;
+    if(g_ScalePct > SCALE_PCT_MAX) g_ScalePct = SCALE_PCT_MAX;
    
    ObjectSetString(0, EDIT_SCALE, OBJPROP_TEXT, DoubleToString(g_ScalePct, 0));
 }
 
 void ScaleOut() {
-   if(g_ScalePct <= 0 || g_ScalePct > 100) return;
+    if(g_ScalePct <= 0 || g_ScalePct > SCALE_PCT_MAX) return;
    
    double minVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double stepVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
@@ -924,7 +952,7 @@ void ScaleOut() {
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+      if(IsOwnPosition(ticket)) {
          double vol = PositionGetDouble(POSITION_VOLUME);
          double closeVol = vol * (g_ScalePct / 100.0);
          closeVol = MathFloor(closeVol / stepVol) * stepVol;
@@ -945,7 +973,7 @@ void AdjustEntryLine(int step) {
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    if(point <= 0) return;
 
-   if(g_PendingPrice <= 0) g_PendingPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + (100 * point);
+    if(g_PendingPrice <= 0) g_PendingPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + (DEFAULT_PEND_OFFSET * point);
 
    g_PendingPrice += (step * point);
    if(g_PendingPrice <= 0) g_PendingPrice = point;
@@ -986,8 +1014,7 @@ void AssignSLToAll() {
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      if(!IsOwnPosition(ticket)) continue;
       
       double newSL = 0;
       if(useVisualSL) {
@@ -1005,8 +1032,7 @@ void AssignSLToAll() {
    for(int i = OrdersTotal()-1; i >= 0; i--) {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
-      if(!OrderSelect(ticket)) continue;
-      if(OrderGetString(ORDER_SYMBOL) != _Symbol || OrderGetInteger(ORDER_MAGIC) != InpMagic) continue;
+      if(!IsOwnOrder(ticket)) continue;
       
       long type = OrderGetInteger(ORDER_TYPE);
       double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
@@ -1040,8 +1066,7 @@ void AssignTPToAll() {
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      if(!IsOwnPosition(ticket)) continue;
       
       double newTP = 0;
       if(useVisualTP) {
@@ -1059,8 +1084,7 @@ void AssignTPToAll() {
    for(int i = OrdersTotal()-1; i >= 0; i--) {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
-      if(!OrderSelect(ticket)) continue;
-      if(OrderGetString(ORDER_SYMBOL) != _Symbol || OrderGetInteger(ORDER_MAGIC) != InpMagic) continue;
+      if(!IsOwnOrder(ticket)) continue;
       
       long type = OrderGetInteger(ORDER_TYPE);
       double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
@@ -1109,7 +1133,7 @@ void ExecuteOrder(ENUM_ORDER_TYPE type) {
       if(ObjectFind(0, LINE_ENTRY) >= 0)
          price = ObjectGetDouble(0, LINE_ENTRY, OBJPROP_PRICE);
       else {
-         if(g_PendingPrice == 0) g_PendingPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + (100 * point);
+          if(g_PendingPrice == 0) g_PendingPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK) + (DEFAULT_PEND_OFFSET * point);
          price = g_PendingPrice;
       }
    }
@@ -1187,7 +1211,7 @@ void ClosePositions(int filter) {
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+      if(IsOwnPosition(ticket)) {
          bool shouldClose = false;
          long type = PositionGetInteger(POSITION_TYPE);
          double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
@@ -1210,7 +1234,7 @@ void ClosePending() {
    for(int i = OrdersTotal()-1; i >= 0; i--) {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
-      if(OrderSelect(ticket) && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic) {
+      if(IsOwnOrder(ticket)) {
          if(!trade.OrderDelete(ticket))
             PrintFormat("ClosePending Error ticket %I64u: %d", ticket, GetLastError());
       }
@@ -1230,13 +1254,13 @@ void FlipSide() {
 //+------------------------------------------------------------------+
 bool DrawVisualLines(bool forceUpdate = false) {
    if(!IsPanelVisible) {
-      if(ObjectFind(0, LINE_SL) >= 0) ObjectDelete(0, LINE_SL);
-      if(ObjectFind(0, LINE_TP) >= 0) ObjectDelete(0, LINE_TP);
-      if(ObjectFind(0, LINE_ENTRY) >= 0) ObjectDelete(0, LINE_ENTRY);
-      if(ObjectFind(0, LINE_ENTRY_ZONE) >= 0) ObjectDelete(0, LINE_ENTRY_ZONE);
-      if(ObjectFind(0, LBL_ZONE_TP) >= 0) ObjectDelete(0, LBL_ZONE_TP);
-      if(ObjectFind(0, LBL_ZONE_SL) >= 0) ObjectDelete(0, LBL_ZONE_SL);
-      if(ObjectFind(0, LBL_ZONE_PNL) >= 0) ObjectDelete(0, LBL_ZONE_PNL);
+      TryDeleteObj(LINE_SL);
+      TryDeleteObj(LINE_TP);
+      TryDeleteObj(LINE_ENTRY);
+      TryDeleteObj(LINE_ENTRY_ZONE);
+      TryDeleteObj(LBL_ZONE_TP);
+      TryDeleteObj(LBL_ZONE_SL);
+      TryDeleteObj(LBL_ZONE_PNL);
       return false;
    }
    
@@ -1249,11 +1273,11 @@ bool DrawVisualLines(bool forceUpdate = false) {
    
    if(g_ExecMode == MODE_MARKET) {
       entryPrice = IsLongMode ? ask : bid;
-      if(ObjectFind(0, LINE_ENTRY) >= 0) ObjectDelete(0, LINE_ENTRY);
+      TryDeleteObj(LINE_ENTRY);
    } else {
        // PENDING - Absolute Price
        double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-       if(g_PendingPrice == 0) g_PendingPrice = ask + (100 * point);
+        if(g_PendingPrice == 0) g_PendingPrice = ask + (DEFAULT_PEND_OFFSET * point);
        
        entryPrice = g_PendingPrice;
        
@@ -1274,8 +1298,8 @@ bool DrawVisualLines(bool forceUpdate = false) {
        ObjectSetInteger(0, LINE_ENTRY, OBJPROP_ZORDER, zoneStyle ? 250 : 100);
    }
 
-   // Optimization Check
-   if(entryPrice == last_Mid && g_SL_Points == last_SL && g_TP_Points == last_TP && g_LotSize == last_Lot && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && !forceUpdate) {
+   // Optimization Check (using MathAbs for float safety)
+   if(MathAbs(entryPrice - last_Mid) < 0.000001 && g_SL_Points == last_SL && g_TP_Points == last_TP && MathAbs(g_LotSize - last_Lot) < 0.000001 && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && !forceUpdate) {
       return false;
    }
    
@@ -1305,7 +1329,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
         
         color lineClr = InpClrZoneHandle;
-        int lineW = 1;
+        int lineW = InpZoneLineWidth;
         
         if(ObjectFind(0, LINE_SL) < 0) {
            ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, slPrice);
@@ -1341,8 +1365,8 @@ bool DrawVisualLines(bool forceUpdate = false) {
            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_FONTSIZE, 10);
         }
      } else {
-        if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
-        if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
+        if(TryDeleteObj(LINE_SL)) changed = true;
+        if(TryDeleteObj(LBL_ZONE_SL)) changed = true;
      }
 
      // --- TP Logic (only draw line + label when preview is ON) ---
@@ -1355,7 +1379,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
         
         color lineClr = InpClrZoneHandle;
-        int lineW = 1;
+        int lineW = InpZoneLineWidth;
         
         if(ObjectFind(0, LINE_TP) < 0) {
            ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, tpPrice);
@@ -1414,12 +1438,12 @@ bool DrawVisualLines(bool forceUpdate = false) {
               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_FONTSIZE, 10);
            }
         } else {
-           if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+           if(TryDeleteObj(LBL_ZONE_PNL)) changed = true;
         }
      } else {
-        if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
-        if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
-        if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+        if(TryDeleteObj(LINE_TP)) changed = true;
+        if(TryDeleteObj(LBL_ZONE_TP)) changed = true;
+        if(TryDeleteObj(LBL_ZONE_PNL)) changed = true;
      }
 
    // --- Entry divider line when zone preview on (Market: visual only; Pending: styled above) ---
@@ -1438,7 +1462,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
          ObjectMove(0, LINE_ENTRY_ZONE, 0, 0, entryPrice);
       }
    } else {
-      if(ObjectFind(0, LINE_ENTRY_ZONE) >= 0) { ObjectDelete(0, LINE_ENTRY_ZONE); changed = true; }
+      if(TryDeleteObj(LINE_ENTRY_ZONE)) changed = true;
    }
    return changed;
 }
@@ -1465,8 +1489,8 @@ void UpdateToggleState() {
    }
    
    if(g_ExecMode == MODE_MARKET) {
-      if(ObjectFind(0, BTN_ENTRY_UP) >= 0) ObjectDelete(0, BTN_ENTRY_UP);
-      if(ObjectFind(0, BTN_ENTRY_DN) >= 0) ObjectDelete(0, BTN_ENTRY_DN);
+      TryDeleteObj(BTN_ENTRY_UP);
+      TryDeleteObj(BTN_ENTRY_DN);
    }
    
    // Only rebuild GUI when mode/direction changes require layout changes (entry arrows appear/disappear)
@@ -1553,13 +1577,21 @@ void FireRepeatAction() {
 //| GUI Creation                                                     |
 //+------------------------------------------------------------------+
 void CreateGUI() {
-   // Reset Cache to force UI update
-   last_PnL       = -DBL_MAX;
-   last_Positions = -1;
-   last_Mid       = 0;
-   last_SL        = -1; // Force line redraw
+   // Reset ALL caches to force full UI refresh
+   last_PnL          = -DBL_MAX;
+   last_Positions    = -1;
+   last_Mid          = 0;
+   last_SL           = -1;
+   last_TP           = -1;
+   last_Lot          = -1;
+   last_Mode         = true;
+   last_ExecMode     = MODE_MARKET;
+   last_ShowPreview  = true;
    
    if(!IsPanelVisible) return;
+   
+   ObjectsDeleteAll(0, PREFIX); // Enforce clean slate before rebuilding panel
+   
    int y = PanelY;
    int panelH = IsMinimized ? HEADER_H : MathMax(InpPanelH, 370);  // ensure min height for footer
 
@@ -1704,8 +1736,8 @@ void CreateGUI() {
       ObjectSetString(0, BTN_ENTRY_UP, OBJPROP_TOOLTIP, "Move Entry Line Up (" + KN(InpKeyEntryUp) + ")");
    } else {
       CreateBtn(BTN_MODE, modeText, PanelX + pad, y, InpPanelW - 2 * pad, EDIT_H + 4, InpClrHeader, 8);
-      if(ObjectFind(0, BTN_ENTRY_UP) >= 0) ObjectDelete(0, BTN_ENTRY_UP);
-      if(ObjectFind(0, BTN_ENTRY_DN) >= 0) ObjectDelete(0, BTN_ENTRY_DN);
+      TryDeleteObj(BTN_ENTRY_UP);
+      TryDeleteObj(BTN_ENTRY_DN);
    }
 
    y += EDIT_H + 4 + ROW_GAP;
@@ -1715,10 +1747,10 @@ void CreateGUI() {
    // --- PRIMARY BUTTON: Only show Buy in buy mode, Sell in sell mode ---
    if(IsLongMode) {
       CreateBtn(BTN_BUY, "BUY (" + KN(InpKeyBuy) + ")", PanelX + pad, y, fullBtnW, BTN_H, InpClrBuy, 10);
-      if(ObjectFind(0, BTN_SELL) >= 0) ObjectDelete(0, BTN_SELL);
+      TryDeleteObj(BTN_SELL);
    } else {
       CreateBtn(BTN_SELL, "SELL (" + KN(InpKeySell) + ")", PanelX + pad, y, fullBtnW, BTN_H, InpClrSell, 10);
-      if(ObjectFind(0, BTN_BUY) >= 0) ObjectDelete(0, BTN_BUY);
+      TryDeleteObj(BTN_BUY);
    }
    
    y += BTN_H + ROW_GAP; 
@@ -1787,6 +1819,7 @@ void CreateGUI() {
    UpdateRR();
    UpdateSpread();
    UpdatePendingCount();
+   UpdatePositionSummary();
 }
 void CreateEdit(string name, string text, int x, int y, int w) {
    if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0);
@@ -1852,10 +1885,10 @@ void TogglePanel() {
       DrawVisualLines(true); 
       ChartRedraw(); 
    }
-    else { 
-       ObjectsDeleteAll(0, PREFIX); 
-       ChartRedraw(); 
-    }
+   else { 
+      ObjectsDeleteAll(0, PREFIX); 
+      ChartRedraw(); 
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1881,7 +1914,7 @@ void UpdateSpread() {
 //| DELIGHTER: Risk:Reward Ratio Display                             |
 //+------------------------------------------------------------------+
 void UpdateRR() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_RR) < 0) return;
    
    if(g_SL_Points > 0 && g_TP_Points > 0 && EnableSL && EnableTP) {
@@ -1909,7 +1942,7 @@ void UpdatePendingCount() {
    for(int i = OrdersTotal()-1; i >= 0; i--) {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
-      if(OrderSelect(ticket) && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagic) pendCount++;
+      if(IsOwnOrder(ticket)) pendCount++;
    }
    
    string pendText = "Pending: " + IntegerToString(pendCount);
@@ -1934,7 +1967,7 @@ void UpdatePositionSummary() {
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+      if(IsOwnPosition(ticket)) {
          if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
              netVol += PositionGetDouble(POSITION_VOLUME);
              buyCount++;

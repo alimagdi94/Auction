@@ -1,11 +1,11 @@
 ﻿//+------------------------------------------------------------------+
 //|                                                  VolumeProfile.mq5|
-//|                                  Copyright 2024, User            |
+//|                                  Copyright 2025, User            |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2024, User"
+#property copyright "Copyright 2025, User"
 #property link      "https://www.mql5.com"
-#property version   "5.00"
+#property version   "5.10"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -27,7 +27,7 @@ enum ENUM_ROW_MODE
 //--- Input parameters ─── Data Source & Calculation ───
 input group "─── DATA SOURCE ───"
 sinput bool                 InpUseTicks          = true;          // Zero-Lag (Tick Data, like Footprint)
-sinput bool                 InpDynamic          = true;          // Live: extend range to now, recalc every tick
+sinput bool                 InpDynamic           = true;          // Live: extend range to now, recalc every tick
 sinput int                  InpLookBackBars      = 200;           // Initial LookBack Bars
 sinput ENUM_TIMEFRAMES      InpDataTimeframe     = PERIOD_M1;     // Data Resolution (Bar mode only)
 sinput ENUM_APPLIED_VOLUME  InpVolumeType        = VOLUME_TICK;   // Volume Type (Bar mode: Tick or Real)
@@ -80,7 +80,11 @@ int    g_prevLabelCount    = 0;
 long   g_last_tick_time_ms = 0;   // last processed tick (for dynamic tick mode)
 ulong  g_last_render_ms    = 0;    // throttle redraws
 double g_prevBid           = 0.0; // for buy/sell classification (Forex)
+//--- Compile-time constants
 #define VP_RENDER_THROTTLE_MS 33   // ~30 FPS when dynamic (like live simulator)
+#define VP_MAX_STEPS          5000 // Maximum number of price buckets to prevent memory/perf issues
+#define VP_MIN_VOLUME         0.01 // Volume threshold below which a bucket is considered empty
+#define VP_FALLBACK_RANGE_PTS 100  // Fallback price range in points when no data available
 
 //+------------------------------------------------------------------+
 //| Validated inputs (clamped to safe ranges)                         |
@@ -98,6 +102,39 @@ double GetResolution(double price_range)
    if(InpRowMode == ROW_MODE_TICKS)
       return MathMax(InpRowValue, 1) * _Point;
    return MathMax(price_range / MathMax(InpRowValue, 1), _Point);
+  }
+
+//+------------------------------------------------------------------+
+//| Compute bucket grid: range_bottom, resolution, steps (clamped)   |
+//+------------------------------------------------------------------+
+void ComputeBucketGrid(double min_price, double max_price,
+                       double &resolution, double &range_bottom, int &steps)
+  {
+   double price_range = max_price - min_price;
+   if(price_range <= 0) price_range = _Point;
+
+   resolution = GetResolution(price_range);
+   range_bottom = MathFloor(min_price / resolution) * resolution;
+   double range_top = MathCeil(max_price / resolution) * resolution;
+   steps = (int)MathCeil((range_top - range_bottom) / resolution);
+   if(steps <= 0) steps = 1;
+   if(steps > VP_MAX_STEPS)
+     {
+      resolution = price_range / (double)VP_MAX_STEPS;
+      range_bottom = MathFloor(min_price / resolution) * resolution;
+      steps = VP_MAX_STEPS;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Allocate and zero-initialise a pair of bucket arrays              |
+//+------------------------------------------------------------------+
+void InitBuckets(double &buckets_up[], double &buckets_down[], int steps)
+  {
+   ArrayResize(buckets_up,   steps);
+   ArrayResize(buckets_down, steps);
+   ArrayInitialize(buckets_up,   0.0);
+   ArrayInitialize(buckets_down, 0.0);
   }
 
 //+------------------------------------------------------------------+
@@ -153,7 +190,7 @@ string FormatVolume(double vol)
 //+------------------------------------------------------------------+
 //| Calculate how many rows to skip between labels to avoid overlap  |
 //+------------------------------------------------------------------+
-int CalcLabelSkip(int steps, double range_bottom, double range_top, double resolution)
+int CalcLabelSkip(int steps, double resolution)
   {
    if(steps <= 0) return 1;
 
@@ -193,12 +230,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   ObjectsDeleteAll(0, LINE_PREFIX);
-   ObjectsDeleteAll(0, LABEL_PREFIX);
+   ClearProfileObjects();
    ObjectDelete(0, RECT_NAME);
-   ObjectDelete(0, POC_OBJ_NAME);
-   ObjectDelete(0, VAH_OBJ_NAME);
-   ObjectDelete(0, VAL_OBJ_NAME);
   }
 
 //+------------------------------------------------------------------+
@@ -268,8 +301,8 @@ void CreateSelector()
    double price_high = iHigh(Symbol(), PERIOD_CURRENT, iHighest(Symbol(), PERIOD_CURRENT, MODE_HIGH, InpLookBackBars, 0));
    double price_low  = iLow(Symbol(), PERIOD_CURRENT, iLowest(Symbol(), PERIOD_CURRENT, MODE_LOW, InpLookBackBars, 0));
 
-   if(price_high == 0) price_high = SymbolInfoDouble(Symbol(), SYMBOL_BID) + 100 * _Point;
-   if(price_low  == 0) price_low  = SymbolInfoDouble(Symbol(), SYMBOL_BID) - 100 * _Point;
+   if(price_high == 0) price_high = SymbolInfoDouble(Symbol(), SYMBOL_BID) + VP_FALLBACK_RANGE_PTS * _Point;
+   if(price_low  == 0) price_low  = SymbolInfoDouble(Symbol(), SYMBOL_BID) - VP_FALLBACK_RANGE_PTS * _Point;
 
    ObjectCreate(0, RECT_NAME, OBJ_RECTANGLE, 0, time_start, price_high, time_current, price_low);
    ObjectSetInteger(0, RECT_NAME, OBJPROP_COLOR, InpColorSelector);
@@ -314,30 +347,8 @@ int GatherDataTicks(datetime start_time, datetime end_time,
       if(p > max_price) max_price = p;
      }
 
-   double price_range = max_price - min_price;
-   if(price_range <= 0) price_range = _Point;
-
-   if(InpRowMode == ROW_MODE_TICKS)
-      resolution = MathMax(InpRowValue, 1) * _Point;
-   else
-      resolution = MathMax(price_range / MathMax(InpRowValue, 1), _Point);
-
-   range_bottom = MathFloor(min_price / resolution) * resolution;
-   double range_top = MathCeil(max_price / resolution) * resolution;
-   steps = (int)MathCeil((range_top - range_bottom) / resolution);
-   if(steps <= 0) steps = 1;
-   if(steps > 5000)
-     {
-      resolution = price_range / 5000.0;
-      range_bottom = MathFloor(min_price / resolution) * resolution;
-      range_top    = MathCeil(max_price / resolution) * resolution;
-      steps = 5000;
-     }
-
-   ArrayResize(buckets_up,   steps);
-   ArrayResize(buckets_down, steps);
-   ArrayInitialize(buckets_up,   0.0);
-   ArrayInitialize(buckets_down, 0.0);
+    ComputeBucketGrid(min_price, max_price, resolution, range_bottom, steps);
+    InitBuckets(buckets_up, buckets_down, steps);
 
    g_prevBid = ticks[0].bid;
    for(int i = 0; i < copied; i++)
@@ -674,10 +685,9 @@ void DrawBars(int steps, double range_bottom, double resolution,
    double max_width_factor = SafeWidthFactor();
 
    // Calculate label skip interval to prevent overlap
-   double range_top = range_bottom + (steps * resolution);
    int label_skip = 1;
    if(InpShowValues)
-      label_skip = CalcLabelSkip(steps, range_bottom, range_top, resolution);
+      label_skip = CalcLabelSkip(steps, resolution);
 
    int label_count = 0;
 
@@ -690,7 +700,7 @@ void DrawBars(int steps, double range_bottom, double resolution,
       string obj_down  = LINE_PREFIX  + "D_" + IntegerToString(i);
       string obj_up    = LINE_PREFIX  + "U_" + IntegerToString(i);
 
-      if(vol_total <= 0.01)
+      if(vol_total <= VP_MIN_VOLUME)
         {
          ObjectDelete(0, obj_down);
          ObjectDelete(0, obj_up);
@@ -712,13 +722,13 @@ void DrawBars(int steps, double range_bottom, double resolution,
       datetime t_end   = start_time + (datetime)time_width_total;
 
       // Down on Left
-      if(vol_down > 0.01)
+      if(vol_down > VP_MIN_VOLUME)
          CreateOrUpdateRect(obj_down, start_time, t_split, price_level, resolution, col_down_bar);
       else
          ObjectDelete(0, obj_down);
 
       // Up on Right
-      if(vol_up > 0.01)
+      if(vol_up > VP_MIN_VOLUME)
          CreateOrUpdateRect(obj_up, t_split, t_end, price_level, resolution, col_up_bar);
       else
          ObjectDelete(0, obj_up);
@@ -781,6 +791,18 @@ void DrawKeyLines(int poc_idx, int va_high_idx, int va_low_idx,
   }
 
 //+------------------------------------------------------------------+
+//| Remove all profile objects (histogram, labels, key lines)         |
+//+------------------------------------------------------------------+
+void ClearProfileObjects()
+  {
+   ObjectsDeleteAll(0, LINE_PREFIX);
+   ObjectsDeleteAll(0, LABEL_PREFIX);
+   ObjectDelete(0, POC_OBJ_NAME);
+   ObjectDelete(0, VAH_OBJ_NAME);
+   ObjectDelete(0, VAL_OBJ_NAME);
+  }
+
+//+------------------------------------------------------------------+
 //| Main orchestrator — tick (zero-lag) or bar data, then draw       |
 //+------------------------------------------------------------------+
 void CalculateAndDraw()
@@ -811,11 +833,7 @@ void CalculateAndDraw()
                                         range_bottom, resolution, steps);
       if(tick_count <= 0)
         {
-         ObjectsDeleteAll(0, LINE_PREFIX);
-         ObjectsDeleteAll(0, LABEL_PREFIX);
-         ObjectDelete(0, POC_OBJ_NAME);
-         ObjectDelete(0, VAH_OBJ_NAME);
-         ObjectDelete(0, VAL_OBJ_NAME);
+         ClearProfileObjects();
          return;
         }
      }
@@ -826,36 +844,15 @@ void CalculateAndDraw()
       int count = GatherData(start_time, end_time, highs, lows, opens, closes, volumes);
       if(count <= 0)
         {
-         ObjectsDeleteAll(0, LINE_PREFIX);
-         ObjectsDeleteAll(0, LABEL_PREFIX);
-         ObjectDelete(0, POC_OBJ_NAME);
-         ObjectDelete(0, VAH_OBJ_NAME);
-         ObjectDelete(0, VAL_OBJ_NAME);
+         ClearProfileObjects();
          return;
         }
 
-      double max_high = highs[ArrayMaximum(highs)];
-      double min_low  = lows[ArrayMinimum(lows)];
-      double price_range = max_high - min_low;
-      if(price_range <= 0) price_range = _Point;
+       double max_high = highs[ArrayMaximum(highs)];
+       double min_low  = lows[ArrayMinimum(lows)];
 
-      resolution = GetResolution(price_range);
-      range_bottom = MathFloor(min_low  / resolution) * resolution;
-      double range_top = MathCeil(max_high / resolution) * resolution;
-      steps = (int)MathCeil((range_top - range_bottom) / resolution);
-      if(steps <= 0) steps = 1;
-      if(steps > 5000)
-        {
-         resolution = price_range / 5000.0;
-         range_bottom = MathFloor(min_low / resolution) * resolution;
-         range_top   = MathCeil(max_high / resolution) * resolution;
-         steps = 5000;
-        }
-
-      ArrayResize(buckets_up,   steps);
-      ArrayResize(buckets_down, steps);
-      ArrayInitialize(buckets_up,   0.0);
-      ArrayInitialize(buckets_down, 0.0);
+       ComputeBucketGrid(min_low, max_high, resolution, range_bottom, steps);
+       InitBuckets(buckets_up, buckets_down, steps);
 
       if(InpDistribution == VP_DIST_CLOSE)
          DistributeVolumeClose(count, highs, lows, opens, closes, volumes,

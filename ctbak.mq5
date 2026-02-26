@@ -43,20 +43,15 @@ input group "Visual Elements"
 input color    InpClrAsgnSL   = C'42,42,42';        // Assign SL (Charcoal)
 input color    InpClrAsgnTP   = C'42,42,42';       // Assign TP (Charcoal)
 input color    InpClrTimer    = C'255,255,255';     // Timer Color (White)
-input color    InpClrTimerTitle = C'168,168,168';   // Timer Title (Silver)
-input color    InpClrSL       = C'255,255,255';     // SL Line (White)
-input color    InpClrTP       = C'200,200,200';     // TP Line (Light Gray, grayscale)
 
-input group "Zone Preview (Target/Stop areas)"
+
+input group "Zone Preview (Target/Stop labels)"
 input bool     InpShowPreview = true;               // Show zone preview by default
-input color    InpClrZoneTP   = C'0,90,70';         // Target zone fill (dark teal)
-input color    InpClrZoneSL   = C'100,0,0';         // Stop zone fill (dark red)
 input color    InpClrZoneTPLabel = C'0,160,120';    // Target label text
 input color    InpClrZoneSLLabel = C'160,0,0';      // Stop label text
-input color    InpClrZoneHandle  = C'0,120,215';    // Border/drag handles (blue)
-input color    InpClrZoneLabelBg = C'30,30,30';     // Label background (opaque, avoids text bleed)
-input color    InpClrZonePnLBox  = C'180,60,60';    // P&L box when loss
-input int      InpZoneWidthPct   = 50;              // Zone width (% of visible chart, from right)
+input color    InpClrZoneHandle  = C'0,120,215';    // Preview line color (blue)
+input color    InpClrZonePnLBox  = C'180,60,60';    // P&L text when loss
+input int      InpZoneLineWidth  = 2;               // Preview line width (1-5)
 
 input group "Information Colors (Grayscale)"
 input color    InpClrInfoPnLBase = C'220,220,220';  // PnL Base (Light Gray)
@@ -84,8 +79,36 @@ input int      InpPanelH      = 370;       // Panel Height (min to fit footer in
 input bool     InpShowBalance = true;      // Show Account Balance
 
 input group "Keymapping"
-input int      InpKeyDock     = 89;       // Dock Panel Hotkey ('Y' default)
-input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' default)
+input int      InpKeyBuy      = 81;        // Buy (Q)
+input int      InpKeySell     = 87;        // Sell (W)
+input int      InpKeyCloseAll = 69;        // Close All (E)
+input int      InpKeyPanel    = 82;        // Toggle Panel (R)
+input int      InpKeyMinimize = 70;        // Minimize (F)
+input int      InpKeyFlip     = 86;        // Flip Side (V)
+input int      InpKeyScaleOut = 83;        // Scale Out (S)
+input int      InpKeyLotDn    = 79;        // Lot/Risk Down (O)
+input int      InpKeyLotUp    = 80;        // Lot/Risk Up (P)
+input int      InpKeyLotMode  = 220;       // Toggle Lot Mode (\)
+input int      InpKeySLToggle = 74;        // Toggle SL (J)
+input int      InpKeySLDn     = 75;        // SL Down (K)
+input int      InpKeySLUp     = 76;        // SL Up (L)
+input int      InpKeyTPToggle = 66;        // Toggle TP (B)
+input int      InpKeyTPDn     = 78;        // TP Down (N)
+input int      InpKeyTPUp     = 77;        // TP Up (M)
+input int      InpKeyScaleDn  = 85;        // Scale Down (U)
+input int      InpKeyScaleUp  = 73;        // Scale Up (I)
+input int      InpKeyAsgnSL   = 71;        // Assign SL (G)
+input int      InpKeyAsgnTP   = 72;        // Assign TP (H)
+input int      InpKeyCloseBuys= 90;        // Close Buys (Z)
+input int      InpKeyCloseSells= 88;       // Close Sells (X)
+input int      InpKeyCloseWins= 67;        // Close Wins (C)
+input int      InpKeyCloseLoss= 68;        // Close Losses (D)
+input int      InpKeyCancelPnd= 65;        // Cancel Pending (A)
+input int      InpKeyEntryDn  = 188;       // Entry Down (,)
+input int      InpKeyEntryUp  = 190;       // Entry Up (.)
+input int      InpKeyExecMode = 9;         // Toggle Market/Pending (TAB)
+input int      InpKeyDock     = 89;        // Dock Panel (Y)
+input int      InpKeyPreview  = 84;        // Toggle Preview (T)
 
 // --- UI CONSTANTS ---
 #define BTN_H        24
@@ -102,69 +125,34 @@ input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' def
 #define COL_GAP      8         // Gap between sections
 #define GRID_GAP     4         // Gap within input grid (tight)
 #define FOOTER_LEFT  12        // Footer left margin
-#define FOOTER_RIGHT 288       // Max X for footer (InpPanelW - 12)
 #define FOOTER_COL2  148       // Start X for footer right column (clear 2-col grid)
 #define FOOTER_ROW_H 14        // Footer secondary row height (Spread/Pending/R:R/Pos)
 #define INP_ROW_H    (EDIT_H + 2)   // Row height (20 + 2)
-#define INP_MARGIN   CONTAINER_PAD
-#define INP_GAP      COL_GAP
 
 // Grid: 95px fixed label column (prevents shift when toggle changes)
-#define LABEL_W      108       // Fixed label column (Manual Lot, Risk Units, Stop loss, Take profit, Scale)
-#define ARROW_W      18        // ▲/▼ button width
+#define LABEL_W      108       // Fixed label column
+#define ARROW_W      18        // Arrow button width
 #define EDIT_MAIN_W  48        // Main numeric edit (Lot/Risk/SL/TP)
 #define EDIT_SCALE_W 42        // Scale edit
-#define TOGGLE_W     18        // ✔/✖ toggle width
-// ACTION_W computed at runtime: colAction to panelRight (aligns SL, TP, Scale Out)
-#define INP_ARROW_W  ARROW_W
-#define INP_EDIT_W   EDIT_MAIN_W
-#define INP_EDIT_SLTP_W EDIT_MAIN_W
-#define INP_EDIT_SCALE_W EDIT_SCALE_W
-#define INP_TOGGLE_W TOGGLE_W
+#define TOGGLE_W     18        // Toggle width
+// ACTION_W computed at runtime: colAction to panelRight
 
-// --- KEY MAP DEFINES ---
-#define KEY_Q 81
-#define KEY_W 87
-#define KEY_E 69
-#define KEY_R 82
-#define KEY_T 84
-#define KEY_F 70
-#define KEY_G 71
-#define KEY_H 72
-#define KEY_J 74
-#define KEY_K 75
-#define KEY_L 76
-#define KEY_Z 90
-#define KEY_X 88
-#define KEY_C 67
-#define KEY_V 86
-#define KEY_B 66
-#define KEY_N 78
-#define KEY_M 77
-#define KEY_S 83
-#define KEY_D 68
-#define KEY_A 65
-#define KEY_O 79
-#define KEY_P 80
-#define KEY_Y 89
-#define KEY_U 85
-#define KEY_I 73
-#define KEY_TAB 9
-#define KEY_BACKSLASH 220
-#define KEY_COMMA     188
-#define KEY_PERIOD    190
-
-// Key map (no overlaps): Q/W=Buy/Sell, E=CloseAll, R=Panel, F=Minimize, Y=Dock(input)
-// G/H=Assign SL/TP, J/K/L=SL toggle/dn/up, B/N/M=TP toggle/dn/up, O/P=Lot/Risk dn/up
-// U/I=Scale dn/up, \=Lot mode, Tab=Market/Pending, ,/.=Entry dn/up
-// V=Flip, S=ScaleOut, Z/X=Close Buys/Sells, C/D=Close Wins/Losses, A=Cancel Pending. T=reserved.
+// --- Key Name Helper (converts keycode to display string) ---
+string KN(int key) {
+   if(key == 9)   return "TAB";
+   if(key == 188) return ",";
+   if(key == 190) return ".";
+   if(key == 192) return "`";
+   if(key == 220) return "\\";
+   if(key >= 32 && key <= 126) return CharToString((uchar)key);
+   return IntegerToString(key);
+}
 
 // --- OBJECT NAMES ---
 #define PREFIX       "W_PRO_"
 #define BG_PANEL     PREFIX + "BG"
 #define SEP_HEAD     PREFIX + "SepHead"    // Separator below header
 #define SEP_FOOT     PREFIX + "SepFoot"    // Separator above footer
-#define LBL_T_TITLE  PREFIX + "TimerTitle"
 #define BG_HEADER    PREFIX + "Head"
 #define BG_INPUTS    PREFIX + "Inp"
 #define LBL_PNL      PREFIX + "PnL"
@@ -182,19 +170,15 @@ input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' def
 
 #define LINE_SL      PREFIX + "LineSL"
 #define LINE_TP      PREFIX + "LineTP"
-#define ZONE_TP      PREFIX + "ZoneTP"
-#define ZONE_SL      PREFIX + "ZoneSL"
 #define LBL_ZONE_TP  PREFIX + "LblZoneTP"
 #define LBL_ZONE_SL  PREFIX + "LblZoneSL"
 #define LBL_ZONE_PNL PREFIX + "LblZonePnL"
 #define LINE_ENTRY_ZONE PREFIX + "LineEntryZone"
 #define BTN_PREVIEW  PREFIX + "Preview"
 
-// Zone preview draw order and layout (industry standard: fill under lines under labels)
-#define ZORDER_ZONE_FILL   200
+// Zone preview draw order and layout
 #define ZORDER_ZONE_LINE   250
 #define ZORDER_ZONE_LABEL  201
-#define ZONE_MIN_BARS      50
 #define ZONE_LABEL_BAR_OFFSET 5
 #define ZONE_LABEL_W       240
 #define ZONE_LABEL_H       22
@@ -231,7 +215,6 @@ input int      InpKeyPreview  = 80;       // Toggle zone preview hotkey ('P' def
 #define BTN_SCALE_DN PREFIX + "Scale_Dn"
 #define BTN_ASGN_SL  PREFIX + "AsgnSL"
 #define BTN_ASGN_TP  PREFIX + "AsgnTP"
-#define BTN_DIR      PREFIX + "BtnDir"
 #define BTN_MODE     PREFIX + "BtnMode"
 #define LINE_ENTRY   PREFIX + "LineEntry"
 #define BTN_ENTRY_UP PREFIX + "Entry_Up"
@@ -259,13 +242,12 @@ double g_ScalePct;
 // --- OPTIMIZATION CACHE ---
 double last_PnL       = -DBL_MAX;
 int    last_Positions = -1;
-double last_PnLState  = -99;
-bool   last_AlgoState = false;
 double last_Mid       = 0;
-int    last_SL        = -1;
-int    last_TP        = -1;
+long   last_SL        = -1;
+long   last_TP        = -1;
 double last_Lot       = -1;
 bool   last_Mode      = true;
+bool   last_ShowPreview = true;
 
 // --- NEW Execution Types ---
 enum ENUM_EXEC_MODE { MODE_MARKET=0, MODE_PENDING=1 };
@@ -447,14 +429,16 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool UpdatePnL() {
    
-   double pnl = AccountInfoDouble(ACCOUNT_PROFIT);
-   
-   // Count open positions for this symbol opened by this EA (magic)
+   // Compute PnL and position count for THIS symbol + magic only
+   double pnl = 0;
    int posCount = 0;
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) posCount++;
+      if(PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         pnl += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+         posCount++;
+      }
    }
    
    // Optimization: Only update if value changed
@@ -484,16 +468,13 @@ bool UpdatePnL() {
 bool UpdateHeader() {
    bool changed = false;
    
-   // Use position count from UpdatePnL (runs first in tick cycle via last_Positions)
-   double pnl = AccountInfoDouble(ACCOUNT_PROFIT);
-   double pnlState = (pnl >= 0) ? 1 : -1;
-   
-   // Reset TradeSequence when all positions closed
-   if(last_Positions == 0 && pnlState != last_PnLState) {
+   // Reset TradeSequence when positions transition from open to closed
+   static int s_prevPosCount = 0;
+   if(s_prevPosCount > 0 && last_Positions == 0) {
        TradeSequence = 0;
        changed = true;
    }
-   last_PnLState = pnlState;
+   s_prevPosCount = last_Positions;
    return changed;
 }
 
@@ -545,47 +526,44 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       if(key == InpKeyPreview) {
          g_ShowPreview = !g_ShowPreview;
          if(ObjectFind(0, BTN_PREVIEW) >= 0)
-            ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)");
+            ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? ("Preview On (" + KN(InpKeyPreview) + ")") : ("Preview Off (" + KN(InpKeyPreview) + ")"));
          DrawVisualLines(true);
          ChartRedraw();
          return;
       }
-      switch(key) {
-         case KEY_Q: if(isAlgoOn && IsLongMode) ExecuteOrder(ORDER_TYPE_BUY); break;   // Buy key only in buy mode
-         case KEY_W: if(isAlgoOn && !IsLongMode) ExecuteOrder(ORDER_TYPE_SELL); break; // Sell key only in sell mode
-         case KEY_E: ClosePositions(0); break;                          // Close All
-         case KEY_R: TogglePanel(); break;
-         case KEY_V: FlipSide(); break;
-         case KEY_S: ScaleOut(); break;
-         case KEY_O: AdjustLotOrRisk(-1); break;                        // Decrements Lot/Risk depending on mode
-         case KEY_P: AdjustLotOrRisk(1); break;                         // Increments Lot/Risk depending on mode
-         case KEY_BACKSLASH: ToggleLotMode(); break;                    // Toggle Risk/Lot Mode
-         case KEY_J: EnableSL = !EnableSL; UpdateToggleState(); break;
-         case KEY_K: AdjustEdit(EDIT_SL, -InpAdjStep); break;
-         case KEY_L: AdjustEdit(EDIT_SL, InpAdjStep); break;
-         case KEY_B: EnableTP = !EnableTP; UpdateToggleState(); break;
-         case KEY_N: AdjustEdit(EDIT_TP, -InpAdjStep); break;
-         case KEY_M: AdjustEdit(EDIT_TP, InpAdjStep); break;
-         case KEY_U: AdjustScale(-5); break;
-         case KEY_I: AdjustScale(5); break;
-         case KEY_G: AssignSLToAll(); break;
-         case KEY_H: AssignTPToAll(); break;
-         case KEY_F: { IsMinimized = !IsMinimized; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); } break;
-         case KEY_Z: ClosePositions(1); break;                          // Close Buys
-         case KEY_X: ClosePositions(2); break;                          // Close Sells
-         case KEY_A: ClosePending(); break;                             // Cancel Pending
-
-         case KEY_COMMA: AdjustEntryLine(-InpEntryStep); break;         // Move Entry Down
-         case KEY_PERIOD: AdjustEntryLine(InpEntryStep); break;         // Move Entry Up
-
-         case KEY_TAB: {
-            if(g_ExecMode == MODE_MARKET) g_ExecMode = MODE_PENDING;
-            else g_ExecMode = MODE_MARKET;
-            ObjectsDeleteAll(0, PREFIX + "Line");
-            UpdateToggleState();
-         } break;
-         case KEY_C: ClosePositions(3); break;   // Close Win
-         case KEY_D: ClosePositions(4); break;   // Close Loss
+      // All hotkeys use configurable input parameters
+      if(key == InpKeyBuy)       { if(isAlgoOn && IsLongMode) ExecuteOrder(ORDER_TYPE_BUY); }
+      else if(key == InpKeySell) { if(isAlgoOn && !IsLongMode) ExecuteOrder(ORDER_TYPE_SELL); }
+      else if(key == InpKeyCloseAll) { ClosePositions(0); }
+      else if(key == InpKeyPanel)    { TogglePanel(); }
+      else if(key == InpKeyFlip)     { FlipSide(); }
+      else if(key == InpKeyScaleOut) { ScaleOut(); }
+      else if(key == InpKeyLotDn)    { AdjustLotOrRisk(-1); }
+      else if(key == InpKeyLotUp)    { AdjustLotOrRisk(1); }
+      else if(key == InpKeyLotMode)  { ToggleLotMode(); }
+      else if(key == InpKeySLToggle) { EnableSL = !EnableSL; UpdateToggleState(); }
+      else if(key == InpKeySLDn)     { AdjustEdit(EDIT_SL, -InpAdjStep); }
+      else if(key == InpKeySLUp)     { AdjustEdit(EDIT_SL, InpAdjStep); }
+      else if(key == InpKeyTPToggle) { EnableTP = !EnableTP; UpdateToggleState(); }
+      else if(key == InpKeyTPDn)     { AdjustEdit(EDIT_TP, -InpAdjStep); }
+      else if(key == InpKeyTPUp)     { AdjustEdit(EDIT_TP, InpAdjStep); }
+      else if(key == InpKeyScaleDn)  { AdjustScale(-5); }
+      else if(key == InpKeyScaleUp)  { AdjustScale(5); }
+      else if(key == InpKeyAsgnSL)   { AssignSLToAll(); }
+      else if(key == InpKeyAsgnTP)   { AssignTPToAll(); }
+      else if(key == InpKeyMinimize) { IsMinimized = !IsMinimized; ObjectsDeleteAll(0, PREFIX); CreateGUI(); UpdateToggleState(); }
+      else if(key == InpKeyCloseBuys)  { ClosePositions(1); }
+      else if(key == InpKeyCloseSells) { ClosePositions(2); }
+      else if(key == InpKeyCloseWins)  { ClosePositions(3); }
+      else if(key == InpKeyCloseLoss)  { ClosePositions(4); }
+      else if(key == InpKeyCancelPnd)  { ClosePending(); }
+      else if(key == InpKeyEntryDn)    { AdjustEntryLine(-InpEntryStep); }
+      else if(key == InpKeyEntryUp)    { AdjustEntryLine(InpEntryStep); }
+      else if(key == InpKeyExecMode) {
+         if(g_ExecMode == MODE_MARKET) g_ExecMode = MODE_PENDING;
+         else g_ExecMode = MODE_MARKET;
+         ObjectsDeleteAll(0, PREFIX + "Line");
+         UpdateToggleState();
       }
       ChartRedraw();
    }
@@ -631,7 +609,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       else if(sparam == BTN_ASGN_TP) { AssignTPToAll(); ResetBtn(BTN_ASGN_TP); }
       else if(sparam == BTN_PREVIEW) {
          g_ShowPreview = !g_ShowPreview;
-         ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)");
+         ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? ("Preview On (" + KN(InpKeyPreview) + ")") : ("Preview Off (" + KN(InpKeyPreview) + ")"));
          DrawVisualLines(true);
          ResetBtn(BTN_PREVIEW);
       }
@@ -842,8 +820,9 @@ void ToggleLotMode() {
    g_IsManualLotMode = !g_IsManualLotMode;
    // Refresh UI (short labels fit 95px column, no clipping)
    if(ObjectFind(0, BTN_TOGGLE_MODE) >= 0) {
-        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TEXT, g_IsManualLotMode ? "Manual Lot O/P" : "Risk Units O/P");
-        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (O/P adjust)" : "Risk Units mode (O/P adjust)");
+        string lotKeys = KN(InpKeyLotDn) + "/" + KN(InpKeyLotUp);
+        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TEXT, g_IsManualLotMode ? ("Manual Lot " + lotKeys) : ("Risk Units " + lotKeys));
+        ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (" + lotKeys + " adjust)" : "Risk Units mode (" + lotKeys + " adjust)");
    }
    
    // Refresh Value in Edit Box
@@ -1194,7 +1173,7 @@ void ExecuteOrder(ENUM_ORDER_TYPE type) {
       double paramPrice = price;
       if(pendingType == ORDER_TYPE_BUY_LIMIT || pendingType == ORDER_TYPE_SELL_LIMIT) {
          paramLimit = price;
-         paramPrice = price;
+         paramPrice = 0.0;  // LIMIT orders: limitPrice = trigger, price = 0
       }
       
       if(trade.OrderOpen(_Symbol, pendingType, g_LotSize, paramLimit, paramPrice, sl, tp, ORDER_TIME_GTC, 0, comment))
@@ -1256,8 +1235,6 @@ bool DrawVisualLines(bool forceUpdate = false) {
       if(ObjectFind(0, LINE_TP) >= 0) ObjectDelete(0, LINE_TP);
       if(ObjectFind(0, LINE_ENTRY) >= 0) ObjectDelete(0, LINE_ENTRY);
       if(ObjectFind(0, LINE_ENTRY_ZONE) >= 0) ObjectDelete(0, LINE_ENTRY_ZONE);
-      if(ObjectFind(0, ZONE_TP) >= 0) ObjectDelete(0, ZONE_TP);
-      if(ObjectFind(0, ZONE_SL) >= 0) ObjectDelete(0, ZONE_SL);
       if(ObjectFind(0, LBL_ZONE_TP) >= 0) ObjectDelete(0, LBL_ZONE_TP);
       if(ObjectFind(0, LBL_ZONE_SL) >= 0) ObjectDelete(0, LBL_ZONE_SL);
       if(ObjectFind(0, LBL_ZONE_PNL) >= 0) ObjectDelete(0, LBL_ZONE_PNL);
@@ -1299,212 +1276,152 @@ bool DrawVisualLines(bool forceUpdate = false) {
    }
 
    // Optimization Check
-   if(entryPrice == last_Mid && g_SL_Points == last_SL && g_TP_Points == last_TP && g_LotSize == last_Lot && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && !forceUpdate) {
+   if(entryPrice == last_Mid && g_SL_Points == last_SL && g_TP_Points == last_TP && g_LotSize == last_Lot && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && !forceUpdate) {
       return false;
    }
    
    last_Mid  = entryPrice; 
-   last_SL   = (int)g_SL_Points;
-   last_TP   = (int)g_TP_Points;
+   last_SL   = g_SL_Points;
+   last_TP   = g_TP_Points;
    last_Lot  = g_LotSize;
    last_Mode = IsLongMode;
    last_ExecMode = g_ExecMode;
+   last_ShowPreview = g_ShowPreview;
    
    bool changed = false;
 
-   // --- Zone time range: width controlled by InpZoneWidthPct (% of visible bars, from right) ---
-   datetime t1, t2;
-   int firstBar = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
-   long periodSec = (long)PeriodSeconds(_Period);
-   int zonePct = (InpZoneWidthPct < 10) ? 10 : (InpZoneWidthPct > 100) ? 100 : InpZoneWidthPct;
-   int zoneBars = (int)(firstBar * zonePct / 100.0);
-   if(zoneBars < ZONE_MIN_BARS && firstBar >= ZONE_MIN_BARS) zoneBars = ZONE_MIN_BARS;
-   t2 = iTime(_Symbol, _Period, 0);
-   t1 = iTime(_Symbol, _Period, zoneBars);
-   if(t2 <= 0) t2 = TimeCurrent();
-   if(t1 <= 0) t1 = (datetime)((long)t2 - periodSec * zoneBars);
-   if(t1 >= t2 || (long)(t2 - t1) < periodSec)
-      t1 = (datetime)((long)t2 - periodSec * MathMax(zoneBars, ZONE_MIN_BARS));
-   datetime tLabel = (datetime)((long)t2 - periodSec * ZONE_LABEL_BAR_OFFSET);
+    // --- Label reference time: use current bar for pixel conversion ---
+    long periodSec = (long)PeriodSeconds(_Period);
+    datetime tRef = iTime(_Symbol, _Period, 0);
+    if(tRef <= 0) tRef = TimeCurrent();
+    datetime tLabel = (datetime)((long)tRef - periodSec * ZONE_LABEL_BAR_OFFSET);
 
-   // --- SL Logic (line for drag + zone when preview on) ---
-   double slPrice = 0;
-   if(EnableSL && g_SL_Points > 0) {
-      slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
-      slPrice = NormalizeDouble(slPrice, digits);
-      
-      double slProfit = 0;
-      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
-      string slTooltip = StringFormat("SL: %d pts (%s %.2f)", g_SL_Points, (slProfit >= 0 ? "+" : ""), slProfit);
-      
-      bool useZones = g_ShowPreview;
-      color lineClr = useZones ? InpClrZoneHandle : InpClrSL;
-      int lineW = useZones ? 1 : 2;
-      
-      if(ObjectFind(0, LINE_SL) < 0) {
-         ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, slPrice);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTABLE, true);
-         ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTED, true);
-         changed = true;
-      }
-      ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, lineClr);
-      ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_SOLID);
-      ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, lineW);
-      ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, useZones ? ZORDER_ZONE_LINE : 100);
-      ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
-      ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, useZones ? "SL (drag to adjust)" : slTooltip);
-      if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)
-         ObjectMove(0, LINE_SL, 0, 0, slPrice);
-      
-      if(useZones) {
-         double slLo = MathMin(entryPrice, slPrice);
-         double slHi = MathMax(entryPrice, slPrice);
-         if(ObjectFind(0, ZONE_SL) >= 0) ObjectDelete(0, ZONE_SL);
-         ObjectCreate(0, ZONE_SL, OBJ_RECTANGLE, 0, t1, slLo, t2, slHi);
-         ObjectSetInteger(0, ZONE_SL, OBJPROP_COLOR, InpClrZoneHandle);
-         ObjectSetInteger(0, ZONE_SL, OBJPROP_BGCOLOR, InpClrZoneSL);
-         ObjectSetInteger(0, ZONE_SL, OBJPROP_FILL, true);
-         ObjectSetInteger(0, ZONE_SL, OBJPROP_BACK, false);
-         ObjectSetInteger(0, ZONE_SL, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, ZONE_SL, OBJPROP_ZORDER, ZORDER_ZONE_FILL);
-         string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-         string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
-         double slLabelPrice = slLo + (slHi - slLo) * 0.08;
-         int sx = 0, sy = 0;
-         if(ChartTimePriceToXY(0, 0, tLabel, slLabelPrice, sx, sy)) {
-            if(ObjectFind(0, LBL_ZONE_SL) < 0) {
-               ObjectCreate(0, LBL_ZONE_SL, OBJ_LABEL, 0, 0, 0);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_XSIZE, ZONE_LABEL_W);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_YSIZE, ZONE_LABEL_H);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BGCOLOR, InpClrZoneLabelBg);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ALIGN, ALIGN_RIGHT);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BACK, false);
-               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
-            }
-            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_XDISTANCE, sx - ZONE_LABEL_W);
-            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_YDISTANCE, sy - ZONE_LABEL_H);
-            ObjectSetString(0, LBL_ZONE_SL, OBJPROP_TEXT, slText);
-            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_COLOR, InpClrZoneSLLabel);
-            ObjectSetString(0, LBL_ZONE_SL, OBJPROP_FONT, FONT_ZONE);
-            ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_FONTSIZE, 10);
-         }
-      } else {
-         if(ObjectFind(0, ZONE_SL) >= 0) { ObjectDelete(0, ZONE_SL); changed = true; }
-         if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
-      }
-   } else {
-      if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
-      if(ObjectFind(0, ZONE_SL) >= 0) { ObjectDelete(0, ZONE_SL); changed = true; }
-      if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
-   }
+     // --- SL Logic (only draw line + label when preview is ON) ---
+     double slPrice = 0;
+     if(g_ShowPreview && EnableSL && g_SL_Points > 0) {
+        slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
+        slPrice = NormalizeDouble(slPrice, digits);
+        
+        double slProfit = 0;
+        if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
+        
+        color lineClr = InpClrZoneHandle;
+        int lineW = InpZoneLineWidth;
+        
+        if(ObjectFind(0, LINE_SL) < 0) {
+           ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, slPrice);
+           ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTABLE, true);
+           ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTED, true);
+           changed = true;
+        }
+        ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, lineClr);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_SOLID);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, lineW);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, ZORDER_ZONE_LINE);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
+        ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, "SL (drag to adjust)");
+        if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)
+           ObjectMove(0, LINE_SL, 0, 0, slPrice);
+        
+        // Preview labels (text only, no background rectangle)
+        string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+        string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
+        int sx = 0, sy = 0;
+        if(ChartTimePriceToXY(0, 0, tLabel, slPrice, sx, sy)) {
+           if(ObjectFind(0, LBL_ZONE_SL) < 0) {
+              ObjectCreate(0, LBL_ZONE_SL, OBJ_LABEL, 0, 0, 0);
+              ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+              ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BACK, false);
+              ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
+           }
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_XDISTANCE, sx - ZONE_LABEL_W);
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_YDISTANCE, sy - ZONE_LABEL_H);
+           ObjectSetString(0, LBL_ZONE_SL, OBJPROP_TEXT, slText);
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_COLOR, InpClrZoneSLLabel);
+           ObjectSetString(0, LBL_ZONE_SL, OBJPROP_FONT, FONT_ZONE);
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_FONTSIZE, 10);
+        }
+     } else {
+        if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
+        if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
+     }
 
-   // --- TP Logic (line for drag + zone when preview on) ---
-   double tpPrice = 0;
-   if(EnableTP && g_TP_Points > 0) {
-      tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
-      tpPrice = NormalizeDouble(tpPrice, digits);
-      
-      double tpProfit = 0;
-      if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
-      string tpTooltip = StringFormat("TP: %d pts (%s %.2f)", g_TP_Points, (tpProfit >= 0 ? "+" : ""), tpProfit);
-      
-      bool useZones = g_ShowPreview;
-      color lineClr = useZones ? InpClrZoneHandle : InpClrTP;
-      int lineW = useZones ? 1 : 2;
-      
-      if(ObjectFind(0, LINE_TP) < 0) {
-         ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, tpPrice);
-         ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
-         ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
-         changed = true;
-      }
-      ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, lineClr);
-      ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_SOLID);
-      ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, lineW);
-      ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, useZones ? ZORDER_ZONE_LINE : 100);
-      ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
-      ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, useZones ? "TP (drag to adjust)" : tpTooltip);
-      if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)
-         ObjectMove(0, LINE_TP, 0, 0, tpPrice);
-      
-      if(useZones) {
-         double tpLo = MathMin(entryPrice, tpPrice);
-         double tpHi = MathMax(entryPrice, tpPrice);
-         if(ObjectFind(0, ZONE_TP) >= 0) ObjectDelete(0, ZONE_TP);
-         ObjectCreate(0, ZONE_TP, OBJ_RECTANGLE, 0, t1, tpLo, t2, tpHi);
-         ObjectSetInteger(0, ZONE_TP, OBJPROP_COLOR, InpClrZoneHandle);
-         ObjectSetInteger(0, ZONE_TP, OBJPROP_BGCOLOR, InpClrZoneTP);
-         ObjectSetInteger(0, ZONE_TP, OBJPROP_FILL, true);
-         ObjectSetInteger(0, ZONE_TP, OBJPROP_BACK, false);
-         ObjectSetInteger(0, ZONE_TP, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(0, ZONE_TP, OBJPROP_ZORDER, ZORDER_ZONE_FILL);
-         string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-         string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
-         double tpLabelPrice = tpHi - (tpHi - tpLo) * 0.08;
-         int tx = 0, ty = 0;
-         if(ChartTimePriceToXY(0, 0, tLabel, tpLabelPrice, tx, ty)) {
-            if(ObjectFind(0, LBL_ZONE_TP) < 0) {
-               ObjectCreate(0, LBL_ZONE_TP, OBJ_LABEL, 0, 0, 0);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_XSIZE, ZONE_LABEL_W);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_YSIZE, ZONE_LABEL_H);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BGCOLOR, InpClrZoneLabelBg);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ALIGN, ALIGN_RIGHT);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BACK, false);
-               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
-            }
-            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_XDISTANCE, tx - ZONE_LABEL_W);
-            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_YDISTANCE, ty);
-            ObjectSetString(0, LBL_ZONE_TP, OBJPROP_TEXT, tpText);
-            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_COLOR, InpClrZoneTPLabel);
-            ObjectSetString(0, LBL_ZONE_TP, OBJPROP_FONT, FONT_ZONE);
-            ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_FONTSIZE, 10);
-         }
-         
-         // Open P&L / R:R box when we have positions (in target zone area)
-         if(last_Positions > 0 && g_SL_Points > 0 && g_TP_Points > 0) {
-            double rr = (double)g_TP_Points / (double)g_SL_Points;
-            double openPnL = last_PnL;
-            int qty = last_Positions;
-            string pnlStr = StringFormat("Open P&L: %.2f, Qty: %d  Risk/Reward Ratio: %.2f", openPnL, qty, rr);
-            double pnlY = (tpLo + tpHi) / 2.0;
-            int px = 0, py = 0;
-            if(ChartTimePriceToXY(0, 0, tLabel, pnlY, px, py)) {
-               if(ObjectFind(0, LBL_ZONE_PNL) < 0) {
-                  ObjectCreate(0, LBL_ZONE_PNL, OBJ_LABEL, 0, 0, 0);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_XSIZE, ZONE_LABEL_W);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_YSIZE, ZONE_LABEL_H);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BGCOLOR, InpClrZoneLabelBg);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ALIGN, ALIGN_LEFT);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BACK, false);
-                  ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
-               }
-               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_XDISTANCE, px - ZONE_LABEL_W);
-               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_YDISTANCE, py - ZONE_LABEL_H / 2);
-               ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_TEXT, pnlStr);
-               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_COLOR, openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox);
-               ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_FONT, FONT_ZONE);
-               ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_FONTSIZE, 10);
-            }
-         } else {
-            if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
-         }
-      } else {
-         if(ObjectFind(0, ZONE_TP) >= 0) { ObjectDelete(0, ZONE_TP); changed = true; }
-         if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
-         if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
-      }
-   } else {
-      if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
-      if(ObjectFind(0, ZONE_TP) >= 0) { ObjectDelete(0, ZONE_TP); changed = true; }
-      if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
-      if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
-   }
+     // --- TP Logic (only draw line + label when preview is ON) ---
+     double tpPrice = 0;
+     if(g_ShowPreview && EnableTP && g_TP_Points > 0) {
+        tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
+        tpPrice = NormalizeDouble(tpPrice, digits);
+        
+        double tpProfit = 0;
+        if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
+        
+        color lineClr = InpClrZoneHandle;
+        int lineW = InpZoneLineWidth;
+        
+        if(ObjectFind(0, LINE_TP) < 0) {
+           ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, tpPrice);
+           ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
+           ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
+           changed = true;
+        }
+        ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, lineClr);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_SOLID);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, lineW);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, ZORDER_ZONE_LINE);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
+        ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, "TP (drag to adjust)");
+        if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)
+           ObjectMove(0, LINE_TP, 0, 0, tpPrice);
+        
+        // Preview labels (text only, no background rectangle)
+        string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+        string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
+        int tx = 0, ty = 0;
+        if(ChartTimePriceToXY(0, 0, tLabel, tpPrice, tx, ty)) {
+           if(ObjectFind(0, LBL_ZONE_TP) < 0) {
+              ObjectCreate(0, LBL_ZONE_TP, OBJ_LABEL, 0, 0, 0);
+              ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+              ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BACK, false);
+              ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
+           }
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_XDISTANCE, tx - ZONE_LABEL_W);
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_YDISTANCE, ty);
+           ObjectSetString(0, LBL_ZONE_TP, OBJPROP_TEXT, tpText);
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_COLOR, InpClrZoneTPLabel);
+           ObjectSetString(0, LBL_ZONE_TP, OBJPROP_FONT, FONT_ZONE);
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_FONTSIZE, 10);
+        }
+        
+        // Open P&L / R:R label when we have positions
+        if(last_Positions > 0 && g_SL_Points > 0 && g_TP_Points > 0) {
+           double rr = (double)g_TP_Points / (double)g_SL_Points;
+           double openPnL = last_PnL;
+           int qty = last_Positions;
+           string pnlStr = StringFormat("Open P&L: %.2f, Qty: %d  R:R: %.2f", openPnL, qty, rr);
+           double pnlY = (entryPrice + tpPrice) / 2.0;
+           int px = 0, py = 0;
+           if(ChartTimePriceToXY(0, 0, tLabel, pnlY, px, py)) {
+              if(ObjectFind(0, LBL_ZONE_PNL) < 0) {
+                 ObjectCreate(0, LBL_ZONE_PNL, OBJ_LABEL, 0, 0, 0);
+                 ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+                 ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BACK, false);
+                 ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
+              }
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_XDISTANCE, px - ZONE_LABEL_W);
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_YDISTANCE, py - ZONE_LABEL_H / 2);
+              ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_TEXT, pnlStr);
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_COLOR, openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox);
+              ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_FONT, FONT_ZONE);
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_FONTSIZE, 10);
+           }
+        } else {
+           if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+        }
+     } else {
+        if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
+        if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
+        if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+     }
 
    // --- Entry divider line when zone preview on (Market: visual only; Pending: styled above) ---
    bool bothZones = g_ShowPreview && (EnableSL && g_SL_Points > 0) && (EnableTP && g_TP_Points > 0);
@@ -1540,9 +1457,11 @@ void UpdateToggleState() {
    }
        
    if(ObjectFind(0, BTN_MODE) >= 0) {
-      string mText = (g_ExecMode == MODE_PENDING) ? "Pending (TAB)(,/.)" : "Market (TAB)";
+      string mText = (g_ExecMode == MODE_PENDING) 
+         ? ("Pending (" + KN(InpKeyExecMode) + ")(" + KN(InpKeyEntryDn) + "/" + KN(InpKeyEntryUp) + ")")
+         : ("Market (" + KN(InpKeyExecMode) + ")");
       ObjectSetString(0, BTN_MODE, OBJPROP_TEXT, mText);
-      ObjectSetString(0, BTN_MODE, OBJPROP_TOOLTIP, "TAB to Toggle Mode. Drag line to adjust price.");
+      ObjectSetString(0, BTN_MODE, OBJPROP_TOOLTIP, KN(InpKeyExecMode) + " to Toggle Mode. Drag line to adjust price.");
       ObjectSetInteger(0, BTN_MODE, OBJPROP_BGCOLOR, (g_ExecMode != MODE_MARKET) ? InpClrActive : InpClrHeader);
    }
    
@@ -1638,8 +1557,6 @@ void CreateGUI() {
    // Reset Cache to force UI update
    last_PnL       = -DBL_MAX;
    last_Positions = -1;
-   last_PnLState  = -99;
-   last_AlgoState = !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED); // Force mismatch
    last_Mid       = 0;
    last_SL        = -1; // Force line redraw
    
@@ -1675,17 +1592,14 @@ void CreateGUI() {
    int timerW = 58;  // Width for "00:00" / "00:00:00" at same font as PnL
    CreateLbl(LBL_TIMER, "00:00", btnGroupLeft - timerGap - timerW, headerRowY, InpClrTimer, HEADER_LBL_FONT, true);
 
-   // Header buttons (top-right): M=Minimize, R=Reset, D=Dock (ASCII letters)
+   // Header buttons (top-right): M=Minimize, R=Reset, D=Dock
    int btnY = y + 13;
    CreateBtn(BTN_MINMAX, "M", PanelX + InpPanelW - hPad - 18, btnY - 9, 18, 18, InpClrInactive, 9);
-   ObjectSetString(0, BTN_MINMAX, OBJPROP_TOOLTIP, "Minimize (F) / Hide (R)");
+   ObjectSetString(0, BTN_MINMAX, OBJPROP_TOOLTIP, "Minimize (" + KN(InpKeyMinimize) + ") / Hide (" + KN(InpKeyPanel) + ")");
    CreateBtn(BTN_RESET, "R", PanelX + InpPanelW - hPad - 38, btnY - 9, 18, 18, InpClrInactive, 10);
    ObjectSetString(0, BTN_RESET, OBJPROP_TOOLTIP, "Reset Position to Default");
    CreateBtn(BTN_DOCK, g_IsDocked ? "L" : "D", PanelX + InpPanelW - hPad - 58, btnY - 9, 18, 18, g_IsDocked ? InpClrActive : InpClrInactive, 9);
-   {
-      string keyHint = (InpKeyDock >= 32 && InpKeyDock <= 126) ? CharToString((uchar)InpKeyDock) : IntegerToString(InpKeyDock);
-      ObjectSetString(0, BTN_DOCK, OBJPROP_TOOLTIP, "Dock/Lock Panel (" + keyHint + ")");
-   }
+   ObjectSetString(0, BTN_DOCK, OBJPROP_TOOLTIP, "Dock/Lock Panel (" + KN(InpKeyDock) + ")");
 
    if(IsMinimized) return;
 
@@ -1723,12 +1637,12 @@ void CreateGUI() {
 
    y += 8;  // Internal top padding
    
-   // Row 1: Mode Toggle & Lot/Risk Inputs (label column aligned with Stop loss / Take profit)
-   CreateBtn(BTN_TOGGLE_MODE, g_IsManualLotMode ? "Manual Lot O/P" : "Risk Units O/P", colLabel, y, LABEL_W, EDIT_H, InpClrGroupBox, 8);
+   string lotKeys = KN(InpKeyLotDn) + "/" + KN(InpKeyLotUp);
+   CreateBtn(BTN_TOGGLE_MODE, g_IsManualLotMode ? ("Manual Lot " + lotKeys) : ("Risk Units " + lotKeys), colLabel, y, LABEL_W, EDIT_H, InpClrGroupBox, 8);
    ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_BORDER_COLOR, InpClrGroupBox);
    ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_COLOR, InpClrText);
    ObjectSetInteger(0, BTN_TOGGLE_MODE, OBJPROP_ALIGN, ALIGN_LEFT);
-   ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (O/P adjust)" : "Risk Units mode (O/P adjust)"); 
+   ObjectSetString(0, BTN_TOGGLE_MODE, OBJPROP_TOOLTIP, g_IsManualLotMode ? "Manual Lot mode (" + lotKeys + " adjust)" : "Risk Units mode (" + lotKeys + " adjust)"); 
    CreateBtn(BTN_RISK_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
    CreateEdit(EDIT_RISK, g_IsManualLotMode ? DoubleToString(g_LotSize, 2) : DoubleToString(g_RiskUnits, 3), colEdit, y, EDIT_MAIN_W);
    CreateBtn(BTN_RISK_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
@@ -1742,23 +1656,23 @@ void CreateGUI() {
 
    // Row 2: Stop loss (grid-aligned)
    y += INP_ROW_H + ROW_GAP;
-   CreateLbl(PREFIX+"L2", "SL (J) (K) (L)", colLabel, y + 2, InpClrText, 8, false); 
+   CreateLbl(PREFIX+"L2", "SL (" + KN(InpKeySLToggle) + ") (" + KN(InpKeySLDn) + ") (" + KN(InpKeySLUp) + ")", colLabel, y + 2, InpClrText, 8, false); 
    CreateBtn(BTN_SL_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateEdit(EDIT_SL, IntegerToString(g_SL_Points), colEdit, y, EDIT_MAIN_W); 
    CreateBtn(BTN_SL_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateBtn(BTN_USE_SL, EnableSL ? "✔" : "✖", colToggle, y, TOGGLE_W, EDIT_H, EnableSL ? InpClrActive : InpClrInactive, 8);
-   CreateBtn(BTN_ASGN_SL, "SL (G)", colAction, y, actionW, EDIT_H, InpClrAsgnSL, 8);
-   ObjectSetString(0, BTN_ASGN_SL, OBJPROP_TOOLTIP, "Apply SL line to all positions/pending (key: G)");
+   CreateBtn(BTN_ASGN_SL, "SL (" + KN(InpKeyAsgnSL) + ")", colAction, y, actionW, EDIT_H, InpClrAsgnSL, 8);
+   ObjectSetString(0, BTN_ASGN_SL, OBJPROP_TOOLTIP, "Apply SL to all positions/pending (" + KN(InpKeyAsgnSL) + ")");
 
    // Row 3: Take profit (grid-aligned)
    y += INP_ROW_H + ROW_GAP;
-   CreateLbl(PREFIX+"L3", "TP (B) (N) (M)", colLabel, y + 2, InpClrText, 8, false); 
+   CreateLbl(PREFIX+"L3", "TP (" + KN(InpKeyTPToggle) + ") (" + KN(InpKeyTPDn) + ") (" + KN(InpKeyTPUp) + ")", colLabel, y + 2, InpClrText, 8, false); 
    CreateBtn(BTN_TP_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateEdit(EDIT_TP, IntegerToString(g_TP_Points), colEdit, y, EDIT_MAIN_W); 
    CreateBtn(BTN_TP_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8); 
    CreateBtn(BTN_USE_TP, EnableTP ? "✔" : "✖", colToggle, y, TOGGLE_W, EDIT_H, EnableTP ? InpClrActive : InpClrInactive, 8);
-   CreateBtn(BTN_ASGN_TP, "TP (H)", colAction, y, actionW, EDIT_H, InpClrAsgnTP, 8);
-   ObjectSetString(0, BTN_ASGN_TP, OBJPROP_TOOLTIP, "Apply TP line to all positions/pending (key: H)");
+   CreateBtn(BTN_ASGN_TP, "TP (" + KN(InpKeyAsgnTP) + ")", colAction, y, actionW, EDIT_H, InpClrAsgnTP, 8);
+   ObjectSetString(0, BTN_ASGN_TP, OBJPROP_TOOLTIP, "Apply TP to all positions/pending (" + KN(InpKeyAsgnTP) + ")");
 
    // Row 4: Scale Out (grid-aligned)
    y += INP_ROW_H + ROW_GAP;
@@ -1766,28 +1680,29 @@ void CreateGUI() {
    CreateBtn(BTN_SCALE_DN, "▼", colArrow1, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
    CreateEdit(EDIT_SCALE, DoubleToString(g_ScalePct, 0), colEdit, y, EDIT_SCALE_W);
    CreateBtn(BTN_SCALE_UP, "▲", colArrow2, y, ARROW_W, EDIT_H, InpClrBtnAdj, 8);
-   CreateBtn(BTN_SCALE, "Scale Out (S)", colToggle, y, panelRight - colToggle, EDIT_H, InpClrScale, 8);
-   ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (key: S)");
+   CreateBtn(BTN_SCALE, "Scale Out (" + KN(InpKeyScaleOut) + ")", colToggle, y, panelRight - colToggle, EDIT_H, InpClrScale, 8);
+   ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (" + KN(InpKeyScaleOut) + ")");
 
    y += INP_ROW_H + ROW_GAP;
-   // Preview toggle: show/hide zone (Target/Stop) preview on chart
-   CreateBtn(BTN_PREVIEW, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)", colLabel, y, panelRight - colLabel, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
-   ObjectSetString(0, BTN_PREVIEW, OBJPROP_TOOLTIP, "Toggle zone preview on chart (key: P)");
+   // Preview toggle
+   string pvKey = KN(InpKeyPreview);
+   CreateBtn(BTN_PREVIEW, g_ShowPreview ? ("Preview On (" + pvKey + ")") : ("Preview Off (" + pvKey + ")"), colLabel, y, panelRight - colLabel, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
+   ObjectSetString(0, BTN_PREVIEW, OBJPROP_TOOLTIP, "Toggle zone preview on chart (" + pvKey + ")");
 
    y += INP_ROW_H + ROW_GAP;  // Row gap before action block
    
    // Mode row: Market / Pending toggle
    int pad = CONTAINER_PAD;
    int arrowW = 20;
-   string modeText = "Market (TAB)";
-   if(g_ExecMode == MODE_PENDING) modeText = "Pending (TAB)(,/.)";
+   string modeText = "Market (" + KN(InpKeyExecMode) + ")";
+   if(g_ExecMode == MODE_PENDING) modeText = "Pending (" + KN(InpKeyExecMode) + ")(" + KN(InpKeyEntryDn) + "/" + KN(InpKeyEntryUp) + ")";
    
    if(g_ExecMode == MODE_PENDING) {
       CreateBtn(BTN_MODE, modeText, PanelX + pad, y, 140, EDIT_H + 4, InpClrHeader, 8);
       CreateBtn(BTN_ENTRY_DN, "▼", PanelX + 145, y, arrowW, EDIT_H + 4, InpClrActive, 8);
       CreateBtn(BTN_ENTRY_UP, "▲", PanelX + 167, y, arrowW, EDIT_H + 4, InpClrActive, 8);
-      ObjectSetString(0, BTN_ENTRY_DN, OBJPROP_TOOLTIP, "Move Entry Line Down ( , )");
-      ObjectSetString(0, BTN_ENTRY_UP, OBJPROP_TOOLTIP, "Move Entry Line Up ( . )");
+      ObjectSetString(0, BTN_ENTRY_DN, OBJPROP_TOOLTIP, "Move Entry Line Down (" + KN(InpKeyEntryDn) + ")");
+      ObjectSetString(0, BTN_ENTRY_UP, OBJPROP_TOOLTIP, "Move Entry Line Up (" + KN(InpKeyEntryUp) + ")");
    } else {
       CreateBtn(BTN_MODE, modeText, PanelX + pad, y, InpPanelW - 2 * pad, EDIT_H + 4, InpClrHeader, 8);
       if(ObjectFind(0, BTN_ENTRY_UP) >= 0) ObjectDelete(0, BTN_ENTRY_UP);
@@ -1800,35 +1715,35 @@ void CreateGUI() {
    
    // --- PRIMARY BUTTON: Only show Buy in buy mode, Sell in sell mode ---
    if(IsLongMode) {
-      CreateBtn(BTN_BUY, "BUY (Q)", PanelX + pad, y, fullBtnW, BTN_H, InpClrBuy, 10);
+      CreateBtn(BTN_BUY, "BUY (" + KN(InpKeyBuy) + ")", PanelX + pad, y, fullBtnW, BTN_H, InpClrBuy, 10);
       if(ObjectFind(0, BTN_SELL) >= 0) ObjectDelete(0, BTN_SELL);
    } else {
-      CreateBtn(BTN_SELL, "SELL (W)", PanelX + pad, y, fullBtnW, BTN_H, InpClrSell, 10);
+      CreateBtn(BTN_SELL, "SELL (" + KN(InpKeySell) + ")", PanelX + pad, y, fullBtnW, BTN_H, InpClrSell, 10);
       if(ObjectFind(0, BTN_BUY) >= 0) ObjectDelete(0, BTN_BUY);
    }
    
    y += BTN_H + ROW_GAP; 
-   CreateBtn(BTN_REV, "FLIP (V)", PanelX + pad, y, btnW, 24, InpClrReverse, 9);
-   ObjectSetString(0, BTN_REV, OBJPROP_TOOLTIP, "Flip Buy/Sell intention only (key: V). No effect on positions or pending.");
-   CreateBtn(BTN_CLOSE, "Close All (E)", PanelX + pad + btnW + COL_GAP, y, btnW, 24, InpClrClose, 9);
-   ObjectSetString(0, BTN_CLOSE, OBJPROP_TOOLTIP, "Close all positions (key: E)");
+   CreateBtn(BTN_REV, "FLIP (" + KN(InpKeyFlip) + ")", PanelX + pad, y, btnW, 24, InpClrReverse, 9);
+   ObjectSetString(0, BTN_REV, OBJPROP_TOOLTIP, "Flip Buy/Sell intention (" + KN(InpKeyFlip) + ")");
+   CreateBtn(BTN_CLOSE, "Close All (" + KN(InpKeyCloseAll) + ")", PanelX + pad + btnW + COL_GAP, y, btnW, 24, InpClrClose, 9);
+   ObjectSetString(0, BTN_CLOSE, OBJPROP_TOOLTIP, "Close all positions (" + KN(InpKeyCloseAll) + ")");
    
    // --- CLOSE BY SIDE / RESULT ---
    y += 24 + ROW_GAP;
    int btnW2 = (InpPanelW - 2 * pad - COL_GAP) / 2;
-   CreateBtn(BTN_C_BUY, "Close Buys (Z)", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_BUY, OBJPROP_TOOLTIP, "Close all Buy positions (key: Z)");
-   CreateBtn(BTN_C_SELL, "Close Sells (X)", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_SELL, OBJPROP_TOOLTIP, "Close all Sell positions (key: X)");
+   CreateBtn(BTN_C_BUY, "Close Buys (" + KN(InpKeyCloseBuys) + ")", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_BUY, OBJPROP_TOOLTIP, "Close all Buy positions (" + KN(InpKeyCloseBuys) + ")");
+   CreateBtn(BTN_C_SELL, "Close Sells (" + KN(InpKeyCloseSells) + ")", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_SELL, OBJPROP_TOOLTIP, "Close all Sell positions (" + KN(InpKeyCloseSells) + ")");
    y += 20 + ROW_GAP;
-   CreateBtn(BTN_C_WIN, "Close Wins (C)", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_WIN, OBJPROP_TOOLTIP, "Close positions in profit (key: C)");
-   CreateBtn(BTN_C_LOSS, "Close Losses (D)", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_LOSS, OBJPROP_TOOLTIP, "Close positions in loss (key: D)");
+   CreateBtn(BTN_C_WIN, "Close Wins (" + KN(InpKeyCloseWins) + ")", PanelX + pad, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_WIN, OBJPROP_TOOLTIP, "Close positions in profit (" + KN(InpKeyCloseWins) + ")");
+   CreateBtn(BTN_C_LOSS, "Close Losses (" + KN(InpKeyCloseLoss) + ")", PanelX + pad + btnW2 + COL_GAP, y, btnW2, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_LOSS, OBJPROP_TOOLTIP, "Close positions in loss (" + KN(InpKeyCloseLoss) + ")");
    
    y += 20 + ROW_GAP;
-   CreateBtn(BTN_C_PEND, "Cancel Pending (A)", PanelX + pad, y, fullBtnW, 20, InpClrClose, 8);
-   ObjectSetString(0, BTN_C_PEND, OBJPROP_TOOLTIP, "Cancel all pending orders (key: A)");
+   CreateBtn(BTN_C_PEND, "Cancel Pending (" + KN(InpKeyCancelPnd) + ")", PanelX + pad, y, fullBtnW, 20, InpClrClose, 8);
+   ObjectSetString(0, BTN_C_PEND, OBJPROP_TOOLTIP, "Cancel all pending orders (" + KN(InpKeyCancelPnd) + ")");
 
    // --- FOOTER: Separator + stats (same order, cleaner hierarchy) ---
    y += 20 + FOOTER_PAD;
@@ -1935,7 +1850,7 @@ void TogglePanel() {
       CreateGUI(); 
       UpdateToggleState(); 
       UpdateCalculatedLot();
-      DrawVisualLines(); 
+      DrawVisualLines(true); 
       ChartRedraw(); 
    }
     else { 
@@ -1948,7 +1863,7 @@ void TogglePanel() {
 //| DELIGHTER: Live Spread Display                                   |
 //+------------------------------------------------------------------+
 void UpdateSpread() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_SPREAD) < 0) return;
    
    long spreadPts = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
@@ -1988,7 +1903,7 @@ void UpdateRR() {
 //| DELIGHTER: Live Pending Order Count                              |
 //+------------------------------------------------------------------+
 void UpdatePendingCount() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_PEND) < 0) return;
    
    int pendCount = 0;
@@ -2010,7 +1925,7 @@ void UpdatePendingCount() {
 //| DELIGHTER: Position Summary (Net Volume)                         |
 //+------------------------------------------------------------------+
 void UpdatePositionSummary() {
-   if(!IsPanelVisible) return;
+   if(!IsPanelVisible || IsMinimized) return;
    if(ObjectFind(0, LBL_POS_SUMMARY) < 0) return;
    
    double netVol = 0;
