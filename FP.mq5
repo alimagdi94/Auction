@@ -12,35 +12,28 @@
 #property copyright "Trading Tool"
 #property link      "https://mql5.com"
 #property version   "10.00"
-#property description "Footprint Chart — Tick 1K/1.5K/2K, VA%, Imb, Refresh"
+#property description "Footprint Chart — Tick 10-100, VA%, Imb, Refresh"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
 
 #include <Canvas\Canvas.mqh>
 
-//--- Industry-standard defaults
-#define FP_VA_DEFAULT_PCT   70.0   // CME-style Value Area %
-#define FP_TICK_PRESET_1    1000
-#define FP_TICK_PRESET_2    1500
-#define FP_TICK_PRESET_3    2000
 
 //--- Inputs
 input group "Data & History"
-input int    InpTickSize       = 1000;          // Cell size (points) — 1 point = 1×_Point; click Tick to cycle 1K/1.5K/2K
+input int    InpTickSize       = 10;            // Cell size (points) — 1 point = 1×_Point; click Tick to cycle 10→20→...→100→10
 input double InpImbalanceRatio = 300.0;         // Imbalance Threshold (%)
 input int    InpHistoryBars    = 100;           // History bars to load
 input double InpVAPercent      = 70.0;          // Value Area % (industry default 70)
 
 input group "Visual"
-input int    InpFontSize       = 8;             // Base font size
 input uchar  InpBgAlpha        = 210;           // Cell Background Alpha (0-255)
 input uchar  InpVAOffAlpha     = 80;            // Alpha outside Value Area (0-255)
 
 input group "Colors"
 input color  InpBidColor       = C'180,60,60';  // Bid (Sell) side color
 input color  InpAskColor       = C'50,160,80';  // Ask (Buy) side color
-input color  InpNeutralColor   = C'50,50,60';   // Neutral / Empty cell
 input color  InpPOCColor       = C'255,215,0';  // POC highlight (Gold)
 input color  InpImbBuyBg       = C'0,200,80';   // Buy Imbalance marker
 input color  InpImbSellBg      = C'220,40,40';  // Sell Imbalance marker
@@ -71,7 +64,6 @@ struct FPBar
 CCanvas  canvas;
 string   g_name     = "FP_Canvas";
 FPBar    g_bars[];
-double   g_tick;
 double   g_step;        // aggregated step = InpTickSize * _Point
 long     g_chart;
 int      g_sub;
@@ -251,7 +243,7 @@ void Feed(datetime bt, double price, long vol, bool isBuy, bool isSell)
    if(used >= capacity)
    {
       ArrayResize(g_bars[bi].levels, capacity + 64, 64);
-      capacity = ArraySize(g_bars[bi].levels);
+
    }
 
    int idx = g_bars[bi].level_count;
@@ -806,19 +798,14 @@ void DrawPanel()
    canvas.TextOut(g_btnScaleFixX1 + btnCenterX, btnCenterY,
                   "Fix", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // 4. Tick size (displays current: 1K / 1.5K / 2K)
+   // 4. Tick size (displays current point value)
    canvas.FillRectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
                         hoveredTick ? hoverFill : baseFill);
    canvas.Rectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
                     hoveredTick ? hoverBorder : baseBorder);
    int tickPoints = (int)MathRound(g_step / _Point);
-   string tickLabel;
-   if(tickPoints >= FP_TICK_PRESET_3) tickLabel = "2K";
-   else if(tickPoints >= FP_TICK_PRESET_2) tickLabel = "1.5K";
-   else if(tickPoints >= FP_TICK_PRESET_1) tickLabel = "1K";
-   else tickLabel = IntegerToString(tickPoints);  // custom points
    canvas.TextOut(g_btnTickX1 + btnCenterX, btnCenterY,
-                  tickLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+                  IntegerToString(tickPoints), FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
    // 5. Imbalance threshold
    canvas.FillRectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
@@ -929,8 +916,7 @@ void Render()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   g_tick = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(g_tick <= 0.0) g_tick = _Point;
+
    // Use input directly (in points). Min 1, max 10000 to avoid bad aggregation.
    int pts = MathMax(1, MathMin(10000, InpTickSize));
    g_step = pts * _Point;
@@ -942,9 +928,8 @@ int OnInit()
    g_imbRatio = InpImbalanceRatio;
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
-   PrintFormat("FP v10: %s  tick=%s  step=%s  mode=%s",
-               _Symbol, DoubleToString(g_tick, _Digits),
-               DoubleToString(g_step, _Digits),
+   PrintFormat("FP v10: %s  step=%s  mode=%s",
+               _Symbol, DoubleToString(g_step, _Digits),
                g_hasTrades ? "Trades" : "Forex");
 
    int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
@@ -1026,13 +1011,13 @@ void OnChartEvent(const int id, const long &lparam,
    if(id == CHARTEVENT_KEYDOWN)
       return;
 
-   if(id == CHARTEVENT_CHART_CHANGE)
+   else if(id == CHARTEVENT_CHART_CHANGE)
    {
       g_dirty = true;
       ThrottledRender();
    }
 
-   if(id == CHARTEVENT_MOUSE_MOVE)
+   else if(id == CHARTEVENT_MOUSE_MOVE)
    {
       int newMX = (int)lparam;
       int newMY = (int)dparam;
@@ -1051,22 +1036,27 @@ void OnChartEvent(const int id, const long &lparam,
          ThrottledRender();
    }
 
-   if(id == CHARTEVENT_CLICK)
+   else if(id == CHARTEVENT_CLICK)
    {
       int mx = (int)lparam;
       int my = (int)dparam;
 
-      // Tick button: cycle 1000 -> 1500 -> 2000 -> 1000
+      // Tick button: increment by 10 (10 -> 20 -> 30 -> ... -> 100 -> 10)
       if(HitTest(mx, my, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2))
       {
          int curPoints = (int)MathRound(g_step / _Point);
-         int nextPoints = FP_TICK_PRESET_1;
-         if(curPoints <= FP_TICK_PRESET_1) nextPoints = FP_TICK_PRESET_2;
-         else if(curPoints <= FP_TICK_PRESET_2) nextPoints = FP_TICK_PRESET_3;
-         else nextPoints = FP_TICK_PRESET_1;
+         int nextPoints;
+         if(curPoints >= 100)
+            nextPoints = 10;
+         else
+         {
+            nextPoints = curPoints + 10;
+            if(nextPoints > 100) nextPoints = 100;
+         }
 
          g_step = nextPoints * _Point;
          ReloadHistory();
+         ThrottledRender();
       }
       // Imb button: cycle imbalance ratio
       else if(HitTest(mx, my, g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2))
@@ -1116,6 +1106,7 @@ void OnChartEvent(const int id, const long &lparam,
       else if(HitTest(mx, my, g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2))
       {
          ReloadHistory();
+         ThrottledRender();
       }
       // VA%: cycle Value Area 70% -> 80% -> 90% -> 70%
       else if(HitTest(mx, my, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2))
