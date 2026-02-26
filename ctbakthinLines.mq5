@@ -43,8 +43,7 @@ input group "Visual Elements"
 input color    InpClrAsgnSL   = C'42,42,42';        // Assign SL (Charcoal)
 input color    InpClrAsgnTP   = C'42,42,42';       // Assign TP (Charcoal)
 input color    InpClrTimer    = C'255,255,255';     // Timer Color (White)
-input color    InpClrSL       = C'255,255,255';     // SL Line (White)
-input color    InpClrTP       = C'200,200,200';     // TP Line (Light Gray, grayscale)
+
 
 input group "Zone Preview (Target/Stop labels)"
 input bool     InpShowPreview = true;               // Show zone preview by default
@@ -247,6 +246,7 @@ long   last_SL        = -1;
 long   last_TP        = -1;
 double last_Lot       = -1;
 bool   last_Mode      = true;
+bool   last_ShowPreview = true;
 
 // --- NEW Execution Types ---
 enum ENUM_EXEC_MODE { MODE_MARKET=0, MODE_PENDING=1 };
@@ -608,7 +608,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       else if(sparam == BTN_ASGN_TP) { AssignTPToAll(); ResetBtn(BTN_ASGN_TP); }
       else if(sparam == BTN_PREVIEW) {
          g_ShowPreview = !g_ShowPreview;
-         ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? "Preview On (P)" : "Preview Off (P)");
+         ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? ("Preview On (" + KN(InpKeyPreview) + ")") : ("Preview Off (" + KN(InpKeyPreview) + ")"));
          DrawVisualLines(true);
          ResetBtn(BTN_PREVIEW);
       }
@@ -1275,7 +1275,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
    }
 
    // Optimization Check
-   if(entryPrice == last_Mid && g_SL_Points == last_SL && g_TP_Points == last_TP && g_LotSize == last_Lot && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && !forceUpdate) {
+   if(entryPrice == last_Mid && g_SL_Points == last_SL && g_TP_Points == last_TP && g_LotSize == last_Lot && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && !forceUpdate) {
       return false;
    }
    
@@ -1285,6 +1285,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
    last_Lot  = g_LotSize;
    last_Mode = IsLongMode;
    last_ExecMode = g_ExecMode;
+   last_ShowPreview = g_ShowPreview;
    
    bool changed = false;
 
@@ -1294,145 +1295,132 @@ bool DrawVisualLines(bool forceUpdate = false) {
     if(tRef <= 0) tRef = TimeCurrent();
     datetime tLabel = (datetime)((long)tRef - periodSec * ZONE_LABEL_BAR_OFFSET);
 
-    // --- SL Logic (line for drag + label text when preview on) ---
-    double slPrice = 0;
-    if(EnableSL && g_SL_Points > 0) {
-       slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
-       slPrice = NormalizeDouble(slPrice, digits);
-       
-       double slProfit = 0;
-       if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
-       string slTooltip = StringFormat("SL: %d pts (%s %.2f)", g_SL_Points, (slProfit >= 0 ? "+" : ""), slProfit);
-       
-       bool usePreview = g_ShowPreview;
-       color lineClr = usePreview ? InpClrZoneHandle : InpClrSL;
-       int lineW = usePreview ? 1 : 2;
-       
-       if(ObjectFind(0, LINE_SL) < 0) {
-          ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, slPrice);
-          ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTABLE, true);
-          ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTED, true);
-          changed = true;
-       }
-       ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, lineClr);
-       ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_SOLID);
-       ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, lineW);
-       ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, usePreview ? ZORDER_ZONE_LINE : 100);
-       ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
-       ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, usePreview ? "SL (drag to adjust)" : slTooltip);
-       if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)
-          ObjectMove(0, LINE_SL, 0, 0, slPrice);
-       
-       // Preview labels (text only, no background rectangle)
-       if(usePreview) {
-          string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-          string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
-          int sx = 0, sy = 0;
-          if(ChartTimePriceToXY(0, 0, tLabel, slPrice, sx, sy)) {
-             if(ObjectFind(0, LBL_ZONE_SL) < 0) {
-                ObjectCreate(0, LBL_ZONE_SL, OBJ_LABEL, 0, 0, 0);
-                ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-                ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BACK, false);
-                ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
-             }
-             ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_XDISTANCE, sx - ZONE_LABEL_W);
-             ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_YDISTANCE, sy - ZONE_LABEL_H);
-             ObjectSetString(0, LBL_ZONE_SL, OBJPROP_TEXT, slText);
-             ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_COLOR, InpClrZoneSLLabel);
-             ObjectSetString(0, LBL_ZONE_SL, OBJPROP_FONT, FONT_ZONE);
-             ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_FONTSIZE, 10);
-          }
-       } else {
-          if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
-       }
-    } else {
-       if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
-       if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
-    }
+     // --- SL Logic (only draw line + label when preview is ON) ---
+     double slPrice = 0;
+     if(g_ShowPreview && EnableSL && g_SL_Points > 0) {
+        slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
+        slPrice = NormalizeDouble(slPrice, digits);
+        
+        double slProfit = 0;
+        if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
+        
+        color lineClr = InpClrZoneHandle;
+        int lineW = 1;
+        
+        if(ObjectFind(0, LINE_SL) < 0) {
+           ObjectCreate(0, LINE_SL, OBJ_HLINE, 0, 0, slPrice);
+           ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTABLE, true);
+           ObjectSetInteger(0, LINE_SL, OBJPROP_SELECTED, true);
+           changed = true;
+        }
+        ObjectSetInteger(0, LINE_SL, OBJPROP_COLOR, lineClr);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_STYLE, STYLE_SOLID);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_WIDTH, lineW);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_ZORDER, ZORDER_ZONE_LINE);
+        ObjectSetInteger(0, LINE_SL, OBJPROP_BACK, false);
+        ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, "SL (drag to adjust)");
+        if((forceUpdate || !ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)
+           ObjectMove(0, LINE_SL, 0, 0, slPrice);
+        
+        // Preview labels (text only, no background rectangle)
+        string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+        string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
+        int sx = 0, sy = 0;
+        if(ChartTimePriceToXY(0, 0, tLabel, slPrice, sx, sy)) {
+           if(ObjectFind(0, LBL_ZONE_SL) < 0) {
+              ObjectCreate(0, LBL_ZONE_SL, OBJ_LABEL, 0, 0, 0);
+              ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+              ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_BACK, false);
+              ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
+           }
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_XDISTANCE, sx - ZONE_LABEL_W);
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_YDISTANCE, sy - ZONE_LABEL_H);
+           ObjectSetString(0, LBL_ZONE_SL, OBJPROP_TEXT, slText);
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_COLOR, InpClrZoneSLLabel);
+           ObjectSetString(0, LBL_ZONE_SL, OBJPROP_FONT, FONT_ZONE);
+           ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_FONTSIZE, 10);
+        }
+     } else {
+        if(ObjectFind(0, LINE_SL) >= 0) { ObjectDelete(0, LINE_SL); changed = true; }
+        if(ObjectFind(0, LBL_ZONE_SL) >= 0) { ObjectDelete(0, LBL_ZONE_SL); changed = true; }
+     }
 
-    // --- TP Logic (line for drag + label text when preview on) ---
-    double tpPrice = 0;
-    if(EnableTP && g_TP_Points > 0) {
-       tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
-       tpPrice = NormalizeDouble(tpPrice, digits);
-       
-       double tpProfit = 0;
-       if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
-       string tpTooltip = StringFormat("TP: %d pts (%s %.2f)", g_TP_Points, (tpProfit >= 0 ? "+" : ""), tpProfit);
-       
-       bool usePreview = g_ShowPreview;
-       color lineClr = usePreview ? InpClrZoneHandle : InpClrTP;
-       int lineW = usePreview ? 1 : 2;
-       
-       if(ObjectFind(0, LINE_TP) < 0) {
-          ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, tpPrice);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
-          ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
-          changed = true;
-       }
-       ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, lineClr);
-       ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_SOLID);
-       ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, lineW);
-       ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, usePreview ? ZORDER_ZONE_LINE : 100);
-       ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
-       ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, usePreview ? "TP (drag to adjust)" : tpTooltip);
-       if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)
-          ObjectMove(0, LINE_TP, 0, 0, tpPrice);
-       
-       // Preview labels (text only, no background rectangle)
-       if(usePreview) {
-          string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-          string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
-          int tx = 0, ty = 0;
-          if(ChartTimePriceToXY(0, 0, tLabel, tpPrice, tx, ty)) {
-             if(ObjectFind(0, LBL_ZONE_TP) < 0) {
-                ObjectCreate(0, LBL_ZONE_TP, OBJ_LABEL, 0, 0, 0);
-                ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-                ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BACK, false);
-                ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
-             }
-             ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_XDISTANCE, tx - ZONE_LABEL_W);
-             ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_YDISTANCE, ty);
-             ObjectSetString(0, LBL_ZONE_TP, OBJPROP_TEXT, tpText);
-             ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_COLOR, InpClrZoneTPLabel);
-             ObjectSetString(0, LBL_ZONE_TP, OBJPROP_FONT, FONT_ZONE);
-             ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_FONTSIZE, 10);
-          }
-          
-          // Open P&L / R:R label when we have positions
-          if(last_Positions > 0 && g_SL_Points > 0 && g_TP_Points > 0) {
-             double rr = (double)g_TP_Points / (double)g_SL_Points;
-             double openPnL = last_PnL;
-             int qty = last_Positions;
-             string pnlStr = StringFormat("Open P&L: %.2f, Qty: %d  R:R: %.2f", openPnL, qty, rr);
-             double pnlY = (entryPrice + tpPrice) / 2.0;
-             int px = 0, py = 0;
-             if(ChartTimePriceToXY(0, 0, tLabel, pnlY, px, py)) {
-                if(ObjectFind(0, LBL_ZONE_PNL) < 0) {
-                   ObjectCreate(0, LBL_ZONE_PNL, OBJ_LABEL, 0, 0, 0);
-                   ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-                   ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BACK, false);
-                   ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
-                }
-                ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_XDISTANCE, px - ZONE_LABEL_W);
-                ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_YDISTANCE, py - ZONE_LABEL_H / 2);
-                ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_TEXT, pnlStr);
-                ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_COLOR, openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox);
-                ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_FONT, FONT_ZONE);
-                ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_FONTSIZE, 10);
-             }
-          } else {
-             if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
-          }
-       } else {
-          if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
-          if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
-       }
-    } else {
-       if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
-       if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
-       if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
-    }
+     // --- TP Logic (only draw line + label when preview is ON) ---
+     double tpPrice = 0;
+     if(g_ShowPreview && EnableTP && g_TP_Points > 0) {
+        tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
+        tpPrice = NormalizeDouble(tpPrice, digits);
+        
+        double tpProfit = 0;
+        if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
+        
+        color lineClr = InpClrZoneHandle;
+        int lineW = 1;
+        
+        if(ObjectFind(0, LINE_TP) < 0) {
+           ObjectCreate(0, LINE_TP, OBJ_HLINE, 0, 0, tpPrice);
+           ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTABLE, true);
+           ObjectSetInteger(0, LINE_TP, OBJPROP_SELECTED, true);
+           changed = true;
+        }
+        ObjectSetInteger(0, LINE_TP, OBJPROP_COLOR, lineClr);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_STYLE, STYLE_SOLID);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_WIDTH, lineW);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_ZORDER, ZORDER_ZONE_LINE);
+        ObjectSetInteger(0, LINE_TP, OBJPROP_BACK, false);
+        ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, "TP (drag to adjust)");
+        if((forceUpdate || !ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED)) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)
+           ObjectMove(0, LINE_TP, 0, 0, tpPrice);
+        
+        // Preview labels (text only, no background rectangle)
+        string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
+        string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
+        int tx = 0, ty = 0;
+        if(ChartTimePriceToXY(0, 0, tLabel, tpPrice, tx, ty)) {
+           if(ObjectFind(0, LBL_ZONE_TP) < 0) {
+              ObjectCreate(0, LBL_ZONE_TP, OBJ_LABEL, 0, 0, 0);
+              ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+              ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_BACK, false);
+              ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
+           }
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_XDISTANCE, tx - ZONE_LABEL_W);
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_YDISTANCE, ty);
+           ObjectSetString(0, LBL_ZONE_TP, OBJPROP_TEXT, tpText);
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_COLOR, InpClrZoneTPLabel);
+           ObjectSetString(0, LBL_ZONE_TP, OBJPROP_FONT, FONT_ZONE);
+           ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_FONTSIZE, 10);
+        }
+        
+        // Open P&L / R:R label when we have positions
+        if(last_Positions > 0 && g_SL_Points > 0 && g_TP_Points > 0) {
+           double rr = (double)g_TP_Points / (double)g_SL_Points;
+           double openPnL = last_PnL;
+           int qty = last_Positions;
+           string pnlStr = StringFormat("Open P&L: %.2f, Qty: %d  R:R: %.2f", openPnL, qty, rr);
+           double pnlY = (entryPrice + tpPrice) / 2.0;
+           int px = 0, py = 0;
+           if(ChartTimePriceToXY(0, 0, tLabel, pnlY, px, py)) {
+              if(ObjectFind(0, LBL_ZONE_PNL) < 0) {
+                 ObjectCreate(0, LBL_ZONE_PNL, OBJ_LABEL, 0, 0, 0);
+                 ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+                 ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_BACK, false);
+                 ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_ZORDER, ZORDER_ZONE_LABEL);
+              }
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_XDISTANCE, px - ZONE_LABEL_W);
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_YDISTANCE, py - ZONE_LABEL_H / 2);
+              ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_TEXT, pnlStr);
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_COLOR, openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox);
+              ObjectSetString(0, LBL_ZONE_PNL, OBJPROP_FONT, FONT_ZONE);
+              ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_FONTSIZE, 10);
+           }
+        } else {
+           if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+        }
+     } else {
+        if(ObjectFind(0, LINE_TP) >= 0) { ObjectDelete(0, LINE_TP); changed = true; }
+        if(ObjectFind(0, LBL_ZONE_TP) >= 0) { ObjectDelete(0, LBL_ZONE_TP); changed = true; }
+        if(ObjectFind(0, LBL_ZONE_PNL) >= 0) { ObjectDelete(0, LBL_ZONE_PNL); changed = true; }
+     }
 
    // --- Entry divider line when zone preview on (Market: visual only; Pending: styled above) ---
    bool bothZones = g_ShowPreview && (EnableSL && g_SL_Points > 0) && (EnableTP && g_TP_Points > 0);
@@ -1861,7 +1849,7 @@ void TogglePanel() {
       CreateGUI(); 
       UpdateToggleState(); 
       UpdateCalculatedLot();
-      DrawVisualLines(); 
+      DrawVisualLines(true); 
       ChartRedraw(); 
    }
     else { 
