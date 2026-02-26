@@ -1998,3 +1998,4 @@ void UpdatePositionSummary() {
    ObjectSetString(0, LBL_POS_SUMMARY, OBJPROP_TEXT, text);
    ObjectSetInteger(0, LBL_POS_SUMMARY, OBJPROP_COLOR, clr);
 }
+//+------------------------------------------------------------------+
