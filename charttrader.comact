@@ -1333,9 +1333,16 @@ bool DrawVisualLines(bool forceUpdate = false) {
 
      // --- SL Logic (only draw line + label when preview is ON) ---
      double slPrice = 0;
+     long slPointsAct = g_SL_Points;
      if(g_ShowPreview && EnableSL && g_SL_Points > 0) {
-        slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
-        slPrice = NormalizeDouble(slPrice, digits);
+        
+        if(ObjectFind(0, LINE_SL) >= 0 && !forceUpdate) {
+            slPrice = ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE);
+            if(entryPrice > 0 && _Point > 0) slPointsAct = (long)MathRound(MathAbs(entryPrice - slPrice) / _Point);
+        } else {
+            slPrice = IsLongMode ? entryPrice - (g_SL_Points * _Point) : entryPrice + (g_SL_Points * _Point);
+            slPrice = NormalizeDouble(slPrice, digits);
+        }
         
         double slProfit = 0;
         if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, slPrice, slProfit)) slProfit = 0;
@@ -1355,7 +1362,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
            ObjectSetString(0, LINE_SL, OBJPROP_TOOLTIP, "SL (drag to adjust)");
            changed = true;
         } else {
-           if(forceUpdate || (!ObjectGetInteger(0, LINE_SL, OBJPROP_SELECTED) && ObjectGetDouble(0, LINE_SL, OBJPROP_PRICE) != slPrice)) {
+           if(forceUpdate) {
               ObjectMove(0, LINE_SL, 0, 0, slPrice);
               changed = true;
            }
@@ -1363,7 +1370,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         
         // Preview labels (text only, no background rectangle)
         string slPct = (entryPrice != 0) ? DoubleToString(MathAbs(slPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-        string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)g_SL_Points, slProfit);
+        string slText = StringFormat("Stop: %s (%s%%) %d, Amount: %.2f", DoubleToString(slPrice, digits), slPct, (int)slPointsAct, slProfit);
         int sx = 0, sy = 0;
         static int s_last_sx = -1, s_last_sy = -1;
         static string s_last_slText = "";
@@ -1401,9 +1408,16 @@ bool DrawVisualLines(bool forceUpdate = false) {
 
      // --- TP Logic (only draw line + label when preview is ON) ---
      double tpPrice = 0;
+     long tpPointsAct = g_TP_Points;
      if(g_ShowPreview && EnableTP && g_TP_Points > 0) {
-        tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
-        tpPrice = NormalizeDouble(tpPrice, digits);
+        
+        if(ObjectFind(0, LINE_TP) >= 0 && !forceUpdate) {
+            tpPrice = ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE);
+            if(entryPrice > 0 && _Point > 0) tpPointsAct = (long)MathRound(MathAbs(entryPrice - tpPrice) / _Point);
+        } else {
+            tpPrice = IsLongMode ? entryPrice + (g_TP_Points * _Point) : entryPrice - (g_TP_Points * _Point);
+            tpPrice = NormalizeDouble(tpPrice, digits);
+        }
         
         double tpProfit = 0;
         if(!OrderCalcProfit(IsLongMode ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, g_LotSize, entryPrice, tpPrice, tpProfit)) tpProfit = 0;
@@ -1423,7 +1437,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
            ObjectSetString(0, LINE_TP, OBJPROP_TOOLTIP, "TP (drag to adjust)");
            changed = true;
         } else {
-           if(forceUpdate || (!ObjectGetInteger(0, LINE_TP, OBJPROP_SELECTED) && ObjectGetDouble(0, LINE_TP, OBJPROP_PRICE) != tpPrice)) {
+           if(forceUpdate) {
               ObjectMove(0, LINE_TP, 0, 0, tpPrice);
               changed = true;
            }
@@ -1431,7 +1445,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         
         // Preview labels (text only, no background rectangle)
         string tpPct = (entryPrice != 0) ? DoubleToString(MathAbs(tpPrice - entryPrice) / entryPrice * 100.0, 3) : "0";
-        string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)g_TP_Points, tpProfit);
+        string tpText = StringFormat("Target: %s (%s%%) %d, Amount: %.2f", DoubleToString(tpPrice, digits), tpPct, (int)tpPointsAct, tpProfit);
         int tx = 0, ty = 0;
         static int s_last_tx = -1, s_last_ty = -1;
         static string s_last_tpText = "";
@@ -1465,7 +1479,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         
         // Open P&L / R:R label when we have positions
         if(last_Positions > 0 && g_SL_Points > 0 && g_TP_Points > 0) {
-           double rr = (double)g_TP_Points / (double)g_SL_Points;
+           double rr = (slPointsAct > 0) ? ((double)tpPointsAct / (double)slPointsAct) : 0;
            double openPnL = last_PnL;
            int qty = last_Positions;
            string pnlStr = StringFormat("Open P&L: %.2f, Qty: %d  R:R: %.2f", openPnL, qty, rr);
