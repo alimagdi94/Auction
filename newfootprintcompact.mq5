@@ -24,6 +24,8 @@
 input group "Data & History"
 input int    InpTickSize       = 10;            // Cell size (points) — 1 point = 1×_Point; click Tick to cycle 10→20→...→100→10
 input double InpImbalanceRatio = 300.0;         // Imbalance Threshold (%)
+input int    InpStackedImbCount= 3;             // Stacked Imbalance Min Count
+input double InpAbsorptionRatio= 4.0;           // Absorption Threshold (x Avg Vol)
 input int    InpHistoryBars    = 100;           // History bars to load
 input double InpVAPercent      = 70.0;          // Value Area % (industry default 70)
 
@@ -41,6 +43,9 @@ input color  InpOutOfVAColor   = C'22,22,25';     // Out of Value Area Color
 input group "Colors - Highlights & UI"
 input color  InpImbSellColor   = C'220,40,40';    // Sell Imbalance Color
 input color  InpImbBuyColor    = C'40,220,80';    // Buy Imbalance Color
+input color  InpStackedSellColor= C'255,100,20';  // Stacked Sell Zone Color
+input color  InpStackedBuyColor = C'20,160,255';  // Stacked Buy Zone Color
+input color  InpUnfinishedColor= clrDodgerBlue;   // Unfinished Auction Marker
 input color  InpAbsorptionColor= clrMagenta;      // Absorption Marker Color
 input color  InpPOCColor       = clrYellow;       // POC Frame Color
 input color  InpBullishFrame   = C'0,255,100';    // Bullish Session Frame
@@ -59,6 +64,10 @@ struct PriceLevel
    bool   is_imb_buy;
    bool   is_imb_sell;
    bool   is_absorption;
+   bool   is_stacked_imb_buy;
+   bool   is_stacked_imb_sell;
+   bool   is_unfinished_hi;
+   bool   is_unfinished_lo;
 };
 
 struct FPBar
@@ -266,6 +275,10 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
       g_bars[bi].levels[idx].ask_vol = 0;
       g_bars[bi].levels[idx].total_vol = 0;
       g_bars[bi].levels[idx].delta = 0;
+      g_bars[bi].levels[idx].is_stacked_imb_buy = false;
+      g_bars[bi].levels[idx].is_stacked_imb_sell = false;
+      g_bars[bi].levels[idx].is_unfinished_hi = false;
+      g_bars[bi].levels[idx].is_unfinished_lo = false;
       g_bars[bi].level_count++;
       g_bars[bi].sorted = false;
    }
@@ -304,7 +317,11 @@ void ComputeBarSignals(int bi)
    {
       g_bars[bi].levels[i].is_imb_buy  = false;
       g_bars[bi].levels[i].is_imb_sell = false;
-      g_bars[bi].levels[i].is_absorption = (g_bars[bi].levels[i].total_vol > avgVol * 4.0);
+      g_bars[bi].levels[i].is_stacked_imb_buy = false;
+      g_bars[bi].levels[i].is_stacked_imb_sell = false;
+      g_bars[bi].levels[i].is_unfinished_hi = false;
+      g_bars[bi].levels[i].is_unfinished_lo = false;
+      g_bars[bi].levels[i].is_absorption = (g_bars[bi].levels[i].total_vol > avgVol * InpAbsorptionRatio);
 
       // Diagonal Imbalance
       if(i < len - 1)
@@ -319,6 +336,46 @@ void ComputeBarSignals(int bi)
          if(prevAsk > 0 && ((double)g_bars[bi].levels[i].bid_vol / prevAsk) * 100.0 >= g_imbRatio) 
             g_bars[bi].levels[i].is_imb_sell = true;
       }
+   }
+
+   // 4. Determine Stacked Imbalances
+   int countBuy = 0, countSell = 0;
+   for(int i = 0; i < len; i++)
+   {
+      // Stacked Buy
+      if(g_bars[bi].levels[i].is_imb_buy) countBuy++;
+      else {
+         if(countBuy >= InpStackedImbCount) {
+            for(int j = i - countBuy; j < i; j++) g_bars[bi].levels[j].is_stacked_imb_buy = true;
+         }
+         countBuy = 0;
+      }
+      
+      // Stacked Sell
+      if(g_bars[bi].levels[i].is_imb_sell) countSell++;
+      else {
+         if(countSell >= InpStackedImbCount) {
+            for(int j = i - countSell; j < i; j++) g_bars[bi].levels[j].is_stacked_imb_sell = true;
+         }
+         countSell = 0;
+      }
+   }
+   if(countBuy >= InpStackedImbCount) {
+      for(int j = len - countBuy; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_buy = true;
+   }
+   if(countSell >= InpStackedImbCount) {
+      for(int j = len - countSell; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_sell = true;
+   }
+
+   // 5. Determine Unfinished Auctions
+   // Levels are sorted descending. levels[0] is High, levels[len-1] is Low.
+   if(len > 1)
+   {
+      // Unfinished High: High has both buyers and sellers
+      g_bars[bi].levels[0].is_unfinished_hi = (g_bars[bi].levels[0].ask_vol > 0 && g_bars[bi].levels[0].bid_vol > 0);
+      
+      // Unfinished Low: Low has both buyers and sellers
+      g_bars[bi].levels[len-1].is_unfinished_lo = (g_bars[bi].levels[len-1].bid_vol > 0 && g_bars[bi].levels[len-1].ask_vol > 0);
    }
 }
 
@@ -605,18 +662,44 @@ void DrawBar(int bi, int shift, int barW)
       canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpGridColor, 100));
       canvas.LineVertical(midX, y_top, y_bot, FpARGB(InpGridColor, 100));
 
-      // Absorption Marker (Vivid Magenta outline)
-      if(pl.is_absorption) 
-      {
-         canvas.Rectangle(x1, y_top, x2, y_bot, FpARGB(InpAbsorptionColor, 240));
-         canvas.Rectangle(x1+1, y_top+1, x2-1, y_bot-1, FpARGB(InpAbsorptionColor, 120));
-      }
-
       // POC Frame (Vivid Gold)
       if(i == pocIdx) 
       {
          canvas.Rectangle(x1, y_top, x2, y_bot, FpARGB(InpPOCColor, 240));
          canvas.Rectangle(x1+1, y_top+1, x2-1, y_bot-1, FpARGB(InpPOCColor, 120));
+      }
+
+      // Stacked Imbalance Framing
+      if(pl.is_stacked_imb_buy)
+      {
+         canvas.Rectangle(midX, y_top, x2, y_bot, FpARGB(InpStackedBuyColor, 255));
+         canvas.Rectangle(midX+1, y_top+1, x2-1, y_bot-1, FpARGB(InpStackedBuyColor, 150));
+      }
+      if(pl.is_stacked_imb_sell)
+      {
+         canvas.Rectangle(x1, y_top, midX, y_bot, FpARGB(InpStackedSellColor, 255));
+         canvas.Rectangle(x1+1, y_top+1, midX-1, y_bot-1, FpARGB(InpStackedSellColor, 150));
+      }
+
+      // Unfinished Auctions (Extreme High / Low Markers)
+      if(pl.is_unfinished_hi)
+      {
+         canvas.LineHorizontal(x1, x2, y_top, FpARGB(InpUnfinishedColor, 255));
+         canvas.LineHorizontal(x1, x2, y_top+1, FpARGB(InpUnfinishedColor, 200));
+         canvas.LineHorizontal(x1, x2, y_top+2, FpARGB(InpUnfinishedColor, 100));
+      }
+      if(pl.is_unfinished_lo)
+      {
+         canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpUnfinishedColor, 255));
+         canvas.LineHorizontal(x1, x2, y_bot-1, FpARGB(InpUnfinishedColor, 200));
+         canvas.LineHorizontal(x1, x2, y_bot-2, FpARGB(InpUnfinishedColor, 100));
+      }
+
+      // Absorption Marker (Vivid Magenta outline drawn thicker so it is easily seen)
+      if(pl.is_absorption) 
+      {
+         canvas.Rectangle(x1-1, y_top-1, x2+1, y_bot+1, FpARGB(InpAbsorptionColor, 255));
+         canvas.Rectangle(x1-2, y_top-2, x2+2, y_bot+2, FpARGB(InpAbsorptionColor, 255));
       }
 
       if(!skipText)
