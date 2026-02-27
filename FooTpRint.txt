@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                                         foot.mq5 |
 //|              Footprint (Bid x Ask Cluster) — Industry Standard   |
 //+------------------------------------------------------------------+
@@ -24,6 +24,7 @@
 input group "Data & History"
 input int    InpTickSize       = 10;            // Cell size (points) — 1 point = 1×_Point; click Tick to cycle 10→20→...→100→10
 input double InpImbalanceRatio = 300.0;         // Imbalance Threshold (%)
+input int    InpStackedImbCount= 3;             // Stacked Imbalance Min Count
 input double InpAbsorptionRatio= 4.0;           // Absorption Threshold (x Avg Vol)
 input int    InpHistoryBars    = 100;           // History bars to load
 input double InpVAPercent      = 70.0;          // Value Area % (industry default 70)
@@ -33,20 +34,23 @@ input uchar  InpBgAlpha        = 210;           // Cell Background Alpha (0-255)
 input uchar  InpVAOffAlpha     = 80;            // Alpha outside Value Area (0-255)
 
 input group "Colors - Heatmap"
-input color  InpBidBaseColor   = C'28,10,10';     // Bid (Sell) Volume Base
-input color  InpBidHighColor   = C'140,40,40';    // Bid (Sell) Volume High
-input color  InpAskBaseColor   = C'10,28,15';     // Ask (Buy) Volume Base
-input color  InpAskHighColor   = C'40,140,60';    // Ask (Buy) Volume High
-input color  InpOutOfVAColor   = C'22,22,25';     // Out of Value Area Color
+input color  InpBidBaseColor   = C'15,0,20';      // Bid (Sell) Volume Base (Muted)
+input color  InpBidHighColor   = C'74,0,105';     // Bid (Sell) Volume High
+input color  InpAskBaseColor   = C'0,15,15';      // Ask (Buy) Volume Base (Muted)
+input color  InpAskHighColor   = C'0,64,64';      // Ask (Buy) Volume High
+input color  InpOutOfVAColor   = C'10,10,12';     // Out of Value Area Color
 
 input group "Colors - Highlights & UI"
-input color  InpImbSellColor   = C'220,40,40';    // Sell Imbalance Color
-input color  InpImbBuyColor    = C'40,220,80';    // Buy Imbalance Color
+input color  InpImbSellColor   = C'148,0,211';    // Sell Imbalance Glow (Bright Purple)
+input color  InpImbBuyColor    = C'0,128,128';    // Buy Imbalance Glow (Bright Teal)
+input color  InpStackedSellColor= C'148,0,211';   // Stacked Sell Zone Color
+input color  InpStackedBuyColor = C'0,128,128';   // Stacked Buy Zone Color
+input color  InpUnfinishedColor= clrDodgerBlue;   // Unfinished Auction Marker
 input color  InpAbsorptionColor= clrMagenta;      // Absorption Marker Color
 input color  InpPOCColor       = clrYellow;       // POC Frame Color
-input color  InpBullishFrame   = C'0,255,100';    // Bullish Session Frame
-input color  InpBearishFrame   = C'255,40,40';    // Bearish Session Frame
-input color  InpWickColor      = C'180,180,190';  // Candle Wick Color
+input color  InpBullishFrame   = C'0,128,128';    // Bullish Session Frame (Teal)
+input color  InpBearishFrame   = C'148,0,211';    // Bearish Session Frame (Purple)
+input color  InpWickColor      = C'140,140,150';  // Candle Structure Color
 input color  InpGridColor      = clrBlack;        // Grid Separation Color
 
 //--- Data structures
@@ -60,6 +64,10 @@ struct PriceLevel
    bool   is_imb_buy;
    bool   is_imb_sell;
    bool   is_absorption;
+   bool   is_stacked_imb_buy;
+   bool   is_stacked_imb_sell;
+   bool   is_unfinished_hi;
+   bool   is_unfinished_lo;
 };
 
 struct FPBar
@@ -160,8 +168,12 @@ void ThrottledRender()
 //+------------------------------------------------------------------+
 void ReloadHistory()
 {
+   g_dirty = false;
    ArrayFree(g_bars);
-   int maxShift = MathMin(InpHistoryBars, iBars(_Symbol, PERIOD_CURRENT) - 1);
+   g_last_tick_time_ms = 0; 
+   int bars_total = iBars(_Symbol, PERIOD_CURRENT);
+   if (bars_total <= 0) return; // Prevent crash if history not loaded
+   int maxShift = MathMin(InpHistoryBars, bars_total - 1);
    datetime startTime = iTime(_Symbol, PERIOD_CURRENT, maxShift);
    datetime endTime   = TimeCurrent();
    LoadHistory(startTime, endTime);
@@ -267,6 +279,10 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
       g_bars[bi].levels[idx].ask_vol = 0;
       g_bars[bi].levels[idx].total_vol = 0;
       g_bars[bi].levels[idx].delta = 0;
+      g_bars[bi].levels[idx].is_stacked_imb_buy = false;
+      g_bars[bi].levels[idx].is_stacked_imb_sell = false;
+      g_bars[bi].levels[idx].is_unfinished_hi = false;
+      g_bars[bi].levels[idx].is_unfinished_lo = false;
       g_bars[bi].level_count++;
       g_bars[bi].sorted = false;
    }
@@ -305,6 +321,10 @@ void ComputeBarSignals(int bi)
    {
       g_bars[bi].levels[i].is_imb_buy  = false;
       g_bars[bi].levels[i].is_imb_sell = false;
+      g_bars[bi].levels[i].is_stacked_imb_buy = false;
+      g_bars[bi].levels[i].is_stacked_imb_sell = false;
+      g_bars[bi].levels[i].is_unfinished_hi = false;
+      g_bars[bi].levels[i].is_unfinished_lo = false;
       g_bars[bi].levels[i].is_absorption = (g_bars[bi].levels[i].total_vol > avgVol * InpAbsorptionRatio);
 
       // Diagonal Imbalance
@@ -320,6 +340,46 @@ void ComputeBarSignals(int bi)
          if(prevAsk > 0 && ((double)g_bars[bi].levels[i].bid_vol / prevAsk) * 100.0 >= g_imbRatio) 
             g_bars[bi].levels[i].is_imb_sell = true;
       }
+   }
+
+   // 4. Determine Stacked Imbalances
+   int countBuy = 0, countSell = 0;
+   for(int i = 0; i < len; i++)
+   {
+      // Stacked Buy
+      if(g_bars[bi].levels[i].is_imb_buy) countBuy++;
+      else {
+         if(countBuy >= InpStackedImbCount) {
+            for(int j = i - countBuy; j < i; j++) g_bars[bi].levels[j].is_stacked_imb_buy = true;
+         }
+         countBuy = 0;
+      }
+      
+      // Stacked Sell
+      if(g_bars[bi].levels[i].is_imb_sell) countSell++;
+      else {
+         if(countSell >= InpStackedImbCount) {
+            for(int j = i - countSell; j < i; j++) g_bars[bi].levels[j].is_stacked_imb_sell = true;
+         }
+         countSell = 0;
+      }
+   }
+   if(countBuy >= InpStackedImbCount) {
+      for(int j = len - countBuy; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_buy = true;
+   }
+   if(countSell >= InpStackedImbCount) {
+      for(int j = len - countSell; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_sell = true;
+   }
+
+   // 5. Determine Unfinished Auctions
+   // Levels are sorted descending. levels[0] is High, levels[len-1] is Low.
+   if(len > 1)
+   {
+      // Unfinished High: High has both buyers and sellers
+      g_bars[bi].levels[0].is_unfinished_hi = (g_bars[bi].levels[0].ask_vol > 0 && g_bars[bi].levels[0].bid_vol > 0);
+      
+      // Unfinished Low: Low has both buyers and sellers
+      g_bars[bi].levels[len-1].is_unfinished_lo = (g_bars[bi].levels[len-1].bid_vol > 0 && g_bars[bi].levels[len-1].ask_vol > 0);
    }
 }
 
@@ -352,7 +412,10 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
                   bool skipAlreadySeen, bool updateLastTimeMs)
 {
    if(count <= 0) return;
-   for(int i = startIdx; i < startIdx + count; i++)
+   int endIdx = startIdx + count;
+   if(endIdx > ArraySize(ticks)) endIdx = ArraySize(ticks); // CRITICAL: Bounds check
+
+   for(int i = startIdx; i < endIdx; i++)
    {
       if(skipAlreadySeen && ticks[i].time_msc <= g_last_tick_time_ms)
          continue;
@@ -540,12 +603,10 @@ void DrawBar(int bi, int shift, int barW)
 
    datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
 
-   // --- Candle Wicks (Target matching) ---
+   // Candle Wicks will be drawn at the end to establish visual priority
    int wx, wy_h, wy_l;
    ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].high, wx, wy_h);
    ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].low, wx, wy_l);
-   uint wickCol = FpARGB(InpWickColor, (160 * g_opacity) / 255);
-   canvas.LineVertical(wx, wy_h, wy_l, wickCol);
 
    // --- X geometry (Compact/Professional) ---
    int halfW = (int)(barW * 0.45);
@@ -593,24 +654,56 @@ void DrawBar(int bi, int shift, int barW)
       alpha = (alpha * opaScale) / 255;
       double intensity = (double)pl.total_vol / (double)maxLevelVol;
 
-      // Desired Neon Heatmap Palettes
-      color bidCol = pl.is_imb_sell ? InpImbSellColor : LerpColor(InpBidBaseColor, InpBidHighColor, intensity);
-      color askCol = pl.is_imb_buy  ? InpImbBuyColor : LerpColor(InpAskBaseColor, InpAskHighColor, intensity);
+      // Normal Neon Heatmap Backgrounds (Muted Priority)
+      color bidCol = LerpColor(InpBidBaseColor, InpBidHighColor, intensity);
+      color askCol = LerpColor(InpAskBaseColor, InpAskHighColor, intensity);
 
       if(!inVA) { bidCol = InpOutOfVAColor; askCol = InpOutOfVAColor; }
 
       canvas.FillRectangle(x1, y_top, midX, y_bot, FpARGB(bidCol, alpha));
       canvas.FillRectangle(midX + 1, y_top, x2, y_bot, FpARGB(askCol, alpha));
       
-      // Grid separation
-      canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpGridColor, 100));
-      canvas.LineVertical(midX, y_top, y_bot, FpARGB(InpGridColor, 100));
+      // Grid separation (faded to reduce noise)
+      canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpGridColor, 35));
+      canvas.LineVertical(midX, y_top, y_bot, FpARGB(InpGridColor, 35));
+
+      // Imbalance Subtle Glow / Border (Instead of blowing out the whole background)
+      if(pl.is_imb_sell)
+      {
+         canvas.Rectangle(x1, y_top, midX, y_bot, FpARGB(InpImbSellColor, 200));
+      }
+      if(pl.is_imb_buy)
+      {
+         canvas.Rectangle(midX+1, y_top, x2, y_bot, FpARGB(InpImbBuyColor, 200));
+      }
 
       // POC Frame (Vivid Gold)
       if(i == pocIdx) 
       {
          canvas.Rectangle(x1, y_top, x2, y_bot, FpARGB(InpPOCColor, 240));
          canvas.Rectangle(x1+1, y_top+1, x2-1, y_bot-1, FpARGB(InpPOCColor, 120));
+      }
+
+      // Stacked Imbalance Framing
+      if(pl.is_stacked_imb_buy)
+      {
+         canvas.Rectangle(midX, y_top, x2, y_bot, FpARGB(InpStackedBuyColor, 255));
+         canvas.Rectangle(midX+1, y_top+1, x2-1, y_bot-1, FpARGB(InpStackedBuyColor, 150));
+      }
+      if(pl.is_stacked_imb_sell)
+      {
+         canvas.Rectangle(x1, y_top, midX, y_bot, FpARGB(InpStackedSellColor, 255));
+         canvas.Rectangle(x1+1, y_top+1, midX-1, y_bot-1, FpARGB(InpStackedSellColor, 150));
+      }
+
+      // Unfinished Auctions (Extreme High / Low Markers) - Faded to reduce noise
+      if(pl.is_unfinished_hi)
+      {
+         canvas.LineHorizontal(x1, x2, y_top, FpARGB(InpUnfinishedColor, 160));
+      }
+      if(pl.is_unfinished_lo)
+      {
+         canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpUnfinishedColor, 160));
       }
 
       // Absorption Marker (Vivid Magenta outline drawn thicker so it is easily seen)
@@ -623,9 +716,15 @@ void DrawBar(int bi, int shift, int barW)
       if(!skipText)
       {
          int yy = (y_top + y_bot) / 2;
-         uint tCBid = (pl.is_imb_sell || (intensity > 0.8 && inVA)) ? colBlackText : colWhiteText;
-         uint tCAsk = (pl.is_imb_buy  || (intensity > 0.8 && inVA)) ? colBlackText : colWhiteText;
+         uint colMutedText = FpARGB(C'110,110,120', (180 * opaScale) / 255);
          
+         // Text Priority: Bright white only for significance. Muted otherwise.
+         uint tCBid = (pl.is_imb_sell || pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
+         uint tCAsk = (pl.is_imb_buy  || pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
+         
+         // Force dark text if intensity extremely bright to not lose contrast, though colors are muted now.
+         if(intensity > 0.85 && inVA) { tCBid = colBlackText; tCAsk = colBlackText; }
+
          if(pl.bid_vol > 0) canvas.TextOut((x1+midX)/2, yy, IntegerToString(pl.bid_vol), tCBid, TA_CENTER|TA_VCENTER);
          if(pl.ask_vol > 0) canvas.TextOut((midX+1+x2)/2, yy, IntegerToString(pl.ask_vol), tCAsk, TA_CENTER|TA_VCENTER);
       }
@@ -637,6 +736,10 @@ void DrawBar(int bi, int shift, int barW)
       canvas.Rectangle(x1, g_scratchY1[vaLoIdx], x2, g_scratchY2[vaHiIdx], FpARGB(sentimentCol, 255));
       canvas.Rectangle(x1-1, g_scratchY1[vaLoIdx]-1, x2+1, g_scratchY2[vaHiIdx]+1, FpARGB(sentimentCol, 120));
    }
+
+   // --- Candle Wicks (Pushed to end to ensure visual priority, sitting on top of heatmap) ---
+   uint wickCol = FpARGB(InpWickColor, (210 * g_opacity) / 255);
+   canvas.LineVertical(wx, wy_h, wy_l, wickCol);
 }
 
 
@@ -939,6 +1042,15 @@ int OnCalculate(const int rates_total,
                 const long     &volume[],
                 const int      &spread[])
 {
+   if(rates_total == 0) return 0;
+   
+   // Handle timeframe change or full reset
+   if(prev_calculated == 0 || rates_total < prev_calculated || ArraySize(g_bars) == 0)
+   {
+      ReloadHistory();
+      if(!g_dirty) return 0; // History load failed, try again next tick
+   }
+
    MqlTick ticks[];
    uint flag = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
 
@@ -947,6 +1059,8 @@ int OnCalculate(const int rates_total,
 
    if(from_msc == 0)
    {
+      // If we completely reset history, from_msc should be set by ReloadHistory.
+      // If OnCalculate still sees from_msc == 0, fetch a safe recent window to avoid massive ArrayOutOfRange.
       long lookback = 60000;
       if(now_msc > lookback)
          from_msc = now_msc - lookback;
@@ -976,6 +1090,17 @@ void OnChartEvent(const int id, const long &lparam,
 
    else if(id == CHARTEVENT_CHART_CHANGE)
    {
+      // If timeframe was changed, history needs full reload
+      if(ArraySize(g_bars) > 0)
+      {
+         datetime expectedLastBar = iTime(_Symbol, PERIOD_CURRENT, 0);
+         datetime expectedFirstBar = iTime(_Symbol, PERIOD_CURRENT, MathMin(InpHistoryBars, iBars(_Symbol, PERIOD_CURRENT) - 1));
+         
+         // Simple heuristic: if our earliest bar doesn't align with the expected timeframe boundary, we switched TFs.
+         if (g_bars[0].bar_time != expectedFirstBar && g_bars[ArraySize(g_bars)-1].bar_time != expectedLastBar) {
+             ReloadHistory();
+         }
+      }
       g_dirty = true;
       ThrottledRender();
    }
