@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                                           fp.mq5 |
+//|                                                         foot.mq5 |
 //|              Footprint (Bid x Ask Cluster) — Industry Standard   |
 //+------------------------------------------------------------------+
 //| Industry alignment: Sierra / Bookmap-style footprint              |
@@ -24,21 +24,30 @@
 input group "Data & History"
 input int    InpTickSize       = 10;            // Cell size (points) — 1 point = 1×_Point; click Tick to cycle 10→20→...→100→10
 input double InpImbalanceRatio = 300.0;         // Imbalance Threshold (%)
+input double InpAbsorptionRatio= 4.0;           // Absorption Threshold (x Avg Vol)
 input int    InpHistoryBars    = 100;           // History bars to load
 input double InpVAPercent      = 70.0;          // Value Area % (industry default 70)
 
-input group "Visual"
+input group "Visual Opacity"
 input uchar  InpBgAlpha        = 210;           // Cell Background Alpha (0-255)
 input uchar  InpVAOffAlpha     = 80;            // Alpha outside Value Area (0-255)
 
-input group "Colors"
-input color  InpBidColor       = C'180,60,60';  // Bid (Sell) side color
-input color  InpAskColor       = C'50,160,80';  // Ask (Buy) side color
-input color  InpPOCColor       = C'255,215,0';  // POC highlight (Gold)
-input color  InpImbBuyBg       = C'0,200,80';   // Buy Imbalance marker
-input color  InpImbSellBg      = C'220,40,40';  // Sell Imbalance marker
-input color  InpDeltaPosColor  = C'40,180,90';  // Positive Delta
-input color  InpDeltaNegColor  = C'200,50,50';  // Negative Delta
+input group "Colors - Heatmap"
+input color  InpBidBaseColor   = C'28,10,10';     // Bid (Sell) Volume Base
+input color  InpBidHighColor   = C'140,40,40';    // Bid (Sell) Volume High
+input color  InpAskBaseColor   = C'10,28,15';     // Ask (Buy) Volume Base
+input color  InpAskHighColor   = C'40,140,60';    // Ask (Buy) Volume High
+input color  InpOutOfVAColor   = C'22,22,25';     // Out of Value Area Color
+
+input group "Colors - Highlights & UI"
+input color  InpImbSellColor   = C'220,40,40';    // Sell Imbalance Color
+input color  InpImbBuyColor    = C'40,220,80';    // Buy Imbalance Color
+input color  InpAbsorptionColor= clrMagenta;      // Absorption Marker Color
+input color  InpPOCColor       = clrYellow;       // POC Frame Color
+input color  InpBullishFrame   = C'0,255,100';    // Bullish Session Frame
+input color  InpBearishFrame   = C'255,40,40';    // Bearish Session Frame
+input color  InpWickColor      = C'180,180,190';  // Candle Wick Color
+input color  InpGridColor      = clrBlack;        // Grid Separation Color
 
 //--- Data structures
 struct PriceLevel
@@ -48,6 +57,9 @@ struct PriceLevel
    long   ask_vol;
    long   total_vol;
    long   delta;
+   bool   is_imb_buy;
+   bool   is_imb_sell;
+   bool   is_absorption;
 };
 
 struct FPBar
@@ -55,7 +67,13 @@ struct FPBar
    datetime   bar_time;
    long       total_vol;
    long       total_delta;
+   double     high;
+   double     low;
+   int        poc_idx;
+   int        va_lo_idx;
+   int        va_hi_idx;
    bool       sorted;
+   bool       is_bullish;
    int        level_count;
    PriceLevel levels[];
 };
@@ -201,6 +219,7 @@ int InsertBar(datetime bt)
    g_bars[pos].total_vol   = 0;
    g_bars[pos].total_delta = 0;
    g_bars[pos].sorted      = true;
+   g_bars[pos].is_bullish  = true;
    g_bars[pos].level_count = 0;
    ArrayResize(g_bars[pos].levels, 64, 64);
    return pos;
@@ -215,50 +234,93 @@ int GetBar(datetime bt)
 }
 
 //+------------------------------------------------------------------+
-void Feed(datetime bt, double price, long vol, bool isBuy, bool isSell)
+//+------------------------------------------------------------------+
+//| Phase 1: Accumulate Ticks to Price Levels                       |
+//+------------------------------------------------------------------+
+void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
 {
-   if(bt == 0 || price == 0.0) return;
+   if(price == 0.0) return;
    price = NormP(price);
-   int bi = GetBar(bt);
-
+   
    int used = g_bars[bi].level_count;
-   for(int i = 0; i < used; i++)
+   int idx = -1;
+
+   // Search for existing level (optimized for recent levels)
+   for(int i = used - 1; i >= 0; i--)
    {
       if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
       {
-         if(isBuy)  g_bars[bi].levels[i].ask_vol += vol;
-         if(isSell) g_bars[bi].levels[i].bid_vol += vol;
-         g_bars[bi].levels[i].total_vol += vol;
-         g_bars[bi].levels[i].delta =
-            g_bars[bi].levels[i].ask_vol - g_bars[bi].levels[i].bid_vol;
-         g_bars[bi].total_vol += vol;
-         if(isBuy)  g_bars[bi].total_delta += vol;
-         if(isSell) g_bars[bi].total_delta -= vol;
-         g_bars[bi].sorted = false;
-         g_dirty = true;
-         return;
+         idx = i;
+         break;
       }
    }
-   int capacity = ArraySize(g_bars[bi].levels);
-   if(used >= capacity)
-   {
-      ArrayResize(g_bars[bi].levels, capacity + 64, 64);
 
+   // Create new level if not found
+   if(idx == -1)
+   {
+      if(used >= ArraySize(g_bars[bi].levels))
+         ArrayResize(g_bars[bi].levels, used + 64, 64);
+      
+      idx = used;
+      g_bars[bi].levels[idx].price = price;
+      g_bars[bi].levels[idx].bid_vol = 0;
+      g_bars[bi].levels[idx].ask_vol = 0;
+      g_bars[bi].levels[idx].total_vol = 0;
+      g_bars[bi].levels[idx].delta = 0;
+      g_bars[bi].level_count++;
+      g_bars[bi].sorted = false;
    }
 
-   int idx = g_bars[bi].level_count;
-   g_bars[bi].levels[idx].price     = price;
-   g_bars[bi].levels[idx].ask_vol   = isBuy  ? vol : 0;
-   g_bars[bi].levels[idx].bid_vol   = isSell ? vol : 0;
-   g_bars[bi].levels[idx].total_vol = vol;
-   g_bars[bi].levels[idx].delta     =
-      g_bars[bi].levels[idx].ask_vol - g_bars[bi].levels[idx].bid_vol;
-   g_bars[bi].level_count++;
+   // Update metrics
+   if(isBuy)  g_bars[bi].levels[idx].ask_vol += vol;
+   if(isSell) g_bars[bi].levels[idx].bid_vol += vol;
+   
+   g_bars[bi].levels[idx].total_vol += vol;
+   g_bars[bi].levels[idx].delta = g_bars[bi].levels[idx].ask_vol - g_bars[bi].levels[idx].bid_vol;
+   
    g_bars[bi].total_vol += vol;
-   if(isBuy)  g_bars[bi].total_delta += vol;
-   if(isSell) g_bars[bi].total_delta -= vol;
-   g_bars[bi].sorted = false;
+   g_bars[bi].total_delta += (isBuy ? vol : (isSell ? -vol : 0));
    g_dirty = true;
+}
+
+//+------------------------------------------------------------------+
+//| Phase 2: Compute Bar Signals (POC, VA, Imbalance, Absorption)   |
+//+------------------------------------------------------------------+
+void ComputeBarSignals(int bi)
+{
+   int len = g_bars[bi].level_count;
+   if(len <= 0) return;
+
+   if(!g_bars[bi].sorted) { SortLevels(g_bars[bi].levels, len); g_bars[bi].sorted = true; }
+
+   // 1. POC
+   g_bars[bi].poc_idx = FindPOC(g_bars[bi].levels, len);
+   
+   // 2. Value Area
+   FindVA(g_bars[bi].levels, len, g_bars[bi].total_vol, g_bars[bi].poc_idx, g_bars[bi].va_lo_idx, g_bars[bi].va_hi_idx);
+
+   // 3. Loop for Imbalance & Absorption
+   long avgVol = (len > 0) ? (g_bars[bi].total_vol / len) : 1;
+   for(int i = 0; i < len; i++)
+   {
+      g_bars[bi].levels[i].is_imb_buy  = false;
+      g_bars[bi].levels[i].is_imb_sell = false;
+      g_bars[bi].levels[i].is_absorption = (g_bars[bi].levels[i].total_vol > avgVol * InpAbsorptionRatio);
+
+      // Diagonal Imbalance
+      if(i < len - 1)
+      {
+         long nextBid = g_bars[bi].levels[i+1].bid_vol;
+         if(nextBid > 0 && ((double)g_bars[bi].levels[i].ask_vol / nextBid) * 100.0 >= g_imbRatio) 
+            g_bars[bi].levels[i].is_imb_buy = true;
+      }
+      if(i > 0)
+      {
+         long prevAsk = g_bars[bi].levels[i-1].ask_vol;
+         if(prevAsk > 0 && ((double)g_bars[bi].levels[i].bid_vol / prevAsk) * 100.0 >= g_imbRatio) 
+            g_bars[bi].levels[i].is_imb_sell = true;
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -319,7 +381,17 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
       int sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
       if(sh < 0) continue;
       datetime bt = iTime(_Symbol, PERIOD_CURRENT, sh);
-      Feed(bt, price, vol, isBuy, isSell);
+      int bi = GetBar(bt);
+      
+      // Update dimensions and sentiment
+      double bOpen  = iOpen(_Symbol, PERIOD_CURRENT, sh);
+      double bClose = iClose(_Symbol, PERIOD_CURRENT, sh);
+      g_bars[bi].is_bullish = (bClose >= bOpen);
+      g_bars[bi].high = iHigh(_Symbol, PERIOD_CURRENT, sh);
+      g_bars[bi].low  = iLow(_Symbol, PERIOD_CURRENT, sh);
+
+      AccumulateTick(bi, price, vol, isBuy, isSell);
+      ComputeBarSignals(bi);
 
       if(updateLastTimeMs)
          g_last_tick_time_ms = ticks[i].time_msc;
@@ -450,233 +522,124 @@ void EnsureScratch(int needed)
 //| Industry Standard Footprint Bar Renderer                         |
 //| Layout: [Bid Vol] | [Ask Vol]  per price level                   |
 //| - Diagonal imbalance detection (Ask@N vs Bid@N-1)                |
-//| - Volume heatmap intensity per side                               |
-//| - Clean POC line                                                  |
-//| - Value Area shading                                              |
+//| - Yellow box for Value Area                                       |
 //+------------------------------------------------------------------+
 void DrawBar(int bi, int shift, int barW)
 {
    int len = g_bars[bi].level_count;
    if(len == 0) return;
 
-   if(!g_bars[bi].sorted)
-   {
-      SortLevels(g_bars[bi].levels, g_bars[bi].level_count);
-      g_bars[bi].sorted = true;
-   }
+   ComputeBarSignals(bi); // Final check for fresh signals
+   
+   int pocIdx  = g_bars[bi].poc_idx;
+   int vaLoIdx = g_bars[bi].va_lo_idx;
+   int vaHiIdx = g_bars[bi].va_hi_idx;
 
-   int poc = FindPOC(g_bars[bi].levels, len);
-   int vaLo, vaHi;
-   FindVA(g_bars[bi].levels, len, g_bars[bi].total_vol, poc, vaLo, vaHi);
+   long maxLevelVol = 1;
+   for(int i = 0; i < len; i++) if(g_bars[bi].levels[i].total_vol > maxLevelVol) maxLevelVol = g_bars[bi].levels[i].total_vol;
 
    datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
 
-   // --- X geometry ---
-   int halfW = (int)(barW * 0.46);
-   if(halfW < 20) halfW = 20;
+   // --- Candle Wicks (Target matching) ---
+   int wx, wy_h, wy_l;
+   ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].high, wx, wy_h);
+   ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].low, wx, wy_l);
+   uint wickCol = FpARGB(InpWickColor, (160 * g_opacity) / 255);
+   canvas.LineVertical(wx, wy_h, wy_l, wickCol);
 
+   // --- X geometry (Compact/Professional) ---
+   int halfW = (int)(barW * 0.45);
+   if(halfW < 14) halfW = 14;
    int xc, yd;
    ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price, xc, yd);
-   int x1 = xc - halfW;
-   int x2 = xc + halfW;
-   int cellW = x2 - x1;
-   int midX = (x1 + x2) / 2;
+   int x1 = xc - halfW, x2 = xc + halfW, midX = (x1 + x2) / 2;
 
-   // --- Y layout ---
+   // --- Y layout (Grid Snap) ---
+   EnsureScratch(len);
    int natY1, natY2, tmpX;
    ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price, tmpX, natY1);
    ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price - g_step, tmpX, natY2);
-   int nativeCellH = MathAbs(natY2 - natY1);
-   if(nativeCellH < 1) nativeCellH = 1;
-   int cellH = (nativeCellH < FP_MIN_CELL_H) ? FP_MIN_CELL_H : nativeCellH;
+   int cellH = MathAbs(natY2 - natY1);
+   if(cellH < FP_MIN_CELL_H) cellH = FP_MIN_CELL_H;
 
    int midIdx = len / 2;
    int anchorY;
    ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[midIdx].price, tmpX, anchorY);
-
-   EnsureScratch(len);
-
    g_scratchY1[midIdx] = anchorY - cellH / 2;
    g_scratchY2[midIdx] = g_scratchY1[midIdx] + cellH;
+   for(int i = midIdx - 1; i >= 0; i--) { g_scratchY2[i] = g_scratchY1[i + 1]; g_scratchY1[i] = g_scratchY2[i] - cellH; }
+   for(int i = midIdx + 1; i < len; i++) { g_scratchY1[i] = g_scratchY2[i - 1]; g_scratchY2[i] = g_scratchY1[i] + cellH; }
 
-   for(int i = midIdx - 1; i >= 0; i--)
-   {
-      g_scratchY2[i] = g_scratchY1[i + 1];
-      g_scratchY1[i] = g_scratchY2[i] - cellH;
-   }
-   for(int i = midIdx + 1; i < len; i++)
-   {
-      g_scratchY1[i] = g_scratchY2[i - 1];
-      g_scratchY2[i] = g_scratchY1[i] + cellH;
-   }
+   bool skipText = g_hideText || (cellH < 9);
+   int opaScale = g_opacity;
+   uint colWhiteText = FpARGB(clrWhite, (250 * opaScale) / 255);
+   uint colBlackText = FpARGB(clrBlack, (250 * opaScale) / 255);
 
-   bool skipText = g_hideText || (cellH < 10) || (cellW < 24);
+   if(!skipText) { canvas.FontSet("Segoe UI", (int)MathMin(11, cellH*0.58), FW_BOLD); }
 
-   // Max volumes for intensity scaling (separate per side for better contrast)
-   long maxBidVol = 1, maxAskVol = 1;
-   for(int i = 0; i < len; i++)
-   {
-      if(g_bars[bi].levels[i].bid_vol > maxBidVol)
-         maxBidVol = g_bars[bi].levels[i].bid_vol;
-      if(g_bars[bi].levels[i].ask_vol > maxAskVol)
-         maxAskVol = g_bars[bi].levels[i].ask_vol;
-   }
-
-   // Pre-compute constant colors with opacity applied
-   color darkBase = FP_DARK_BASE;
-   int opaScale = g_opacity;  // master opacity
-   uint colDivider   = FpARGB(C'60,60,70', (180 * opaScale) / 255);
-   uint colCellBorder= FpARGB(C'45,45,55', (140 * opaScale) / 255);
-   uint colPOC       = FpARGB(InpPOCColor, opaScale);
-   uint colWhiteText = FpARGB(clrWhite, (220 * opaScale) / 255);
-   uint colDimText   = FpARGB(C'140,140,150', (200 * opaScale) / 255);
-   uint colImbBuyTxt = FpARGB(InpImbBuyBg, opaScale);
-   uint colImbSellTxt= FpARGB(InpImbSellBg, opaScale);
-
-   // Font setup
-   int fs = 0;
-   if(!skipText)
-   {
-      fs = (int)(cellH * 0.60);
-      if(fs < 6) fs = 6;
-      if(fs > 13) fs = 13;
-      int fsByWidth = (int)(cellW / 4.0);
-      if(fsByWidth < fs) fs = MathMax(6, fsByWidth);
-      canvas.FontSet("Consolas", fs, FW_NORMAL);
-   }
-
-   // ============================================================
-   // SINGLE PASS: Industry standard split Bid | Ask layout
-   // ============================================================
-   // Pre-compute text centers (invariant across loop)
-   int leftCenter  = (x1 + midX) / 2;
-   int rightCenter = (midX + x2) / 2;
-   int imbStripeW  = MathMax(2, cellW / 30);  // scale stripe with cell width
-   uint colImbSellStripe = FpARGB(InpImbSellBg, (220 * opaScale) / 255);
-   uint colImbBuyStripe  = FpARGB(InpImbBuyBg,  (220 * opaScale) / 255);
-   double invMaxBid = 1.0 / (double)maxBidVol;
-   double invMaxAsk = 1.0 / (double)maxAskVol;
+   bool isBullish = g_bars[bi].is_bullish;
+   color sentimentCol = isBullish ? InpBullishFrame : InpBearishFrame;
 
    for(int i = 0; i < len; i++)
    {
-      int y_top = g_scratchY1[i];
-      int y_bot = g_scratchY2[i];
+      PriceLevel pl = g_bars[bi].levels[i];
+      
+      // Strict Fit: Only draw levels within the bar's High/Low range
+      if(pl.price < g_bars[bi].low - g_step*0.5 || pl.price > g_bars[bi].high + g_step*0.5) continue;
 
-      // Cache level data in locals (avoids repeated struct+array access)
-      long lv_bid = g_bars[bi].levels[i].bid_vol;
-      long lv_ask = g_bars[bi].levels[i].ask_vol;
-
-      bool inVA = (i >= vaLo && i <= vaHi);
+      int y_top = g_scratchY1[i], y_bot = g_scratchY2[i];
+      bool inVA = (i >= vaLoIdx && i <= vaHiIdx);
       int alpha = inVA ? (int)InpBgAlpha : (int)InpVAOffAlpha;
-      alpha = (alpha * opaScale) / 255;  // apply master opacity
+      alpha = (alpha * opaScale) / 255;
+      double intensity = (double)pl.total_vol / (double)maxLevelVol;
 
-      // --- Diagonal Imbalance Detection (industry standard) ---
-      bool isAskImb = false;
-      bool isBidImb = false;
-      if(i < len - 1)
+      // Desired Neon Heatmap Palettes
+      color bidCol = pl.is_imb_sell ? InpImbSellColor : LerpColor(InpBidBaseColor, InpBidHighColor, intensity);
+      color askCol = pl.is_imb_buy  ? InpImbBuyColor : LerpColor(InpAskBaseColor, InpAskHighColor, intensity);
+
+      if(!inVA) { bidCol = InpOutOfVAColor; askCol = InpOutOfVAColor; }
+
+      canvas.FillRectangle(x1, y_top, midX, y_bot, FpARGB(bidCol, alpha));
+      canvas.FillRectangle(midX + 1, y_top, x2, y_bot, FpARGB(askCol, alpha));
+      
+      // Grid separation
+      canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpGridColor, 100));
+      canvas.LineVertical(midX, y_top, y_bot, FpARGB(InpGridColor, 100));
+
+      // POC Frame (Vivid Gold)
+      if(i == pocIdx) 
       {
-         long nextBid = g_bars[bi].levels[i + 1].bid_vol;
-         if(nextBid > 0 && (double)lv_ask / (double)nextBid * 100.0 > g_imbRatio)
-            isAskImb = true;
-      }
-      if(i > 0)
-      {
-         long prevAsk = g_bars[bi].levels[i - 1].ask_vol;
-         if(prevAsk > 0 && (double)lv_bid / (double)prevAsk * 100.0 > g_imbRatio)
-            isBidImb = true;
-      }
-
-      // --- LEFT HALF: Bid (Sell) Volume ---
-      {
-         color bidBg = darkBase;
-         if(lv_bid > 0)
-            bidBg = LerpColor(darkBase, InpBidColor, (double)lv_bid * invMaxBid * 0.8);
-
-         canvas.FillRectangle(x1, y_top, midX - 1, y_bot, FpARGB(bidBg, alpha));
-
-         if(isBidImb)
-            canvas.FillRectangle(x1, y_top, x1 + imbStripeW, y_bot, colImbSellStripe);
+         canvas.Rectangle(x1, y_top, x2, y_bot, FpARGB(InpPOCColor, 240));
+         canvas.Rectangle(x1+1, y_top+1, x2-1, y_bot-1, FpARGB(InpPOCColor, 120));
       }
 
-      // --- RIGHT HALF: Ask (Buy) Volume ---
+      // Absorption Marker (Vivid Magenta outline drawn thicker so it is easily seen)
+      if(pl.is_absorption) 
       {
-         color askBg = darkBase;
-         if(lv_ask > 0)
-            askBg = LerpColor(darkBase, InpAskColor, (double)lv_ask * invMaxAsk * 0.8);
-
-         canvas.FillRectangle(midX + 1, y_top, x2, y_bot, FpARGB(askBg, alpha));
-
-         if(isAskImb)
-            canvas.FillRectangle(x2 - imbStripeW, y_top, x2, y_bot, colImbBuyStripe);
+         canvas.Rectangle(x1-1, y_top-1, x2+1, y_bot+1, FpARGB(InpAbsorptionColor, 255));
+         canvas.Rectangle(x1-2, y_top-2, x2+2, y_bot+2, FpARGB(InpAbsorptionColor, 255));
       }
 
-      // --- Center divider line ---
-      canvas.Line(midX, y_top, midX, y_bot, colDivider);
-
-      // --- Subtle horizontal separator (bottom of cell) ---
-      canvas.Line(x1, y_bot, x2, y_bot, colCellBorder);
-
-      // --- POC ---
-      if(i == poc)
-      {
-         canvas.Line(x1, y_top, x1, y_bot, colPOC);
-         canvas.Line(x2, y_top, x2, y_bot, colPOC);
-         canvas.Line(x1, y_top, x2, y_top, colPOC);
-         canvas.Line(x1, y_bot, x2, y_bot, colPOC);
-      }
-
-      // --- Text: Bid vol on left, Ask vol on right ---
       if(!skipText)
       {
          int yy = (y_top + y_bot) / 2;
-
-         if(lv_bid > 0)
-         {
-            uint bidTCol = isBidImb ? colImbSellTxt : colWhiteText;
-            canvas.TextOut(leftCenter, yy, IntegerToString(lv_bid), bidTCol, TA_CENTER | TA_VCENTER);
-         }
-
-         if(lv_ask > 0)
-         {
-            uint askTCol = isAskImb ? colImbBuyTxt : colWhiteText;
-            canvas.TextOut(rightCenter, yy, IntegerToString(lv_ask), askTCol, TA_CENTER | TA_VCENTER);
-         }
+         uint tCBid = (pl.is_imb_sell || (intensity > 0.8 && inVA)) ? colBlackText : colWhiteText;
+         uint tCAsk = (pl.is_imb_buy  || (intensity > 0.8 && inVA)) ? colBlackText : colWhiteText;
+         
+         if(pl.bid_vol > 0) canvas.TextOut((x1+midX)/2, yy, IntegerToString(pl.bid_vol), tCBid, TA_CENTER|TA_VCENTER);
+         if(pl.ask_vol > 0) canvas.TextOut((midX+1+x2)/2, yy, IntegerToString(pl.ask_vol), tCAsk, TA_CENTER|TA_VCENTER);
       }
    }
 
-   // ============================================================
-   // Summary Row: Delta bar (clean, industry standard)
-   // ============================================================
-   int lastCellBot = g_scratchY2[len - 1];
-   int sy = lastCellBot + 2;
-   int sh = skipText ? 12 : 16;
-
-   long d = g_bars[bi].total_delta;
-   color dc = (d >= 0) ? InpDeltaPosColor : InpDeltaNegColor;
-
-   canvas.FillRectangle(x1, sy, x2, sy + sh, FpARGB(dc, (180 * opaScale) / 255));
-   canvas.Line(x1, sy, x2, sy, colCellBorder);
-
-   if(!skipText)
+   // --- Desired Session Framing ---
+   if(vaLoIdx >= 0 && vaHiIdx >= 0)
    {
-      canvas.FontSet("Consolas", 9, FW_NORMAL);
-      string deltaStr = (d >= 0 ? "+" : "") + IntegerToString(d);
-      canvas.TextOut(xc, sy + sh / 2, deltaStr,
-                     FpARGB(clrWhite, (240 * opaScale) / 255), TA_CENTER | TA_VCENTER);
-
-      sy += sh + 1;
-      canvas.FillRectangle(x1, sy, x2, sy + sh - 2, FpARGB(C'35,35,42', (180 * opaScale) / 255));
-      canvas.TextOut(xc, sy + (sh - 2) / 2,
-                     "V:" + IntegerToString(g_bars[bi].total_vol),
-                     colDimText, TA_CENTER | TA_VCENTER);
-   }
-   else
-   {
-      canvas.FontSet("Consolas", 7, FW_NORMAL);
-      canvas.TextOut(xc, sy + sh / 2, IntegerToString(d),
-                     FpARGB(clrWhite, (230 * opaScale) / 255), TA_CENTER | TA_VCENTER);
+      canvas.Rectangle(x1, g_scratchY1[vaLoIdx], x2, g_scratchY2[vaHiIdx], FpARGB(sentimentCol, 255));
+      canvas.Rectangle(x1-1, g_scratchY1[vaLoIdx]-1, x2+1, g_scratchY2[vaHiIdx]+1, FpARGB(sentimentCol, 120));
    }
 }
+
+
 
 //+------------------------------------------------------------------+
 //| Layout panel and button coordinates (no drawing)
