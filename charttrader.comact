@@ -43,11 +43,10 @@ input color    InpClrBtnAdj   = C'42,42,42';        // +/- Adjuster Buttons (Cha
 input group "Visual Elements"
 input color    InpClrAsgnSL   = C'42,42,42';        // Assign SL (Charcoal)
 input color    InpClrAsgnTP   = C'42,42,42';       // Assign TP (Charcoal)
-input color    InpClrTimer    = C'255,255,255';     // Timer Color (White)
 
 
 input group "Zone Preview (Target/Stop labels)"
-input bool     InpShowPreview = true;               // Show zone preview by default
+input bool     InpShowPreview = false;              // Show zone preview by default
 input color    InpClrZoneTPLabel = C'0,160,120';    // Target label text
 input color    InpClrZoneSLLabel = C'160,0,0';      // Stop label text
 input color    InpClrZoneHandle  = C'0,120,215';    // Preview line color (blue)
@@ -67,7 +66,9 @@ input int      InpPanelH      = 370;       // Panel Height (min to fit footer in
 
 input group "Display Toggles"
 input bool     InpShowTimer   = true;      // Show Candle Timer
+input color    InpClrTimer    = C'255,255,255';     // Candle Timer Color
 input bool     InpShowMargin  = true;      // Show Required Margin
+input bool     InpShowZoneLabels= false;   // Show TP/SL/PnL Labels
 
 input group "Keymapping"
 input int      InpKeyBuy      = 81;        // Buy (Q)
@@ -101,6 +102,7 @@ input int      InpKeyExecMode = 9;         // Toggle Market/Pending (TAB)
 input int      InpKeyDock     = 89;        // Dock Panel (Y)
 input int      InpKeyPreview  = 84;        // Toggle Preview (T)
 input int      InpKeyReset    = 192;       // Reset Panel Position (`)
+input int      InpKeyToggleLabels = 186;   // Toggle Labels (;)
 
 // --- UI CONSTANTS ---
 #define BTN_H        24
@@ -193,6 +195,7 @@ bool TryDeleteObj(string name) {
 #define LBL_ZONE_PNL PREFIX + "LblZonePnL"
 #define LINE_ENTRY_ZONE PREFIX + "LineEntryZone"
 #define BTN_PREVIEW  PREFIX + "Preview"
+#define BTN_TOGGLE_LABELS PREFIX + "ToggleLabels"
 
 // Zone preview draw order and layout
 #define ZORDER_ZONE_LINE   250
@@ -265,7 +268,8 @@ long   last_SL        = -1;
 long   last_TP        = -1;
 double last_Lot       = -1;
 bool   last_Mode      = true;
-bool   last_ShowPreview = true;
+bool   last_ShowPreview = false;
+bool   last_ShowZoneLabels = false;
 
 // --- NEW Execution Types ---
 enum ENUM_EXEC_MODE { MODE_MARKET=0, MODE_PENDING=1 };
@@ -280,7 +284,8 @@ bool g_IsManualLotMode = true; // Default Mode
 bool g_IsDocked       = false; // When true, panel is locked and drag is prevented
 
 // --- Zone Preview State ---
-bool g_ShowPreview    = true;  // Show Target/Stop zones instead of lines (toggle via button/key)
+bool g_ShowPreview    = false; // Show Target/Stop zones instead of lines (toggle via button/key)
+bool g_ShowZoneLabels = false; // Show Target/Stop/PnL labels on the chart
 
 // --- Panel content height (computed in CreateGUI so footer is inside border) ---
 int  g_PanelContentH  = 370;
@@ -326,6 +331,7 @@ int OnInit()
    g_LotSize   = 0.01; // Default Manual Lot Size
    g_IsManualLotMode = true; // Enforce default
    g_ShowPreview     = InpShowPreview;
+   g_ShowZoneLabels  = InpShowZoneLabels;
    
    // Enable mouse move events for drag-and-drop
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
@@ -522,8 +528,20 @@ void HandleKeyDown(int key, bool isAlgoOn)
    }
    if(key == InpKeyPreview) {
       g_ShowPreview = !g_ShowPreview;
-      if(ObjectFind(0, BTN_PREVIEW) >= 0)
+      if(ObjectFind(0, BTN_PREVIEW) >= 0) {
          ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? ("Preview On (" + KN(InpKeyPreview) + ")") : ("Preview Off (" + KN(InpKeyPreview) + ")"));
+         ObjectSetInteger(0, BTN_PREVIEW, OBJPROP_BGCOLOR, g_ShowPreview ? InpClrActive : InpClrInactive);
+      }
+      DrawVisualLines(true);
+      ChartRedraw();
+      return;
+   }
+   if(key == InpKeyToggleLabels) {
+      g_ShowZoneLabels = !g_ShowZoneLabels;
+      if(ObjectFind(0, BTN_TOGGLE_LABELS) >= 0) {
+         ObjectSetString(0, BTN_TOGGLE_LABELS, OBJPROP_TEXT, g_ShowZoneLabels ? ("Labels On (" + KN(InpKeyToggleLabels) + ")") : ("Labels Off (" + KN(InpKeyToggleLabels) + ")"));
+         ObjectSetInteger(0, BTN_TOGGLE_LABELS, OBJPROP_BGCOLOR, g_ShowZoneLabels ? InpClrActive : InpClrInactive);
+      }
       DrawVisualLines(true);
       ChartRedraw();
       return;
@@ -612,8 +630,16 @@ void HandleObjectClick(const string &sparam, bool isAlgoOn)
    else if(sparam == BTN_PREVIEW) {
       g_ShowPreview = !g_ShowPreview;
       ObjectSetString(0, BTN_PREVIEW, OBJPROP_TEXT, g_ShowPreview ? ("Preview On (" + KN(InpKeyPreview) + ")") : ("Preview Off (" + KN(InpKeyPreview) + ")"));
+      ObjectSetInteger(0, BTN_PREVIEW, OBJPROP_BGCOLOR, g_ShowPreview ? InpClrActive : InpClrInactive);
       DrawVisualLines(true);
       ResetBtn(BTN_PREVIEW);
+   }
+   else if(sparam == BTN_TOGGLE_LABELS) {
+      g_ShowZoneLabels = !g_ShowZoneLabels;
+      ObjectSetString(0, BTN_TOGGLE_LABELS, OBJPROP_TEXT, g_ShowZoneLabels ? ("Labels On (" + KN(InpKeyToggleLabels) + ")") : ("Labels Off (" + KN(InpKeyToggleLabels) + ")"));
+      ObjectSetInteger(0, BTN_TOGGLE_LABELS, OBJPROP_BGCOLOR, g_ShowZoneLabels ? InpClrActive : InpClrInactive);
+      DrawVisualLines(true);
+      ResetBtn(BTN_TOGGLE_LABELS);
    }
    ChartRedraw();
 }
@@ -1286,7 +1312,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
    }
 
    // Optimization Check (using MathAbs for float safety)
-   if(MathAbs(entryPrice - last_Mid) < 0.000001 && g_SL_Points == last_SL && g_TP_Points == last_TP && MathAbs(g_LotSize - last_Lot) < 0.000001 && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && !forceUpdate) {
+   if(MathAbs(entryPrice - last_Mid) < 0.000001 && g_SL_Points == last_SL && g_TP_Points == last_TP && MathAbs(g_LotSize - last_Lot) < 0.000001 && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && g_ShowZoneLabels == last_ShowZoneLabels && !forceUpdate) {
       return false;
    }
    
@@ -1297,6 +1323,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
    last_Mode = IsLongMode;
    last_ExecMode = g_ExecMode;
    last_ShowPreview = g_ShowPreview;
+   last_ShowZoneLabels = g_ShowZoneLabels;
 
     // --- Label reference time: use current bar for pixel conversion ---
     long periodSec = (long)PeriodSeconds(_Period);
@@ -1341,7 +1368,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         static int s_last_sx = -1, s_last_sy = -1;
         static string s_last_slText = "";
         
-        if(ChartTimePriceToXY(0, 0, tLabel, slPrice, sx, sy)) {
+        if(g_ShowZoneLabels && ChartTimePriceToXY(0, 0, tLabel, slPrice, sx, sy)) {
            if(ObjectFind(0, LBL_ZONE_SL) < 0) {
               ObjectCreate(0, LBL_ZONE_SL, OBJ_LABEL, 0, 0, 0);
               ObjectSetInteger(0, LBL_ZONE_SL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1364,6 +1391,8 @@ bool DrawVisualLines(bool forceUpdate = false) {
                  changed = true;
               }
            }
+        } else {
+           if(TryDeleteObj(LBL_ZONE_SL)) changed = true;
         }
      } else {
         if(TryDeleteObj(LINE_SL)) changed = true;
@@ -1407,7 +1436,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
         static int s_last_tx = -1, s_last_ty = -1;
         static string s_last_tpText = "";
         
-        if(ChartTimePriceToXY(0, 0, tLabel, tpPrice, tx, ty)) {
+        if(g_ShowZoneLabels && ChartTimePriceToXY(0, 0, tLabel, tpPrice, tx, ty)) {
            if(ObjectFind(0, LBL_ZONE_TP) < 0) {
               ObjectCreate(0, LBL_ZONE_TP, OBJ_LABEL, 0, 0, 0);
               ObjectSetInteger(0, LBL_ZONE_TP, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1430,6 +1459,8 @@ bool DrawVisualLines(bool forceUpdate = false) {
                  changed = true;
               }
            }
+        } else {
+           if(TryDeleteObj(LBL_ZONE_TP)) changed = true;
         }
         
         // Open P&L / R:R label when we have positions
@@ -1445,7 +1476,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
             static color s_last_pnlClr = -1;
             color pnlClr = openPnL >= 0 ? InpClrZoneTPLabel : InpClrZonePnLBox;
             
-            if(ChartTimePriceToXY(0, 0, tLabel, pnlY, px, py)) {
+            if(g_ShowZoneLabels && ChartTimePriceToXY(0, 0, tLabel, pnlY, px, py)) {
                if(ObjectFind(0, LBL_ZONE_PNL) < 0) {
                   ObjectCreate(0, LBL_ZONE_PNL, OBJ_LABEL, 0, 0, 0);
                   ObjectSetInteger(0, LBL_ZONE_PNL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1469,6 +1500,8 @@ bool DrawVisualLines(bool forceUpdate = false) {
                      changed = true;
                   }
                }
+            } else {
+               if(TryDeleteObj(LBL_ZONE_PNL)) changed = true;
             }
         } else {
            if(TryDeleteObj(LBL_ZONE_PNL)) changed = true;
@@ -1655,10 +1688,12 @@ void CreateGUI() {
    int headerRowY = y + 10;
 
    int btnGroupLeft = PanelX + InpPanelW - hPad - 58;  // Left edge of Dock button
-   int timerGap = 8;
    int timerW = 58;  // Width for "00:00" / "00:00:00" at same font
-   if(InpShowTimer)
-      CreateLbl(LBL_TIMER, "00:00", btnGroupLeft - timerGap - timerW, headerRowY, InpClrTimer, HEADER_LBL_FONT, true);
+   int timerX = PanelX + (InpPanelW / 2) - (timerW / 2); // Centered
+   
+   if(InpShowTimer) {
+      CreateLbl(LBL_TIMER, "00:00", timerX, headerRowY, InpClrTimer, HEADER_LBL_FONT, true);
+   }
 
    // Header buttons (top-right): M=Minimize, R=Reset, D=Dock
    int btnY = y + 13;
@@ -1752,10 +1787,14 @@ void CreateGUI() {
    ObjectSetString(0, BTN_SCALE, OBJPROP_TOOLTIP, "Scale out % of position (" + KN(InpKeyScaleOut) + ")");
 
    y += INP_ROW_H + ROW_GAP;
-   // Preview toggle
+   // Preview & Labels toggles
    string pvKey = KN(InpKeyPreview);
-   CreateBtn(BTN_PREVIEW, g_ShowPreview ? ("Preview On (" + pvKey + ")") : ("Preview Off (" + pvKey + ")"), colLabel, y, panelRight - colLabel, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
+   string lbKey = KN(InpKeyToggleLabels);
+   int pvWidth = (panelRight - colLabel - COL_GAP) / 2;
+   CreateBtn(BTN_PREVIEW, g_ShowPreview ? ("Preview On (" + pvKey + ")") : ("Preview Off (" + pvKey + ")"), colLabel, y, pvWidth, EDIT_H, g_ShowPreview ? InpClrActive : InpClrInactive, 8);
    ObjectSetString(0, BTN_PREVIEW, OBJPROP_TOOLTIP, "Toggle zone preview on chart (" + pvKey + ")");
+   CreateBtn(BTN_TOGGLE_LABELS, g_ShowZoneLabels ? ("Labels On (" + lbKey + ")") : ("Labels Off (" + lbKey + ")"), colLabel + pvWidth + COL_GAP, y, pvWidth, EDIT_H, g_ShowZoneLabels ? InpClrActive : InpClrInactive, 8);
+   ObjectSetString(0, BTN_TOGGLE_LABELS, OBJPROP_TOOLTIP, "Toggle visibility of TP/SL/PnL labels (" + lbKey + ")");
 
    y += INP_ROW_H + ROW_GAP;  // Row gap before action block
    
@@ -1910,6 +1949,3 @@ void TogglePanel() {
    }
 }
 
-//+------------------------------------------------------------------+
-//| DELIGHTER: Live Spread Display                                   |
-//+------------------------------------------------------------------+
