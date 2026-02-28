@@ -599,7 +599,15 @@ void DrawBar(int bi, int shift, int barW)
    int vaHiIdx = g_bars[bi].va_hi_idx;
 
    long maxLevelVol = 1;
-   for(int i = 0; i < len; i++) if(g_bars[bi].levels[i].total_vol > maxLevelVol) maxLevelVol = g_bars[bi].levels[i].total_vol;
+   long maxBidVol   = 1;
+   long maxAskVol   = 1;
+   for(int i = 0; i < len; i++)
+   {
+      PriceLevel plMax = g_bars[bi].levels[i];
+      if(plMax.total_vol > maxLevelVol) maxLevelVol = plMax.total_vol;
+      if(plMax.bid_vol   > maxBidVol)   maxBidVol   = plMax.bid_vol;
+      if(plMax.ask_vol   > maxAskVol)   maxAskVol   = plMax.ask_vol;
+   }
 
    datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
 
@@ -652,11 +660,14 @@ void DrawBar(int bi, int shift, int barW)
       bool inVA = (i >= vaLoIdx && i <= vaHiIdx);
       int alpha = inVA ? (int)InpBgAlpha : (int)InpVAOffAlpha;
       alpha = (alpha * opaScale) / 255;
-      double intensity = (double)pl.total_vol / (double)maxLevelVol;
 
-      // Normal Neon Heatmap Backgrounds (Muted Priority)
-      color bidCol = LerpColor(InpBidBaseColor, InpBidHighColor, intensity);
-      color askCol = LerpColor(InpAskBaseColor, InpAskHighColor, intensity);
+      double levelIntensity = (double)pl.total_vol / (double)maxLevelVol;
+      double bidIntensity   = (maxBidVol > 0) ? (double)pl.bid_vol / (double)maxBidVol : 0.0;
+      double askIntensity   = (maxAskVol > 0) ? (double)pl.ask_vol / (double)maxAskVol : 0.0;
+
+      // Side-specific heatmap backgrounds: left = bid, right = ask
+      color bidCol = LerpColor(InpBidBaseColor, InpBidHighColor, bidIntensity);
+      color askCol = LerpColor(InpAskBaseColor, InpAskHighColor, askIntensity);
 
       if(!inVA) { bidCol = InpOutOfVAColor; askCol = InpOutOfVAColor; }
 
@@ -722,19 +733,21 @@ void DrawBar(int bi, int shift, int barW)
          uint tCBid = (pl.is_imb_sell || pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
          uint tCAsk = (pl.is_imb_buy  || pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
          
-         // Force dark text if intensity extremely bright to not lose contrast, though colors are muted now.
-         if(intensity > 0.85 && inVA) { tCBid = colBlackText; tCAsk = colBlackText; }
+         // Force dark text if overall bar intensity is extremely bright to keep contrast.
+         if(levelIntensity > 0.85 && inVA) { tCBid = colBlackText; tCAsk = colBlackText; }
 
          if(pl.bid_vol > 0) canvas.TextOut((x1+midX)/2, yy, IntegerToString(pl.bid_vol), tCBid, TA_CENTER|TA_VCENTER);
          if(pl.ask_vol > 0) canvas.TextOut((midX+1+x2)/2, yy, IntegerToString(pl.ask_vol), tCAsk, TA_CENTER|TA_VCENTER);
       }
    }
 
-   // --- Desired Session Framing ---
+   // --- Desired Session Framing (subtle VA box, keeps bars readable) ---
    if(vaLoIdx >= 0 && vaHiIdx >= 0)
    {
-      canvas.Rectangle(x1, g_scratchY1[vaLoIdx], x2, g_scratchY2[vaHiIdx], FpARGB(sentimentCol, 255));
-      canvas.Rectangle(x1-1, g_scratchY1[vaLoIdx]-1, x2+1, g_scratchY2[vaHiIdx]+1, FpARGB(sentimentCol, 120));
+      int vaAlphaStrong = (160 * opaScale) / 255;
+      int vaAlphaSoft   = (70  * opaScale) / 255;
+      canvas.Rectangle(x1, g_scratchY1[vaLoIdx], x2, g_scratchY2[vaHiIdx], FpARGB(sentimentCol, vaAlphaStrong));
+      canvas.Rectangle(x1-1, g_scratchY1[vaLoIdx]-1, x2+1, g_scratchY2[vaHiIdx]+1, FpARGB(sentimentCol, vaAlphaSoft));
    }
 
    // --- Candle Wicks (Pushed to end to ensure visual priority, sitting on top of heatmap) ---
