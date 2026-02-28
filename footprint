@@ -1,14 +1,13 @@
 //+------------------------------------------------------------------+
-//|                                                      newfoot.mq5 |
-//|   Footprint (Order Flow) with modes & tick multiplier            |
-//|   - Volume / Delta / Bid x Ask per price level                   |
-//|   - POC, VA%, Imbalance, Absorption, Stacked Imbalances          |
-//|   - Tick-size aggregation + Tick Multiplier (x1..x20)            |
-//|   - Compact canvas overlay + control panel                       |
+//|                                                    Footprint.mq5  |
+//|   Footprint (Order Flow) - Production Ready                       |
+//|   Volume / Delta / Bid x Ask per price level                     |
+//|   POC, VA%, Imbalance, Absorption, Stacked Imbalances            |
+//|   Tick-size aggregation + Tick Multiplier (x1..x20)              |
+//|   Compact canvas overlay + control panel                         |
 //+------------------------------------------------------------------+
-#property copyright "Trading Tool"
-#property link      "https://mql5.com"
-#property version   "1.00"
+#property copyright "Ali Magdy"
+#property version   "1.10"
 #property description "Footprint Chart — Volume / Delta / Bid x Ask with Tick Multiplier"
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -96,7 +95,7 @@ struct FPBar
 
 //--- Globals
 CCanvas              canvas;
-string               g_name     = "FP_Canvas_NEW";
+string               g_name     = "FP_Canvas";
 FPBar                g_bars[];
 double               g_step;         // aggregated step = g_baseStep * g_tickMult
 double               g_baseStep;     // base step from InpTickSize
@@ -184,12 +183,22 @@ void ReloadHistory()
    g_last_tick_time_ms = 0;
    int bars_total = iBars(_Symbol, PERIOD_CURRENT);
    if(bars_total <= 0)
-      return; // Prevent crash if history not loaded
+      return;
    int      maxShift  = MathMin(InpHistoryBars, bars_total - 1);
    datetime startTime = iTime(_Symbol, PERIOD_CURRENT, maxShift);
    datetime endTime   = TimeCurrent();
-   LoadHistory(startTime, endTime);
-   g_dirty = true;
+   int loaded = LoadHistory(startTime, endTime);
+   if(loaded > 0)
+      g_dirty = true;
+   else
+     {
+      static bool s_alerted = false;
+      if(!s_alerted)
+        {
+         Alert("Footprint: No tick data for ", _Symbol, ". Click Refresh (Rld) when data is available.");
+         s_alerted = true;
+        }
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -524,10 +533,7 @@ int LoadHistory(datetime t0, datetime t1)
    int     copied = CopyTicksRange(_Symbol, ticks, flag,
                                    (long)t0 * 1000, (long)t1 * 1000);
    if(copied <= 0)
-     {
-      Print("FP NEW: No ticks. copied=", copied);
       return -1;
-     }
 
    g_prevBid = ticks[0].bid;
    ProcessTicks(ticks, 0, copied, false, true);
@@ -539,7 +545,6 @@ int LoadHistory(datetime t0, datetime t1)
       g_bars[i].sorted = true;
      }
 
-   PrintFormat("FP NEW: %d ticks -> %d bars", copied, n);
    g_dirty = true;
    return copied;
   }
@@ -1228,11 +1233,6 @@ int OnInit()
    g_imbRatio = InpImbalanceRatio;
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
-   PrintFormat("FP NEW: %s  step=%s  x%d  mode=%s",
-               _Symbol,
-               DoubleToString(g_baseStep, _Digits),
-               g_tickMult,
-               g_hasTrades ? "Trades" : "Forex");
 
    int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
    int h = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
@@ -1244,7 +1244,7 @@ int OnInit()
    if(!canvas.CreateBitmapLabel(g_name, 0, 0, w, h,
                                 COLOR_FORMAT_ARGB_NORMALIZE))
      {
-      Print("FP NEW ERR: Canvas creation failed");
+      Alert("Footprint: Canvas creation failed. Chart may be too small.");
       return INIT_FAILED;
      }
    ObjectSetInteger(g_chart, g_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1453,14 +1453,12 @@ void OnChartEvent(const int id, const long &lparam,
       // VA%: cycle Value Area 70% -> 80% -> 90% -> 70%
       else if(HitTest(mx, my, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2))
         {
-         if(g_vaPercent <= 0.0 || g_vaPercent < 70.0)
+         if(g_vaPercent < 70.0 || g_vaPercent >= 90.0)
             g_vaPercent = 70.0;
-         else if(g_vaPercent <= 70.0)
+         else if(g_vaPercent < 80.0)
             g_vaPercent = 80.0;
-         else if(g_vaPercent <= 80.0)
-            g_vaPercent = 90.0;
          else
-            g_vaPercent = 70.0;
+            g_vaPercent = 90.0;
          g_dirty = true;
         }
      }
