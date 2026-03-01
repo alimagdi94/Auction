@@ -90,6 +90,7 @@ int    g_prevLabelCount    = 0;
 long   g_last_tick_time_ms = 0;   // last processed tick (for dynamic tick mode)
 ulong  g_last_render_ms    = 0;    // throttle redraws
 double g_prevBid           = 0.0; // for buy/sell classification (Forex)
+datetime g_tester_last_time = 0;  // tester optimization throttle
 //--- Compile-time constants
 #define VP_RENDER_THROTTLE_MS 33   // ~30 FPS when dynamic (like live simulator)
 #define VP_MAX_STEPS          5000 // Maximum number of price buckets to prevent memory/perf issues
@@ -239,6 +240,7 @@ int OnInit()
    int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    canvas.CreateBitmapLabel(0, 0, "VP_Canvas", 0, 0, chart_width, chart_height, COLOR_FORMAT_ARGB_NORMALIZE);
    ObjectSetInteger(0, "VP_Canvas", OBJPROP_BACK, InpBackground);
+   g_tester_last_time = 0;
 
    if(ObjectFind(0, RECT_NAME) < 0)
       CreateSelector();
@@ -285,12 +287,11 @@ int OnCalculate(const int rates_total,
       if(is_tester)
         {
          // Throttle logic for Strategy Tester using Chart Time
-         static datetime tester_last_time = 0;
          datetime tester_now = TimeCurrent();
-         if(tester_now - tester_last_time >= 60) // Update max once per simulated minute
+         if(tester_now - g_tester_last_time >= 60) // Update max once per simulated minute
            {
             CalculateAndDraw();
-            tester_last_time = tester_now;
+            g_tester_last_time = tester_now;
            }
         }
       else if(now_ms - g_last_render_ms >= VP_RENDER_THROTTLE_MS)
@@ -777,25 +778,12 @@ void DrawBars(int steps, double range_bottom, double resolution,
       GetBarColors(i, poc_idx, va_low_idx, va_high_idx, col_up_bar, col_down_bar);
 
       double total_ratio      = vol_total / max_total_vol;
-      double time_width_total = (double)rect_full_time * total_ratio * max_width_factor;
       double up_ratio_val     = (vol_total > 0) ? vol_up / vol_total : 0.5;
-      double time_width_up    = time_width_total * up_ratio_val;
-      double time_width_down  = time_width_total - time_width_up;
 
-      datetime rect_start, rect_split, rect_end;
-      if(InpAlignment == VP_ALIGN_LEFT)
-        {
-         rect_start = start_time;
-         rect_split = start_time + (datetime)time_width_down;
-         rect_end   = start_time + (datetime)time_width_total;
-        }
-      else
-        {
-         rect_start = end_time - (datetime)time_width_total;
-         rect_split = rect_start + (datetime)time_width_down;
-         rect_end   = end_time;
-        }
-        
+      int total_width_px = (int)(MathAbs(x_end - x_start) * total_ratio * max_width_factor);
+      int up_width_px    = (int)(total_width_px * up_ratio_val);
+      int down_width_px  = total_width_px - up_width_px;
+
       // Linear interpolation for Y axis (instead of calling ChartTimePriceToXY)
       double t_ratio1 = (double)i / (double)steps;
       double t_ratio2 = (double)(i + 1) / (double)steps;
@@ -803,13 +791,20 @@ void DrawBars(int steps, double range_bottom, double resolution,
       int y1 = y_bottom + (int)(dY * t_ratio1);
       int y2 = y_bottom + (int)(dY * t_ratio2);
 
-      int x1 = 0, xsplit = 0, x2 = 0, dummyY = 0;
+      int x1 = 0, xsplit = 0, x2 = 0;
 
-      // X coordinates must still be calculated because time on MT5 is non-linear (weekends/gaps)
-      // but we drastically cut down from 4 to max 3 queries, and Y is fully interpolated.
-      ChartTimePriceToXY(0, 0, rect_start, 0, x1, dummyY);
-      ChartTimePriceToXY(0, 0, rect_split, 0, xsplit, dummyY);
-      ChartTimePriceToXY(0, 0, rect_end, 0, x2, dummyY);
+      if(InpAlignment == VP_ALIGN_LEFT)
+        {
+         x1     = MathMin(x_start, x_end);
+         xsplit = x1 + down_width_px;
+         x2     = x1 + total_width_px;
+        }
+      else
+        {
+         x2     = MathMax(x_start, x_end);
+         xsplit = x2 - up_width_px;
+         x1     = x2 - total_width_px;
+        }
 
       // Down on Left
       if(vol_down > VP_MIN_VOLUME)
