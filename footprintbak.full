@@ -112,6 +112,8 @@ double               g_imbRatio;     // current imbalance ratio (GUI-tunable)
 int                  g_opacity = 255;    // overlay opacity (runtime-tunable: 255/190/127/64)
 long                 g_last_tick_time_ms = 0;
 ulong                g_last_render_ms    = 0;
+bool                 g_needs_reload = false; // state-machine flag: set in OnChartEvent, consumed in OnCalculate
+datetime             g_last_tester_render_time = 0; // for Strategy Tester simulated-time throttle
 
 // GUI panel & buttons
 #define FP_PANEL_BTN_W          46
@@ -167,6 +169,23 @@ bool HitTest(int mx, int my, int x1, int y1, int x2, int y2)
 //+------------------------------------------------------------------+
 void ThrottledRender()
   {
+   // Fix #4: Strategy Tester Dynamic Throttle
+   // In the tester, physical wall-clock time barely advances, so GetTickCount()-based
+   // throttling causes the render queue to lag far behind the simulated market.
+   // When running under the tester we switch to simulated chart time and update
+   // once per simulated minute instead.
+   if(MQLInfoInteger(MQL_TESTER))
+     {
+      datetime now_sim = TimeCurrent();
+      if(now_sim - g_last_tester_render_time >= 60) // one simulated minute
+        {
+         Render();
+         g_last_tester_render_time = now_sim;
+        }
+      return;
+     }
+
+   // Normal (live/replay) throttle: 30 FPS wall-clock cap
    ulong now_ticks = GetTickCount();
    if(now_ticks - g_last_render_ms >= FP_RENDER_THROTTLE_MS)
      {
@@ -575,13 +594,6 @@ int LoadHistory(datetime t0, datetime t1)
    g_prevBid = ticks[0].bid;
    ProcessTicks(ticks, 0, copied, false, true, true);
 
-   int n = ArraySize(g_bars);
-   for(int i = 0; i < n; i++)
-     {
-      SortLevels(g_bars[i].levels, g_bars[i].level_count);
-      g_bars[i].sorted = true;
-     }
-
    g_dirty = true;
    return copied;
   }
@@ -651,19 +663,35 @@ void FindVA(const PriceLevel &lv[], int count, long totVol, int poc, int &lo, in
       return;
    long target = (long)(totVol * GetEffectiveVAPercent() / 100.0);
    long cur    = lv[poc].total_vol;
+
+   // Fix #3: Industry-standard dual-row expansion algorithm.
+   // At each step we compare the SUM of the two rows above the current VA
+   // upper bound against the SUM of the two rows below the current VA lower
+   // bound, then expand in the direction with the higher combined volume.
+   // This prevents the VA from getting trapped at single low-volume nodes.
    while(cur < target && (lo > 0 || hi < count - 1))
      {
-      long up = (hi < count - 1) ? lv[hi + 1].total_vol : -1;
-      long dn = (lo > 0) ? lv[lo - 1].total_vol : -1;
-      if(up >= dn && up != -1)
+      // Sum of the two rows above hi
+      long up = 0;
+      if(hi + 1 < count) up += lv[hi + 1].total_vol;
+      if(hi + 2 < count) up += lv[hi + 2].total_vol;
+      bool canUp = (hi < count - 1);
+
+      // Sum of the two rows below lo
+      long dn = 0;
+      if(lo - 1 >= 0) dn += lv[lo - 1].total_vol;
+      if(lo - 2 >= 0) dn += lv[lo - 2].total_vol;
+      bool canDn = (lo > 0);
+
+      if(canUp && (!canDn || up >= dn))
         {
          hi++;
-         cur += up;
+         cur += lv[hi].total_vol;
         }
-      else if(dn != -1)
+      else if(canDn)
         {
          lo--;
-         cur += dn;
+         cur += lv[lo].total_vol;
         }
       else
          break;
@@ -948,6 +976,25 @@ void DrawBar(int bi, int shift, int barW)
    // Candle wick on top
    uint wickCol = FpARGB(InpWickColor, (210 * g_opacity) / 255);
    canvas.LineVertical(wx, wy_h, wy_l, wickCol);
+
+   // --- Per-bar total volume and delta labels below the bar ---
+   if(!skipText)
+     {
+      int labelY = g_scratchY2[len - 1] + 2;  // just below the lowest cell
+      canvas.FontSet("Segoe UI", (int)MathMin(10, cellH * 0.50), FW_BOLD);
+
+      // Volume label (white)
+      string volStr = IntegerToString(g_bars[bi].total_vol);
+      canvas.TextOut((x1 + x2) / 2, labelY, volStr,
+                     FpARGB(clrWhite, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
+
+      // Delta label (green if positive, red if negative)
+      long  barDelta  = g_bars[bi].total_delta;
+      color deltaCol  = (barDelta >= 0) ? clrLime : clrRed;
+      string deltaStr = (barDelta >= 0 ? "+" : "") + IntegerToString(barDelta);
+      canvas.TextOut((x1 + x2) / 2, labelY + 12, deltaStr,
+                     FpARGB(deltaCol, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1287,6 +1334,10 @@ int OnInit()
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
 
+   // Fix #2: Enable mouse-move events so HitTest hover states actually work.
+   // MT5 disables CHARTEVENT_MOUSE_MOVE by default to save CPU.
+   ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
+
    int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
    int h = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
    if(w < 1)
@@ -1353,6 +1404,15 @@ int OnCalculate(const int rates_total,
       ReloadHistory();
       if(!g_dirty) // History load failed, try again later
          return 0;
+     }
+
+   // Fix #1: State-machine reload. Buttons in OnChartEvent set this flag
+   // instead of calling ReloadHistory() directly on the UI thread.
+   // We execute the heavy reload here, safely inside OnCalculate.
+   if(g_needs_reload)
+     {
+      g_needs_reload = false;
+      ReloadHistory();
      }
 
    MqlTick ticks[];
@@ -1453,8 +1513,9 @@ void OnChartEvent(const int id, const long &lparam,
          g_basePts  = nextPts;
          g_baseStep = g_basePts * _Point;
          g_step     = g_baseStep * g_tickMult;
-         ReloadHistory();
-         ThrottledRender();
+         // Fix #1: Set flag instead of calling ReloadHistory() on the UI thread.
+         g_needs_reload = true;
+         g_dirty        = true;
         }
       // Tick multiplier button: x1 -> x2 -> x5 -> x10 -> x20 -> x40 -> x1
       else if(HitTest(mx, my, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2))
@@ -1475,8 +1536,9 @@ void OnChartEvent(const int id, const long &lparam,
 
          g_tickMult = nextMult;
          g_step     = g_baseStep * g_tickMult;
-         ReloadHistory();
-         ThrottledRender();
+         // Fix #1: Set flag instead of calling ReloadHistory() on the UI thread.
+         g_needs_reload = true;
+         g_dirty        = true;
         }
       // Imbalance button: cycle imbalance ratio
       else if(HitTest(mx, my, g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2))
@@ -1530,10 +1592,11 @@ void OnChartEvent(const int id, const long &lparam,
          g_dirty   = true;
         }
       // Refresh: reload tick data
+      // Fix #1: Also use flag here so clicking Rld doesn't freeze the terminal.
       else if(HitTest(mx, my, g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2))
         {
-         ReloadHistory();
-         ThrottledRender();
+         g_needs_reload = true;
+         g_dirty        = true;
         }
       // VA%: cycle Value Area 70% -> 80% -> 90% -> 70%
       else if(HitTest(mx, my, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2))

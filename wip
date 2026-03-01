@@ -1,0 +1,18 @@
+# Role
+You are an Elite Algorithmic Trading Developer specializing in MQL5, system architecture, ultra-low latency UI rendering, and order flow (Footprint) analytics.
+
+# Task
+Please apply the final polish, edge-case optimizations, and missing visual analytics to my `CCanvas`-based Footprint indicator. The architecture is solid with the state-machine UI and dual-row Value Area logic, but it requires fixes for data truncation, environment query overhead, a Y-axis visual bug, and proper Total Volume/Delta rendering.
+
+# Specific Refactoring Requirements
+
+maintain strict 1:1 price-scale integrity. 
+
+
+## 1. Redundant Array Sorting
+* [cite_start]**Issue:** At the end of `LoadHistory`, a `for` loop explicitly iterates through every loaded bar to execute `SortLevels` [cite: 444-445]. This is redundant because `ProcessTicks` already calls `ComputeBarSignals`, which natively handles sorting.
+* **Requirement:** Delete the final `for` loop calling `SortLevels` at the bottom of the `LoadHistory` function to eliminate wasted CPU cycles.
+
+## 2. Add Per-Bar Totals (Visual UI)
+* **Issue:** The footprint chart calculates `total_vol` and `total_delta` for every bar perfectly, but never displays it on the chart.
+* **Requirement:** At the very end of the `DrawBar` function, right after drawing the candle wicks, add text rendering logic to display a summary string (e.g., `Total Volume | Total Delta`) centered just below the bottom wick of each candle.
