@@ -1,0 +1,11 @@
+# Role
+You are an expert algorithmic trading developer specializing in MQL5, performance optimization, and custom indicator development. 
+
+# Specific Areas of Focus
+Please address the following requirements and edge cases:
+
+1. [cite_start]**Memory & Crash Prevention:** - The indicator currently uses `CopyTicksRange` based on an interactive on-chart rectangle [cite: 100-104]. Provide a safety mechanism to prevent terminal crashes if the user accidentally highlights months of data, which would overload RAM with millions of ticks.
+2. [cite_start]**UI Thread Optimization:** - The script currently draws the histogram using native chart objects (`OBJ_RECTANGLE` and `OBJ_TEXT`) [cite: 254-274]. Suggest or implement a way to handle object batching, or explain how to transition this rendering engine to `CCanvas` for better performance.
+3. [cite_start]**Array Reallocation:** - Prevent constant memory fragmentation in the `InitBuckets` function by properly utilizing the `reserve` parameter in `ArrayResize` [cite: 55-56].
+4. [cite_start]**Strategy Tester Compatibility:** - The rendering throttle relies on `GetTickCount()`, which breaks in the Strategy Tester due to simulated time [cite: 83-85]. Fix this to use chart time or bypass the throttle during backtesting.
+5. [cite_start]**Data Copying Precision:** - Refactor the `GatherData` function to use the time-based overloads of `CopyHigh`, `CopyLow`, etc., instead of relying on `iBarShift` to prevent index shifting during live chart updates [cite: 118-126].
