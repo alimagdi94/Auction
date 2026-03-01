@@ -10,6 +10,8 @@
 #property indicator_buffers 0
 #property indicator_plots   0
 
+#include <Canvas\Canvas.mqh>
+
 //--- Enums
 enum ENUM_VP_ALIGNMENT
   {
@@ -82,6 +84,7 @@ const string VAH_OBJ_NAME  = "VP_VAH_Line";
 const string VAL_OBJ_NAME  = "VP_VAL_Line";
 
 //--- State
+CCanvas canvas;
 int    g_prevSteps         = 0;
 int    g_prevLabelCount    = 0;
 long   g_last_tick_time_ms = 0;   // last processed tick (for dynamic tick mode)
@@ -92,6 +95,7 @@ double g_prevBid           = 0.0; // for buy/sell classification (Forex)
 #define VP_MAX_STEPS          5000 // Maximum number of price buckets to prevent memory/perf issues
 #define VP_MIN_VOLUME         0.01 // Volume threshold below which a bucket is considered empty
 #define VP_FALLBACK_RANGE_PTS 100  // Fallback price range in points when no data available
+#define VP_MAX_DAYS_TICKS     30   // Prevent crash on huge tick requests
 
 //+------------------------------------------------------------------+
 //| Validated inputs (clamped to safe ranges)                         |
@@ -100,6 +104,11 @@ double SafeWidthFactor()   { return MathMax(MathMin(InpWidthRatio, 100), 1) / 10
 double SafeValueAreaPct()  { return MathMax(MathMin(InpValueAreaPct, 100.0), 10.0) / 100.0; }
 int    SafePOCWidth()      { return MathMax(MathMin(InpPOCWidth, 5), 1); }
 int    SafeVAWidth()       { return MathMax(MathMin(InpVAWidth, 5), 1); }
+
+uint GetARGB(color col, uchar alpha = 200)
+  {
+   return ColorToARGB(col, alpha);
+  }
 
 //+------------------------------------------------------------------+
 //| Calculate Price Step (Resolution) Based on Mode                  |
@@ -138,8 +147,8 @@ void ComputeBucketGrid(double min_price, double max_price,
 //+------------------------------------------------------------------+
 void InitBuckets(double &buckets_up[], double &buckets_down[], int steps)
   {
-   ArrayResize(buckets_up,   steps);
-   ArrayResize(buckets_down, steps);
+   ArrayResize(buckets_up,   steps, VP_MAX_STEPS);
+   ArrayResize(buckets_down, steps, VP_MAX_STEPS);
    ArrayInitialize(buckets_up,   0.0);
    ArrayInitialize(buckets_down, 0.0);
   }
@@ -226,6 +235,11 @@ int CalcLabelSkip(int steps, double resolution)
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   int chart_width  = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   canvas.CreateBitmapLabel(0, 0, "VP_Canvas", 0, 0, chart_width, chart_height, COLOR_FORMAT_ARGB_NORMALIZE);
+   ObjectSetInteger(0, "VP_Canvas", OBJPROP_BACK, InpBackground);
+
    if(ObjectFind(0, RECT_NAME) < 0)
       CreateSelector();
    CalculateAndDraw();
@@ -237,6 +251,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   canvas.Destroy();
    ClearProfileObjects();
    ObjectDelete(0, RECT_NAME);
   }
@@ -264,8 +279,21 @@ int OnCalculate(const int rates_total,
 
    if(InpDynamic)
      {
+      bool is_tester = (bool)MQLInfoInteger(MQL_TESTER) || (bool)MQLInfoInteger(MQL_OPTIMIZATION);
       ulong now_ms = GetTickCount();
-      if(now_ms - g_last_render_ms >= VP_RENDER_THROTTLE_MS)
+
+      if(is_tester)
+        {
+         // Throttle logic for Strategy Tester using Chart Time
+         static datetime tester_last_time = 0;
+         datetime tester_now = TimeCurrent();
+         if(tester_now - tester_last_time >= 60) // Update max once per simulated minute
+           {
+            CalculateAndDraw();
+            tester_last_time = tester_now;
+           }
+        }
+      else if(now_ms - g_last_render_ms >= VP_RENDER_THROTTLE_MS)
         {
          CalculateAndDraw();
          g_last_render_ms = now_ms;
@@ -284,11 +312,15 @@ void OnChartEvent(const int id,
   {
    if(id == CHARTEVENT_CHART_CHANGE)
      {
+      int chart_width  = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      canvas.Resize(chart_width, chart_height);
+
       if(InpDynamic && ObjectFind(0, RECT_NAME) >= 0)
          CalculateAndDraw();
       return;
      }
-   if(id == CHARTEVENT_OBJECT_DRAG || id == CHARTEVENT_OBJECT_CHANGE)
+   if(id == CHARTEVENT_OBJECT_DRAG) // Changed from DRAG || CHANGE to prevent overwhelming UI thread
      {
       if(sparam == RECT_NAME)
          CalculateAndDraw();
@@ -338,15 +370,33 @@ int GatherDataTicks(datetime start_time, datetime end_time,
    long    to_ms   = (long)end_time   * 1000;
    if(to_ms <= from_ms) to_ms = (long)TimeCurrent() * 1000;
 
+   // Safety mechanism: limit to VP_MAX_DAYS_TICKS to prevent memory overload
+   const long max_ms_span = (long)VP_MAX_DAYS_TICKS * 24 * 60 * 60 * 1000;
+   if(to_ms - from_ms > max_ms_span)
+     {
+      Print("[VP] Warning: Range too large for Ticks. Truncated to ", VP_MAX_DAYS_TICKS, " days.");
+      from_ms = to_ms - max_ms_span;
+     }
+
    int copied = CopyTicksRange(Symbol(), ticks, flag, from_ms, to_ms);
    if(copied <= 0) return -1;
 
-   double min_price = ticks[0].last;
-   double max_price = ticks[0].last;
-   if(flag == COPY_TICKS_INFO)
-     { min_price = ticks[0].bid; max_price = ticks[0].bid; }
+   double min_price = 0.0;
+   double max_price = 0.0;
+   for(int i = 0; i < copied; i++)
+     {
+      double p = (flag == COPY_TICKS_ALL) ? ticks[i].last : ticks[i].bid;
+      if(p > 0.0)
+        {
+         min_price = p;
+         max_price = p;
+         break;
+        }
+     }
+     
+   if(min_price == 0.0) return -1; // No valid ticks to process
 
-   for(int i = 1; i < copied; i++)
+   for(int i = 0; i < copied; i++)
      {
       double p = (flag == COPY_TICKS_ALL) ? ticks[i].last : ticks[i].bid;
       if(p <= 0) continue;
@@ -392,30 +442,20 @@ int GatherData(datetime start_time, datetime end_time,
   {
    ENUM_TIMEFRAMES tf = InpDataTimeframe;
 
-   int start_idx = iBarShift(Symbol(), tf, start_time, false);
-   int end_idx   = iBarShift(Symbol(), tf, end_time, false);
+   if(start_time > end_time)
+     { datetime temp = start_time; start_time = end_time; end_time = temp; }
 
-   if(start_idx == -1 || end_idx == -1)
-     {
-      Print("[VP] iBarShift failed: start=", start_idx, " end=", end_idx);
-      return(-1);
-     }
+   int count = CopyHigh(Symbol(), tf, start_time, end_time, highs);
+   if(count <= 0) { Print("[VP] CopyHigh failed"); return(-1); }
 
-   if(start_idx < end_idx)
-     { int temp = start_idx; start_idx = end_idx; end_idx = temp; }
-
-   int count = start_idx - end_idx + 1;
-   if(count <= 0) count = 1;
-
-   if(CopyHigh(Symbol(), tf, end_idx, count, highs)   != count) { Print("[VP] CopyHigh failed");   return(-1); }
-   if(CopyLow(Symbol(), tf, end_idx, count, lows)     != count) { Print("[VP] CopyLow failed");    return(-1); }
-   if(CopyOpen(Symbol(), tf, end_idx, count, opens)    != count) { Print("[VP] CopyOpen failed");   return(-1); }
-   if(CopyClose(Symbol(), tf, end_idx, count, closes)  != count) { Print("[VP] CopyClose failed");  return(-1); }
+   if(CopyLow(Symbol(), tf, start_time, end_time, lows)     != count) { Print("[VP] CopyLow failed/mismatch");    return(-1); }
+   if(CopyOpen(Symbol(), tf, start_time, end_time, opens)   != count) { Print("[VP] CopyOpen failed/mismatch");   return(-1); }
+   if(CopyClose(Symbol(), tf, start_time, end_time, closes) != count) { Print("[VP] CopyClose failed/mismatch");  return(-1); }
 
    //--- Volume: try requested type first, fall back if it fails
    if(InpVolumeType == VOLUME_REAL)
      {
-      int copied = CopyRealVolume(Symbol(), tf, end_idx, count, volumes);
+      int copied = CopyRealVolume(Symbol(), tf, start_time, end_time, volumes);
       if(copied != count)
         {
          bool all_zero = true;
@@ -428,7 +468,7 @@ int GatherData(datetime start_time, datetime end_time,
          if(copied <= 0 || all_zero)
            {
             Print("[VP] Real volume unavailable, falling back to tick volume");
-            if(CopyTickVolume(Symbol(), tf, end_idx, count, volumes) != count)
+            if(CopyTickVolume(Symbol(), tf, start_time, end_time, volumes) != count)
               { Print("[VP] CopyTickVolume fallback also failed"); return(-1); }
            }
          else
@@ -446,14 +486,14 @@ int GatherData(datetime start_time, datetime end_time,
          if(all_zero)
            {
             Print("[VP] Real volume is all zeros, falling back to tick volume");
-            if(CopyTickVolume(Symbol(), tf, end_idx, count, volumes) != count)
+            if(CopyTickVolume(Symbol(), tf, start_time, end_time, volumes) != count)
               { Print("[VP] CopyTickVolume fallback also failed"); return(-1); }
            }
         }
      }
    else
      {
-      if(CopyTickVolume(Symbol(), tf, end_idx, count, volumes) != count)
+      if(CopyTickVolume(Symbol(), tf, start_time, end_time, volumes) != count)
         { Print("[VP] CopyTickVolume failed"); return(-1); }
      }
 
@@ -533,6 +573,9 @@ void DistributeVolumeTriangular(int count,
                                 double range_bottom, double resolution, int steps,
                                 double &buckets_up[], double &buckets_down[])
   {
+   double weights[]; // Pre-allocate outside the loop to prevent memory fragmentation
+   ArrayResize(weights, VP_MAX_STEPS, VP_MAX_STEPS);
+
    for(int i = 0; i < count; i++)
      {
       double vol = (double)volumes[i];
@@ -561,8 +604,6 @@ void DistributeVolumeTriangular(int count,
       double half_range = MathMax(bar_h - typical, typical - bar_l);
       if(half_range <= 0) half_range = resolution;
 
-      double weights[];
-      ArrayResize(weights, levels_covered);
       double weight_sum = 0.0;
 
       for(int k = 0; k < levels_covered; k++)
@@ -681,6 +722,17 @@ void GetBarColors(int idx, int poc_idx, int va_low_idx, int va_high_idx,
   }
 
 //+------------------------------------------------------------------+
+//| CCanvas Transition Strategy for UI Optimization:                  |
+//| 1. Include <Canvas\Canvas.mqh> and create CCanvas instance.       |
+//| 2. Instead of generating thousands of OBJ_RECTANGLE objects,      |
+//|    create a transparent Canvas spanning the entire chart window.  |
+//| 3. Use CCanvas::FillRectangle() to draw volume buckets directly   |
+//|    onto the pixel buffer array in memory.                         |
+//| 4. Call CCanvas::Update() exactly once per tick to push pixels.   |
+//| 5. This eliminates MT5's object-handling overhead, vastly         |
+//|    improving FPS and allowing complex alpha blending.             |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| Draw histogram bars and value labels (zone-aware: POC / VA)       |
 //+------------------------------------------------------------------+
 void DrawBars(int steps, double range_bottom, double resolution,
@@ -697,6 +749,20 @@ void DrawBars(int steps, double range_bottom, double resolution,
       label_skip = CalcLabelSkip(steps, resolution);
 
    int label_count = 0;
+   
+   canvas.Erase(0);
+   canvas.FontSet("Arial", InpValueFontSize);
+   
+   // 1. Query chart bounds exactly ONCE to prevent 1000s of sync calls
+   int x_start = 0, y_bottom = 0;
+   int x_end = 0, y_top = 0;
+   
+   ChartTimePriceToXY(0, 0, start_time, range_bottom, x_start, y_bottom);
+   ChartTimePriceToXY(0, 0, end_time, range_bottom + (steps * resolution), x_end, y_top);
+
+   // Linear interpolation coefficients
+   double dY = y_top - y_bottom;
+   if(steps <= 0) steps = 1; // Safeguard
 
    for(int i = 0; i < steps; i++)
      {
@@ -704,21 +770,12 @@ void DrawBars(int steps, double range_bottom, double resolution,
       double vol_down  = buckets_down[i];
       double vol_total = vol_up + vol_down;
 
-      string obj_down  = LINE_PREFIX  + "D_" + IntegerToString(i);
-      string obj_up    = LINE_PREFIX  + "U_" + IntegerToString(i);
-
-      if(vol_total <= VP_MIN_VOLUME)
-        {
-         ObjectDelete(0, obj_down);
-         ObjectDelete(0, obj_up);
-         continue;
-        }
+      if(vol_total <= VP_MIN_VOLUME) continue;
 
       // Determine colors based on zone
       color col_up_bar, col_down_bar;
       GetBarColors(i, poc_idx, va_low_idx, va_high_idx, col_up_bar, col_down_bar);
 
-      double price_level      = range_bottom + (i * resolution);
       double total_ratio      = vol_total / max_total_vol;
       double time_width_total = (double)rect_full_time * total_ratio * max_width_factor;
       double up_ratio_val     = (vol_total > 0) ? vol_up / vol_total : 0.5;
@@ -738,49 +795,46 @@ void DrawBars(int steps, double range_bottom, double resolution,
          rect_split = rect_start + (datetime)time_width_down;
          rect_end   = end_time;
         }
+        
+      // Linear interpolation for Y axis (instead of calling ChartTimePriceToXY)
+      double t_ratio1 = (double)i / (double)steps;
+      double t_ratio2 = (double)(i + 1) / (double)steps;
+      
+      int y1 = y_bottom + (int)(dY * t_ratio1);
+      int y2 = y_bottom + (int)(dY * t_ratio2);
+
+      int x1 = 0, xsplit = 0, x2 = 0, dummyY = 0;
+
+      // X coordinates must still be calculated because time on MT5 is non-linear (weekends/gaps)
+      // but we drastically cut down from 4 to max 3 queries, and Y is fully interpolated.
+      ChartTimePriceToXY(0, 0, rect_start, 0, x1, dummyY);
+      ChartTimePriceToXY(0, 0, rect_split, 0, xsplit, dummyY);
+      ChartTimePriceToXY(0, 0, rect_end, 0, x2, dummyY);
 
       // Down on Left
       if(vol_down > VP_MIN_VOLUME)
-         CreateOrUpdateRect(obj_down, rect_start, rect_split, price_level, resolution, col_down_bar);
-      else
-         ObjectDelete(0, obj_down);
+        {
+         if(InpFill) canvas.FillRectangle(x1, y2, xsplit, y1, GetARGB(col_down_bar, 200));
+         else        canvas.Rectangle(x1, y2, xsplit, y1, GetARGB(col_down_bar, 200));
+        }
 
       // Up on Right
       if(vol_up > VP_MIN_VOLUME)
-         CreateOrUpdateRect(obj_up, rect_split, rect_end, price_level, resolution, col_up_bar);
-      else
-         ObjectDelete(0, obj_up);
+        {
+         if(InpFill) canvas.FillRectangle(xsplit, y2, x2, y1, GetARGB(col_up_bar, 200));
+         else        canvas.Rectangle(xsplit, y2, x2, y1, GetARGB(col_up_bar, 200));
+        }
 
       // Volume value label — only render at spaced intervals
       if(InpShowValues && (i % label_skip == 0))
         {
-         string obj_label = LABEL_PREFIX + IntegerToString(label_count);
-         double label_price = price_level + (resolution / 2.0);
-         datetime label_time = (InpAlignment == VP_ALIGN_LEFT) ? rect_end : rect_start;
-         ENUM_ANCHOR_POINT anchor = (InpAlignment == VP_ALIGN_LEFT) ? ANCHOR_LEFT : ANCHOR_RIGHT;
-         CreateOrUpdateLabel(obj_label, label_time, label_price, FormatVolume(vol_total), anchor);
+         int lx = (InpAlignment == VP_ALIGN_LEFT) ? x2 : x1;
+         int ly = y_bottom + (int)(dY * (t_ratio1 + t_ratio2) / 2.0); // Midpoint of bucket mathematically
+         uint align = (InpAlignment == VP_ALIGN_LEFT) ? 0 : 2; // TA_LEFT or TA_RIGHT
+         canvas.TextOut(lx, ly - (InpValueFontSize / 2), FormatVolume(vol_total), GetARGB(InpValueColor, 255), align);
          label_count++;
         }
      }
-
-   // Cleanup stale bar objects from prior larger step counts
-   if(steps < g_prevSteps)
-     {
-      for(int k = steps; k < g_prevSteps; k++)
-        {
-         ObjectDelete(0, LINE_PREFIX + "D_" + IntegerToString(k));
-         ObjectDelete(0, LINE_PREFIX + "U_" + IntegerToString(k));
-        }
-     }
-   g_prevSteps = steps;
-
-   // Cleanup stale label objects
-   if(label_count < g_prevLabelCount)
-     {
-      for(int k = label_count; k < g_prevLabelCount; k++)
-         ObjectDelete(0, LABEL_PREFIX + IntegerToString(k));
-     }
-   g_prevLabelCount = label_count;
   }
 
 //+------------------------------------------------------------------+
@@ -788,25 +842,26 @@ void DrawBars(int steps, double range_bottom, double resolution,
 //+------------------------------------------------------------------+
 void DrawKeyLines(int poc_idx, int va_high_idx, int va_low_idx,
                   double range_bottom, double resolution,
-                  datetime start_time, datetime end_time)
+                  datetime start_time, datetime end_time, int steps)
   {
-   double poc_price = range_bottom + (poc_idx * resolution) + (resolution / 2.0);
-   CreateOrUpdateTrendLine(POC_OBJ_NAME, start_time, end_time,
-                           poc_price, InpColorPOCLine, InpPOCStyle, SafePOCWidth());
+   int x_start = 0, y_bottom = 0;
+   int x_end = 0, y_top = 0;
+   ChartTimePriceToXY(0, 0, start_time, range_bottom, x_start, y_bottom);
+   ChartTimePriceToXY(0, 0, end_time, range_bottom + (steps * resolution), x_end, y_top);
+
+   double dY = y_top - y_bottom;
+   if(steps <= 0) steps = 1;
+
+   int y_poc = y_bottom + (int)(dY * ((double)poc_idx + 0.5) / (double)steps);
+   canvas.FillRectangle(x_start, y_poc - SafePOCWidth()/2, x_end, y_poc + SafePOCWidth()/2, GetARGB(InpColorPOCLine, 255));
 
    if(InpShowVABounds)
      {
-      double vah_price = range_bottom + (va_high_idx * resolution) + resolution;
-      double val_price = range_bottom + (va_low_idx  * resolution);
-      CreateOrUpdateTrendLine(VAH_OBJ_NAME, start_time, end_time,
-                               vah_price, InpColorVABounds, InpVAStyle, SafeVAWidth());
-      CreateOrUpdateTrendLine(VAL_OBJ_NAME, start_time, end_time,
-                               val_price, InpColorVABounds, InpVAStyle, SafeVAWidth());
-     }
-   else
-     {
-      ObjectDelete(0, VAH_OBJ_NAME);
-      ObjectDelete(0, VAL_OBJ_NAME);
+      int y_vah = y_bottom + (int)(dY * ((double)va_high_idx + 1.0) / (double)steps);
+      int y_val = y_bottom + (int)(dY * ((double)va_low_idx) / (double)steps);
+
+      canvas.FillRectangle(x_start, y_vah - SafeVAWidth()/2, x_end, y_vah + SafeVAWidth()/2, GetARGB(InpColorVABounds, 150));
+      canvas.FillRectangle(x_start, y_val - SafeVAWidth()/2, x_end, y_val + SafeVAWidth()/2, GetARGB(InpColorVABounds, 150));
      }
   }
 
@@ -815,11 +870,8 @@ void DrawKeyLines(int poc_idx, int va_high_idx, int va_low_idx,
 //+------------------------------------------------------------------+
 void ClearProfileObjects()
   {
-   ObjectsDeleteAll(0, LINE_PREFIX);
-   ObjectsDeleteAll(0, LABEL_PREFIX);
-   ObjectDelete(0, POC_OBJ_NAME);
-   ObjectDelete(0, VAH_OBJ_NAME);
-   ObjectDelete(0, VAL_OBJ_NAME);
+   canvas.Erase(0);
+   canvas.Update();
   }
 
 //+------------------------------------------------------------------+
@@ -902,94 +954,8 @@ void CalculateAndDraw()
             poc_idx, va_low_idx, va_high_idx);
 
    DrawKeyLines(poc_idx, va_high_idx, va_low_idx,
-                range_bottom, resolution, start_time, end_time);
+                range_bottom, resolution, start_time, end_time, steps);
 
-   ChartRedraw();
-  }
-
-//+------------------------------------------------------------------+
-//| Create or update a rectangle object                              |
-//+------------------------------------------------------------------+
-void CreateOrUpdateRect(string name, datetime t1, datetime t2,
-                        double price, double resolution, color col)
-  {
-   if(t1 == t2) return;
-
-   if(ObjectFind(0, name) < 0)
-     {
-      ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, price, t2, price + resolution);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-      ObjectSetInteger(0, name, OBJPROP_BACK,  InpBackground);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-      ObjectSetInteger(0, name, OBJPROP_FILL,  InpFill);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-     }
-   else
-     {
-      ObjectSetInteger(0, name, OBJPROP_TIME,  0, t1);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, price);
-      ObjectSetInteger(0, name, OBJPROP_TIME,  1, t2);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 1, price + resolution);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Create or update a horizontal trendline (POC / VAH / VAL)        |
-//+------------------------------------------------------------------+
-void CreateOrUpdateTrendLine(string name, datetime t1, datetime t2,
-                             double price, color col,
-                             ENUM_LINE_STYLE style, int width)
-  {
-   if(ObjectFind(0, name) < 0)
-     {
-      ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
-      ObjectSetInteger(0, name, OBJPROP_COLOR,     col);
-      ObjectSetInteger(0, name, OBJPROP_STYLE,     style);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH,     width);
-      ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-      ObjectSetInteger(0, name, OBJPROP_BACK,      false);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN,    true);
-     }
-   else
-     {
-      ObjectSetInteger(0, name, OBJPROP_TIME,  0, t1);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, price);
-      ObjectSetInteger(0, name, OBJPROP_TIME,  1, t2);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 1, price);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-      ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| Create or update a volume value text label                       |
-//+------------------------------------------------------------------+
-void CreateOrUpdateLabel(string name, datetime t, double price, string text, ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT)
-  {
-   if(ObjectFind(0, name) < 0)
-     {
-      ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
-      ObjectSetString(0,  name, OBJPROP_TEXT,     text);
-      ObjectSetString(0,  name, OBJPROP_FONT,     "Arial");
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpValueFontSize);
-      ObjectSetInteger(0, name, OBJPROP_COLOR,    InpValueColor);
-      ObjectSetInteger(0, name, OBJPROP_ANCHOR,   anchor);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN,  true);
-      ObjectSetInteger(0, name, OBJPROP_BACK,    false);
-     }
-   else
-     {
-      ObjectSetInteger(0, name, OBJPROP_TIME,  0, t);
-      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, price);
-      ObjectSetString(0,  name, OBJPROP_TEXT,  text);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, InpValueColor);
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpValueFontSize);
-      ObjectSetInteger(0, name, OBJPROP_ANCHOR,   anchor);
-     }
+   canvas.Update();
   }
 //+------------------------------------------------------------------+
