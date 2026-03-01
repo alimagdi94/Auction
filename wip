@@ -1,0 +1,43 @@
+# Footprint Strict Grid - Refactoring Explanation
+
+## 1. Full Updated Code
+The full updated code has been saved directly to the `footprint` file in your workspace. You can compile this directly in MetaEditor.
+
+## 2. Explanation of Exact Changes
+
+**Where the ladder step is defined**
+The ladder step is defined strictly using `g_step = g_baseStep * g_tickMult;` where `g_baseStep` is derived from `InpTickSize` in points. During rendering, the total grid geometry vertical padding is strictly defined by the new `InpRowHeightPx` input, ensuring an unyielding vertical structure regardless of MT5 viewport price density.
+
+**How bid/ask volumes are accumulated**
+Volumes are accumulated per price level inside `AccumulateTick()` and `ProcessTicks()`. Using a normalized price `NormP(price)`, arrays of `PriceLevel` structs are dynamically resized and ticks are bucketed based on `TICK_FLAG_BUY`/`TICK_FLAG_SELL` or tick direction against `g_prevBid`. This core logic from your original code was preserved because it efficiently structured the Volume Delta profiles.
+
+**How X/Y pixel mapping is calculated**
+Instead of mapping every grid cell directly against the MT5 time/price chart scale, we pick a single anchor reference:
+```mql5
+double midPrice = NormP((priceMax + priceMin) / 2.0);
+ChartTimePriceToXY(g_chart, g_sub, currentVisTime, midPrice, tmpX, anchorY);
+```
+From `anchorY`, we calculate every cell's true `Y` coordinate simply by calculating the step distance to `midPrice` and multiplying by your exact `InpRowHeightPx`:
+```mql5
+int diffSteps = (int)MathRound((price - midPrice) / g_step);
+int y_top = anchorY - diffSteps * InpRowHeightPx - InpRowHeightPx / 2;
+```
+For X sizing, we map exactly backwards from the right margin without relying on `iTime()` gaps: 
+`x_left = chartWidth - rightMargin - (v * (InpBarWidthPx + InpBarGapPx)) - InpBarWidthPx;`
+
+**How cells and text alignment are implemented**
+We migrated from `CCanvas` to an efficient Object Pool of `OBJ_RECTANGLE_LABEL` for the cell background/border and two `OBJ_LABEL` sets for the texts per cell.
+- **Background**: Uses `OBJPROP_XDISTANCE`/`OBJPROP_YDISTANCE` with exact width `InpBarWidthPx` and height `InpRowHeightPx`.
+- **BidVol (Left)**: Anchored to `ANCHOR_LEFT_UPPER`, rendered at `x_left + InpCellPaddingPx`.
+- **AskVol (Right)**: Anchored to `ANCHOR_RIGHT_UPPER`, rendered at `x_left + InpBarWidthPx - InpCellPaddingPx`.
+
+## 3. What Caused Scattered Prints in the Original Code?
+The original code heavily relied on calculating cell height based on absolute price coordinates on screen:
+```mql5
+ChartTimePriceToXY(g_chart, g_sub, bt, pl.price, tmpX, natY1);
+ChartTimePriceToXY(g_chart, g_sub, bt, pl.price - g_step, tmpX, natY2);
+int cellH = MathAbs(natY2 - natY1);
+```
+This forces the indicator to squeeze or expand cells unpredictably when MT5 auto-scales the chart (`cellH` varied wildly depending on max highs/lows inside the viewport). Combined with `CCanvas` drawing logic mixing `TA_CENTER` overlapping inside these dynamic zones, it caused severely misaligned or "scattered" cells. 
+
+This was replaced completely by the strict `CellObjects` Object Pool mapping algorithm described above. It detaches the cells from the MT5 Y-scale squeeze, rendering a fixed rectangular grid, while unused objects are effectively hidden by sending them safely off-screen (`OBJPROP_XDISTANCE = -1000`).
