@@ -3,11 +3,11 @@
 //|   Footprint (Order Flow) - Production Ready                       |
 //|   Volume / Delta / Bid x Ask per price level                     |
 //|   POC, VA%, Imbalance, Absorption, Stacked Imbalances            |
-//|   Tick-size aggregation + Tick Multiplier (x1..x20)              |
+//|   Tick-size aggregation + Tick Multiplier (x1..x40)              |
 //|   Compact canvas overlay + control panel                         |
 //+------------------------------------------------------------------+
 #property copyright "Ali Magdy"
-#property version   "1.10"
+#property version   "2.00"
 #property description "Footprint Chart — Volume / Delta / Bid x Ask with Tick Multiplier"
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -34,9 +34,10 @@ input double InpVAPercent       = 70.0;         // Value Area % (industry defaul
 
 input group "Aggregation"
 input ENUM_FOOT_CHART_MODE InpChartMode      = FOOT_CHART_BIDASK; // Chart mode
-input int                  InpTickMultiplier = 1;                  // Tick multiplier (1,2,5,10,20)
+input int                  InpTickMultiplier = 5;                 // Tick multiplier (1,2,5,10,20,40)
 
-input group "Visual Opacity"
+input group "Display"
+input bool   InpShowText       = false;         // Show Cell Numbers (Bid/Ask/Vol/Delta text)
 input uchar  InpBgAlpha        = 210;          // Cell Background Alpha (0-255)
 input uchar  InpVAOffAlpha     = 80;           // Alpha outside Value Area (0-255)
 
@@ -124,7 +125,6 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 #define FP_PANEL_MARGIN         5
 #define FP_RENDER_THROTTLE_MS   33   // ~30 FPS max to avoid UI lag
 #define FP_MIN_CELL_H           16   // Min cell height (px) for readability
-#define FP_DARK_BASE            C'30,30,38'
 
 // Opacity cycle presets
 #define FP_OPA_FULL    255
@@ -171,15 +171,11 @@ bool HitTest(int mx, int my, int x1, int y1, int x2, int y2)
 //+------------------------------------------------------------------+
 void ThrottledRender()
   {
-   // Fix #4: Strategy Tester Dynamic Throttle
-   // In the tester, physical wall-clock time barely advances, so GetTickCount()-based
-   // throttling causes the render queue to lag far behind the simulated market.
-   // When running under the tester we switch to simulated chart time and update
-   // once per simulated minute instead.
+   // Strategy Tester: use simulated chart time (wall-clock barely advances)
    if(MQLInfoInteger(MQL_TESTER))
      {
       datetime now_sim = TimeCurrent();
-      if(now_sim - g_last_tester_render_time >= 60) // one simulated minute
+      if(now_sim - g_last_tester_render_time >= 60)
         {
          Render();
          g_last_tester_render_time = now_sim;
@@ -187,7 +183,7 @@ void ThrottledRender()
       return;
      }
 
-   // Normal (live/replay) throttle: 30 FPS wall-clock cap
+   // Live/replay: 30 FPS wall-clock cap
    ulong now_ticks = GetTickCount();
    if(now_ticks - g_last_render_ms >= FP_RENDER_THROTTLE_MS)
      {
@@ -666,11 +662,7 @@ void FindVA(const PriceLevel &lv[], int count, long totVol, int poc, int &lo, in
    long target = (long)(totVol * GetEffectiveVAPercent() / 100.0);
    long cur    = lv[poc].total_vol;
 
-   // Fix #3: Industry-standard dual-row expansion algorithm.
-   // At each step we compare the SUM of the two rows above the current VA
-   // upper bound against the SUM of the two rows below the current VA lower
-   // bound, then expand in the direction with the higher combined volume.
-   // This prevents the VA from getting trapped at single low-volume nodes.
+   // Dual-row expansion: compare sum of two rows above vs below, expand toward higher volume
    while(cur < target && (lo > 0 || hi < count - 1))
      {
       // Sum of the two rows above hi
@@ -806,28 +798,24 @@ void DrawBar(int bi, int shift, int barW)
       g_scratchY2[i] = g_scratchY1[i] + cellH;
      }
 
-    bool  skipText      = g_hideText || g_userHideText || (cellH < 9);
-    int   opaScale      = g_opacity;
-    uint  colWhiteText  = FpARGB(clrWhite, (250 * opaScale) / 255);
-    uint  colBlackText  = FpARGB(clrBlack, (250 * opaScale) / 255);
-    bool  isBullish     = g_bars[bi].is_bullish;
-    color sentimentCol  = isBullish ? InpBullishFrame : InpBearishFrame;
+   bool  skipText     = g_hideText || g_userHideText || (cellH < 9);
+   int   opaScale     = g_opacity;
+   uint  colWhiteText = FpARGB(clrWhite, (250 * opaScale) / 255);
+   uint  colBlackText = FpARGB(clrBlack, (250 * opaScale) / 255);
+   bool  isBullish    = g_bars[bi].is_bullish;
+   color sentimentCol = isBullish ? InpBullishFrame : InpBearishFrame;
 
-     // Font size prominently mirrors vertical chart scaling (`cellH`)
-     int maxH = (int)(cellH * 0.65);
-     
-     // Dynamic max width calculation based on chart mode
-     int maxW;
-     if(g_mode == FOOT_CHART_BIDASK)
-        maxW = (int)(halfW * 0.75); // Bid and Ask split the column width
-     else
-        maxW = (int)(halfW * 1.50); // Total volume/Delta gets full column width
-        
-     int cellFontSz = MathMin(maxH, maxW);
-     cellFontSz = MathMax(8, MathMin(cellFontSz, 36));
+   // Font size scales with cell height and available width
+   int maxH = (int)(cellH * 0.65);
+   int maxW;
+   if(g_mode == FOOT_CHART_BIDASK)
+      maxW = (int)(halfW * 0.75);
+   else
+      maxW = (int)(halfW * 1.50);
+   int cellFontSz = MathMax(8, MathMin(MathMin(maxH, maxW), 36));
 
-     if(!skipText)
-        canvas.FontSet("Segoe UI", cellFontSz, FW_BOLD);
+   if(!skipText)
+      canvas.FontSet("Segoe UI", cellFontSz, FW_BOLD);
 
    for(int i = 0; i < len; i++)
      {
@@ -995,24 +983,23 @@ void DrawBar(int bi, int shift, int barW)
    // --- Per-bar total volume and delta labels below the bar ---
    if(!skipText)
      {
-       int labelY = g_scratchY2[len - 1] + 2;  // just below the lowest cell
-       int maxLblH = (int)(cellH * 0.50);
-       int maxLblW = (int)(barW * 0.25);
-       int lblFontSz = MathMin(maxLblH, maxLblW);
-       lblFontSz = MathMax(8, MathMin(lblFontSz, 24));
-       canvas.FontSet("Segoe UI", lblFontSz, FW_BOLD);
+      int labelY    = g_scratchY2[len - 1] + 2;
+      int maxLblH   = (int)(cellH * 0.50);
+      int maxLblW   = (int)(barW * 0.25);
+      int lblFontSz = MathMax(8, MathMin(MathMin(maxLblH, maxLblW), 24));
+      canvas.FontSet("Segoe UI", lblFontSz, FW_BOLD);
 
-       // Volume label (white)
-       string volStr = IntegerToString(g_bars[bi].total_vol);
-       canvas.TextOut((x1 + x2) / 2, labelY, volStr,
-                      FpARGB(clrWhite, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
+      // Volume label (white)
+      string volStr = IntegerToString(g_bars[bi].total_vol);
+      canvas.TextOut((x1 + x2) / 2, labelY, volStr,
+                     FpARGB(clrWhite, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
 
-       // Delta label (green if positive, red if negative)
-       long  barDelta  = g_bars[bi].total_delta;
-       color deltaCol  = (barDelta >= 0) ? clrLime : clrRed;
-       string deltaStr = (barDelta >= 0 ? "+" : "") + IntegerToString(barDelta);
-       canvas.TextOut((x1 + x2) / 2, labelY + lblFontSz + 2, deltaStr,
-                      FpARGB(deltaCol, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
+      // Delta label (green if positive, red if negative)
+      long  barDelta  = g_bars[bi].total_delta;
+      color deltaCol  = (barDelta >= 0) ? clrLime : clrRed;
+      string deltaStr = (barDelta >= 0 ? "+" : "") + IntegerToString(barDelta);
+      canvas.TextOut((x1 + x2) / 2, labelY + lblFontSz + 2, deltaStr,
+                     FpARGB(deltaCol, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
      }
   }
 
@@ -1276,8 +1263,7 @@ void Render()
       return;
      }
 
-   // Text completely vanishes only if bars are absurdly microscopically narrow (< 6px)
-   // This guarantees numbers enthusiastically appear as user stretches Y axis
+   // Auto-hide text when bars are too narrow to render readable numbers
    g_hideText = (barW < 6);
 
    // Summary header (Volumes / Delta / CumDelta / Min/Max Delta)
@@ -1350,33 +1336,28 @@ void Render()
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   // Base step in points, guard range
+   // Base step in points (clamped)
    int pts = MathMax(1, MathMin(10000, InpTickSize));
    g_basePts  = pts;
    g_baseStep = g_basePts * _Point;
 
-   // Tick multiplier (runtime)
-   int mul = InpTickMultiplier;
-   if(mul <= 0)
-      mul = 1;
-   if(mul > 40)
-      mul = 40;
+   // Tick multiplier (clamped 1..40)
+   int mul = MathMax(1, MathMin(40, InpTickMultiplier));
    g_tickMult = mul;
    g_step     = g_baseStep * g_tickMult;
 
-   g_mode     = InpChartMode;
-   g_chart    = ChartID();
-   g_sub      = 0;
-   g_prevBid  = 0.0;
-   g_dirty    = true;
-   g_hideText = false;
-   g_userHideText = false; // Initialize the new variable
-   g_imbRatio = InpImbalanceRatio;
+   g_mode         = InpChartMode;
+   g_chart        = ChartID();
+   g_sub          = 0;
+   g_prevBid      = 0.0;
+   g_dirty        = true;
+   g_hideText     = false;
+   g_userHideText = !InpShowText;
+   g_imbRatio     = InpImbalanceRatio;
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
 
-   // Fix #2: Enable mouse-move events so HitTest hover states actually work.
-   // MT5 disables CHARTEVENT_MOUSE_MOVE by default to save CPU.
+   // Enable mouse-move events for panel hover states
    ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
 
    int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
@@ -1447,9 +1428,7 @@ int OnCalculate(const int rates_total,
          return 0;
      }
 
-   // Fix #1: State-machine reload. Buttons in OnChartEvent set this flag
-   // instead of calling ReloadHistory() directly on the UI thread.
-   // We execute the heavy reload here, safely inside OnCalculate.
+   // Deferred reload: buttons set flag, heavy work executes here
    if(g_needs_reload)
      {
       g_needs_reload = false;
@@ -1554,7 +1533,6 @@ void OnChartEvent(const int id, const long &lparam,
          g_basePts  = nextPts;
          g_baseStep = g_basePts * _Point;
          g_step     = g_baseStep * g_tickMult;
-         // Fix #1: Set flag instead of calling ReloadHistory() on the UI thread.
          g_needs_reload = true;
          g_dirty        = true;
         }
@@ -1577,7 +1555,6 @@ void OnChartEvent(const int id, const long &lparam,
 
          g_tickMult = nextMult;
          g_step     = g_baseStep * g_tickMult;
-         // Fix #1: Set flag instead of calling ReloadHistory() on the UI thread.
          g_needs_reload = true;
          g_dirty        = true;
         }
@@ -1639,7 +1616,6 @@ void OnChartEvent(const int id, const long &lparam,
          g_dirty   = true;
         }
       // Refresh: reload tick data
-      // Fix #1: Also use flag here so clicking Rld doesn't freeze the terminal.
       else if(HitTest(mx, my, g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2))
         {
          g_needs_reload = true;

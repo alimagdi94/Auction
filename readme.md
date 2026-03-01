@@ -1,42 +1,78 @@
-# Auction Trading Toolkit
+# Auction Trading Toolkit | مجموعة أدوات Auction للتداول
 
 This toolkit provides a set of professional, institutional-grade indicators and utilities for MetaTrader 5 (MT5), focusing on advanced trade execution, order flow, and volume analysis.
 
-## Components
+توفر هذه المجموعة من الأدوات مؤشرات وأدوات احترافية لمنصة MetaTrader 5 (MT5)، مع التركيز على تنفيذ الصفقات المتقدم، وتدفق الطلبات (Order Flow)، وتحليل السيولة (Volume Analysis).
 
-### 1. Chart Trader (`CT.mq5`)
+---
+
+## Components / المكونات
+
+### 1. Chart Trader (`charttrader`)
 A Professional Chart Trader utility designed for fast, production-ready trade execution and management.
-**Key Features:**
+أداة تنفيذ صفقات احترافية مصممة لإدارة وتنفيذ الصفقات بسرعة وكفاءة عالية.
+
+**Key Features / الميزات الأساسية:**
 - **Execution:** Seamless Market and Pending order execution.
+**التنفيذ:** تنفيذ أوامر السوق والأوامر المعلقة بسلاسة.
 - **Risk Management:** Dynamic Risk-based or Manual lot sizing, quick assignable SL/TP.
-- **On-Chart Visuals:** Drag-and-drop Visual SL/TP lines on the chart, zone tracking.
+**إدارة المخاطر:** تحديد حجم اللوت بناءً على المخاطرة أو يدويًا، مع تعيين سريع لمستويات وقف الخسارة وجني الأرباح.
+- **On-Chart Visuals:** Drag-and-drop Visual SL/TP lines, zone tracking.
+**مرئيات على الرسم البياني:** خطوط وقف الخسارة وجني الأرباح قابلة للسحب والإفلات، وتتبع المناطق.
 - **UI Interface:** Drag-and-dock panel functionality with a minimal, scalable grayscale design. 
+**واجهة المستخدم:** لوحة تحكم قابلة للسحب والتثبيت بتصميم عصري وبسيط.
 - **Advanced Trade Management:** Scale-out options, automatic position flipping/reversals.
-- **Keymapping:** Complete hotkey coverage for nearly all major actions (Buy, Sell, Close All, Scale Out, Toggle Exec Mode, Panel minimize, etc.).
+**إدارة متقدمة:** خيارات الخروج الجزئي وعكس المراكز تلقائيًا.
+- **Keymapping:** Complete hotkey coverage for all major actions (Buy, Sell, Close All, etc.).
+**مفاتيح الاختصار:** تغطية كاملة لجميع الإجراءات الرئيسية عبر لوحة المفاتيح.
 
-### 2. Footprint Chart (`FP.mq5`)
-An industry-standard Footprint (Bid x Ask Cluster) chart indicator that models Sierra / Bookmap-style footprints.
-**Key Features:**
+---
+
+### 2. Footprint Chart (`footprint`)
+An industry-standard Footprint (Bid x Ask Cluster) chart indicator that models institutional-grade order flow.
+مؤشر احترافي يحلل تدفق الطلبات (Order Flow) ويعرض تجمعات أحجام التداول (Bid/Ask).
+
+**Key Features / الميزات الأساسية:**
 - **Tick-by-Tick Analysis:** Analyzes tick data to build Bid (Sell) vs. Ask (Buy) volume clusters.
-- **Imbalance Detection:** Highlights diagonal imbalances (Ask@N vs Bid@N+1 / Bid@N vs Ask@N-1).
-- **Core Order Flow Metrics:** Automatically calculates Point of Control (POC) and Value Area (VA) per bar (default 70%).
-- **Performance:** Optimized ~30 FPS CCanvas rendering with visual throttling to prevent UI lag.
-- **Interactive Controls:** Features an on-chart panel to adjust zoom, scaling, cell size (ticks), imbalances ratio, and layout opacity on the fly. 
+**تحليل التكات:** تحليل بيانات التكات لبناء تجمعات أحجام الشراء والبيع.
+- **Imbalance Detection:** Highlights diagonal imbalances for aggressive buyer/seller identification.
+**كشف عدم التوازن:** تمييز مناطق عدم التوازن القطري لتحديد المشترين والبائعين العدوانيين.
+- **Core Order Flow Metrics:** Automatically calculates Point of Control (POC) and Value Area (VA).
+**مقاييس تدفق الطلبات:** حساب تلقائي لنقطة التحكم (POC) ومنطقة القيمة (VA).
+- **Performance:** Optimized CCanvas rendering with visual throttling to ensure zero UI lag.
+**الأداء:** رندر سريع ومحسن لتجنب بطء الواجهة أثناء التداول النشط.
+- **Interactive Controls:** Toggle cell numbers (Txt), adjust zoom, scaling, and imbalance ratios on the fly.
+**تحكم تفاعلي:** إمكانية إخفاء الأرقام، تعديل الزوم، ونسب عدم التوازن بشكل مباشر.
 
-### 3. Volume Profile (`VP.mq5`)
-A dynamic Volume Profile indicator for tracking volume distribution and identifying critical price levels.
-**Key Features:**
-- **Multiple Data Models:** Zero-lag tick data support or OHLCV timeframe data (Close, Even, Triangual Distribution).
-- **Dynamic Recalculations:** Live ticking updates, dynamically adapting the profile to new incoming volume.
-- **Value Area (VA):** Displays VAH/VAL and Value Area with distinct colors for Up vs. Down volume (VA 70%).
-- **Point of Control (POC):** Clearly visualizes the Point of Control line over the profile hierarchy.
-- **Visuals & Interactivity:** Left/Right profile alignments, filled histograms, customizable text rendering, and an interactive drag-and-drop selector box (`VP_Selector`) for custom range profiling.
+---
 
-## Installation
+### 3. Volume Profile (`volumeProfile`)
+A dynamic Volume Profile indicator for tracking volume distribution and identifying high-liquidity zones.
+مؤشر ديناميكي لتوزيع السيولة وتحديد مناطق الدعم والمقاومة الحقيقية بناءً على حجم التداول.
 
-1. Open your MetaTrader 5 Data Folder (`File -> Open Data Folder`).
-2. Copy `CT.mq5` into your `MQL5/Experts/` directory (since it handles trade execution). 
-3. Copy `FP.mq5` and `VP.mq5` into your `MQL5/Indicators/` directory.
-4. Open the MetaEditor (`F4`) and compile all three `.mq5` files.
-5. Drag and drop onto any chart.
-   - **Important:** Ensure the "Allow Algo Trading" setting is enabled in your MT5 Terminal for Chart Trader execution to function correctly.
+**Key Features / الميزات الأساسية:**
+- **Multiple Data Models:** Full support for zero-lag tick data for maximum precision.
+**نماذج بيانات متعددة:** دعم كامل لبيانات التكات الحقيقية بدقة عالية وبدون تأخير.
+- **Dynamic Updates:** Live ticking updates, dynamically adapting to new incoming volume.
+**تحديثات ديناميكية:** تحديثات مباشرة للبروفايل مع كل سيولة جديدة تدخل السوق.
+- **Value Area (VA):** Displays VAH/VAL with distinct colors for volume distribution hierarchy.
+**منطقة القيمة (VA):** عرض مستويات VAH/VAL مع تمييز لوني لتوزيع السيولة.
+- **Point of Control (POC):** Clearly visualizes the Point of Control (most active price level).
+**نقطة التحكم (POC):** تحديد واضح لأكثر مستوى سعري شهد سيولة.
+- **Interactive Selector:** Interactive drag-and-drop box for custom range profiling.
+**الاختيار التفاعلي:** صندوق تفاعلي قابل للسحب لتحديد نطاق سعري معين وتحليله.
+
+---
+
+## Installation / التثبيت
+
+1. Open MetaTrader 5 Data Folder (`File -> Open Data Folder`).
+افتح مجلد بيانات MetaTrader 5 (ملف -> فتح مجلد البيانات).
+2. Copy `charttrader` into `MQL5/Experts/`.
+انسخ `charttrader` إلى مجلد `MQL5/Experts/`.
+3. Copy `footprint` and `volumeProfile` into `MQL5/Indicators/`.
+انسخ `footprint` و `volumeProfile` إلى مجلد `MQL5/Indicators/`.
+4. Compile the files in MetaEditor (`F4`).
+قم بعمل Compile للملفات في MetaEditor (F4).
+5. Ensure **"Allow Algo Trading"** is enabled for Chart Trader functionality.
+تأكد من تفعيل **"Allow Algo Trading"** ليعمل منفذ الصفقات بشكل صحيح.
