@@ -1,18 +1,26 @@
 # Role
-You are an Elite Algorithmic Trading Developer specializing in MQL5, system architecture, ultra-low latency UI rendering, and order flow (Footprint) analytics.
+You are an Elite Algorithmic Trading Developer specializing in MQL5 and CCanvas UI rendering.
 
 # Task
-Please apply the final polish, edge-case optimizations, and missing visual analytics to my `CCanvas`-based Footprint indicator. The architecture is solid with the state-machine UI and dual-row Value Area logic, but it requires fixes for data truncation, environment query overhead, a Y-axis visual bug, and proper Total Volume/Delta rendering.
+Please apply a critical visual fix to my Footprint indicator. [cite_start]The current font scaling logic is resulting in text that doesn't scale properly when zoomed in, because it calculates the font size based solely on the cell's height (`cellH`) [cite: 504-505, 558-559]. I need to implement "Bi-Directional Dynamic Scaling" so the text perfectly maximizes its size without bleeding horizontally.
 
 # Specific Refactoring Requirements
 
-maintain strict 1:1 price-scale integrity. 
+## 1. Bi-Directional Cell Text Scaling
+* [cite_start]**Issue:** In the `DrawBar` function, `cellFontSz` is calculated as `(int)(cellH * 0.55)`[cite: 504]. When the chart is zoomed in vertically, `cellH` becomes very large, but the column width (`halfW`) might still be narrow. Scaling based only on height causes clipping or improper rendering.
+* [cite_start]**Requirement:** Replace the `cellFontSz` logic [cite: 504-505] with a bidirectional calculation. 
+    1. Calculate max height allowed: `int maxH = (int)(cellH * 0.55);`
+    2. Calculate max width allowed: `int maxW = (int)(halfW * 0.45);` (Since text is Bid or Ask, it must fit inside half the bar width).
+    3. Take the minimum of the two: `int cellFontSz = MathMin(maxH, maxW);`
+    4. Clamp the final result safely: `cellFontSz = MathMax(8, MathMin(cellFontSz, 28));`
 
+## 2. Bi-Directional Bottom Label Scaling
+* [cite_start]**Issue:** The Total Volume and Delta labels at the bottom of the bar suffer from the same issue [cite: 558-559]. 
+* **Requirement:** Apply the same logic to `lblFontSz`. 
+    1. Because this text spans the *entire* candle width (not just half), use `barW`: `int maxW = (int)(barW * 0.25);`
+    2. `int maxH = (int)(cellH * 0.50);`
+    3. `int lblFontSz = MathMin(maxH, maxW);`
+    4. Clamp it safely: `lblFontSz = MathMax(8, MathMin(lblFontSz, 24));`
 
-## 1. Redundant Array Sorting
-* [cite_start]**Issue:** At the end of `LoadHistory`, a `for` loop explicitly iterates through every loaded bar to execute `SortLevels` [cite: 444-445]. This is redundant because `ProcessTicks` already calls `ComputeBarSignals`, which natively handles sorting.
-* **Requirement:** Delete the final `for` loop calling `SortLevels` at the bottom of the `LoadHistory` function to eliminate wasted CPU cycles.
-
-## 2. Add Per-Bar Totals (Visual UI)
-* **Issue:** The footprint chart calculates `total_vol` and `total_delta` for every bar perfectly, but never displays it on the chart.
-* **Requirement:** At the very end of the `DrawBar` function, right after drawing the candle wicks, add text rendering logic to display a summary string (e.g., `Total Volume | Total Delta`) centered just below the bottom wick of each candle.
+# Context: Current Code
+only touch footprint.full
