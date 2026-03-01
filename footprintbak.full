@@ -99,6 +99,7 @@ string               g_name     = "FP_Canvas";
 FPBar                g_bars[];
 double               g_step;         // aggregated step = g_baseStep * g_tickMult
 double               g_baseStep;     // base step from InpTickSize
+int                  g_basePts = 10; // runtime base cell size (points)
 int                  g_tickMult = 1; // runtime tick multiplier
 ENUM_FOOT_CHART_MODE g_mode    = FOOT_CHART_BIDASK;
 long                 g_chart;
@@ -134,6 +135,7 @@ ulong                g_last_render_ms    = 0;
 #define FP_IMB_HI      400.0
 
 int   g_panelX1, g_panelY1, g_panelX2, g_panelY2;
+int   g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2;
 int   g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2;
 int   g_btnImbX1,  g_btnImbY1,  g_btnImbX2,  g_btnImbY2;
 int   g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2;
@@ -179,6 +181,11 @@ void ThrottledRender()
 void ReloadHistory()
   {
    g_dirty = false;
+   int n = ArraySize(g_bars);
+   for(int i = 0; i < n; i++)
+     {
+      ArrayFree(g_bars[i].levels);
+     }
    ArrayFree(g_bars);
    g_last_tick_time_ms = 0;
    int bars_total = iBars(_Symbol, PERIOD_CURRENT);
@@ -227,7 +234,22 @@ int FindBarIndex(datetime bt)
 //+------------------------------------------------------------------+
 int InsertBar(datetime bt)
   {
-   int n   = ArraySize(g_bars);
+   int n = ArraySize(g_bars);
+   
+   // Fast-path for chronological appending
+   if(n > 0 && bt > g_bars[n - 1].bar_time)
+     {
+      ArrayResize(g_bars, n + 1, 128);
+      g_bars[n].bar_time    = bt;
+      g_bars[n].total_vol   = 0;
+      g_bars[n].total_delta = 0;
+      g_bars[n].sorted      = true;
+      g_bars[n].is_bullish  = true;
+      g_bars[n].level_count = 0;
+      ArrayResize(g_bars[n].levels, 64, 64);
+      return n;
+     }
+
    int pos = n;
    for(int i = n - 1; i >= 0; i--)
      {
@@ -242,18 +264,9 @@ int InsertBar(datetime bt)
      }
 
    ArrayResize(g_bars, n + 1, 128);
-   // Explicit copy so each bar keeps its own levels[] (no shared refs)
    for(int i = n; i > pos; i--)
      {
-      g_bars[i].bar_time    = g_bars[i - 1].bar_time;
-      g_bars[i].total_vol   = g_bars[i - 1].total_vol;
-      g_bars[i].total_delta = g_bars[i - 1].total_delta;
-      g_bars[i].sorted      = g_bars[i - 1].sorted;
-      g_bars[i].level_count = g_bars[i - 1].level_count;
-      int cap = ArraySize(g_bars[i - 1].levels);
-      ArrayResize(g_bars[i].levels, MathMax(cap, 64), 64);
-      if(cap > 0)
-         ArrayCopy(g_bars[i].levels, g_bars[i - 1].levels, 0, 0, cap);
+      g_bars[i] = g_bars[i - 1]; // Native MQL5 struct assignment
      }
 
    g_bars[pos].bar_time    = bt;
@@ -287,13 +300,19 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
    int used = g_bars[bi].level_count;
    int idx  = -1;
 
-   // Search for existing level (optimized for recent levels)
-   for(int i = used - 1; i >= 0; i--)
+   // Boundary check to skip search loop
+   bool skipSearch = (price > g_bars[bi].high + g_step || price < g_bars[bi].low - g_step);
+
+   if(!skipSearch)
      {
-      if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
+      // Search for existing level (optimized for recent levels)
+      for(int i = used - 1; i >= 0; i--)
         {
-         idx = i;
-         break;
+         if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
+           {
+            idx = i;
+            break;
+           }
         }
      }
 
@@ -504,10 +523,21 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
       if(ticks[i].bid != 0.0)
          g_prevBid = ticks[i].bid;
 
-      int      sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
-      if(sh < 0)
-         continue;
-      datetime bt = iTime(_Symbol, PERIOD_CURRENT, sh);
+      static datetime current_bar_time = 0;
+      static int current_sh = -1;
+      static datetime next_bar_time = 0;
+
+      if(ticks[i].time < current_bar_time || ticks[i].time >= next_bar_time)
+        {
+         current_sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
+         if(current_sh < 0)
+            continue;
+         current_bar_time = iTime(_Symbol, PERIOD_CURRENT, current_sh);
+         next_bar_time = current_bar_time + PeriodSeconds(PERIOD_CURRENT);
+        }
+
+      int      sh = current_sh;
+      datetime bt = current_bar_time;
       int      bi = GetBar(bt);
 
       // Update dimensions and sentiment
@@ -922,7 +952,7 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   int panelW = pad + (btnW * 9 + btnGap * 8) + pad;
+   int panelW = pad + (btnW * 10 + btnGap * 9) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
@@ -944,7 +974,12 @@ void LayoutPanel(int cw, int ch)
    g_btnScaleFixX2 = g_btnScaleFixX1 + btnW;
    g_btnScaleFixY2 = g_btnZoomOutY2;
 
-   g_btnTickX1 = g_btnScaleFixX2 + btnGap;
+   g_btnSizeX1 = g_btnScaleFixX2 + btnGap;
+   g_btnSizeY1 = g_btnZoomOutY1;
+   g_btnSizeX2 = g_btnSizeX1 + btnW;
+   g_btnSizeY2 = g_btnZoomOutY2;
+
+   g_btnTickX1 = g_btnSizeX2 + btnGap;
    g_btnTickY1 = g_btnZoomOutY1;
    g_btnTickX2 = g_btnTickX1 + btnW;
    g_btnTickY2 = g_btnZoomOutY2;
@@ -991,6 +1026,7 @@ void DrawPanel()
                     FpARGB(C'70,70,80', 200));
 
    // Hover detection
+   bool hoveredSize     = HitTest(g_mouseX, g_mouseY, g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2);
    bool hoveredTick     = HitTest(g_mouseX, g_mouseY, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2);
    bool hoveredImb      = HitTest(g_mouseX, g_mouseY, g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2);
    bool hoveredZoomIn   = HitTest(g_mouseX, g_mouseY, g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2);
@@ -1038,6 +1074,15 @@ void DrawPanel()
    canvas.Rectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, fixBorder);
    canvas.TextOut(g_btnScaleFixX1 + btnCenterX, btnCenterY,
                   "Fix", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 3b. Base Cell Size button
+   canvas.FillRectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
+                        hoveredSize ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
+                    hoveredSize ? hoverBorder : baseBorder);
+   string sizeLabel = IntegerToString(g_basePts) + "p";
+   canvas.TextOut(g_btnSizeX1 + btnCenterX, btnCenterY,
+                  sizeLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
    // 4. Tick multiplier button (displays x1/x2/x5/x10/x20)
    canvas.FillRectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
@@ -1213,7 +1258,8 @@ int OnInit()
   {
    // Base step in points, guard range
    int pts = MathMax(1, MathMin(10000, InpTickSize));
-   g_baseStep = pts * _Point;
+   g_basePts  = pts;
+   g_baseStep = g_basePts * _Point;
 
    // Tick multiplier (runtime)
    int mul = InpTickMultiplier;
@@ -1264,6 +1310,13 @@ void OnDeinit(const int reason)
   {
    canvas.Destroy();
    ObjectDelete(g_chart, g_name);
+   
+   int n = ArraySize(g_bars);
+   for(int i = 0; i < n; i++)
+     {
+      ArrayFree(g_bars[i].levels);
+     }
+     
    ArrayFree(g_bars);
    ArrayFree(g_scratchY1);
    ArrayFree(g_scratchY2);
@@ -1373,8 +1426,31 @@ void OnChartEvent(const int id, const long &lparam,
       int mx = (int)lparam;
       int my = (int)dparam;
 
-      // Tick multiplier button: x1 -> x2 -> x5 -> x10 -> x20 -> x1
-      if(HitTest(mx, my, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2))
+      // Base Cell Size button: 1p -> 2p -> 5p -> 10p -> 20p -> 40p -> 1p
+      if(HitTest(mx, my, g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2))
+        {
+         int nextPts;
+         if(g_basePts <= 1)
+            nextPts = 2;
+         else if(g_basePts <= 2)
+            nextPts = 5;
+         else if(g_basePts <= 5)
+            nextPts = 10;
+         else if(g_basePts <= 10)
+            nextPts = 20;
+         else if(g_basePts <= 20)
+            nextPts = 40;
+         else
+            nextPts = 1;
+
+         g_basePts  = nextPts;
+         g_baseStep = g_basePts * _Point;
+         g_step     = g_baseStep * g_tickMult;
+         ReloadHistory();
+         ThrottledRender();
+        }
+      // Tick multiplier button: x1 -> x2 -> x5 -> x10 -> x20 -> x40 -> x1
+      else if(HitTest(mx, my, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2))
         {
          int nextMult;
          if(g_tickMult <= 1)
@@ -1385,6 +1461,8 @@ void OnChartEvent(const int id, const long &lparam,
             nextMult = 10;
          else if(g_tickMult <= 10)
             nextMult = 20;
+         else if(g_tickMult <= 20)
+            nextMult = 40;
          else
             nextMult = 1;
 

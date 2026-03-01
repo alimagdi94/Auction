@@ -246,6 +246,7 @@ bool IsOwnOrder(ulong ticket) {
 // --- Click-and-Hold Repeat ---
 int    g_RepeatAction  = 0;     // 0=none, see REPEAT_* defines below
 bool   g_RepeatActive  = false; // Is repeat firing?
+int    g_TicksSincePress = 0;   // Timer ticks since press
 #define REPEAT_NONE      0
 #define REPEAT_RISK_UP   1
 #define REPEAT_RISK_DN   2
@@ -275,6 +276,7 @@ void AddUIElement(string name) {
 }
 
 void DeleteAllPrefixObjs() {
+   ObjectsDeleteAll(0, "W_PRO_"); // Fallback cleanup
    ObjectsDeleteAll(0, PREFIX);
    g_line_sl_exists = false;
    g_line_tp_exists = false;
@@ -395,7 +397,7 @@ int OnInit()
    UpdateRealtimeStatistics(); 
    ChartRedraw();
    
-   EventSetTimer(1); 
+   EventSetMillisecondTimer(20); 
    
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) {
       Alert("Warning: Enable 'Algo Trading' button!");
@@ -425,8 +427,17 @@ void OnTimer()
 {
    // --- Click-and-Hold Repeat ---
    if(g_RepeatActive && g_RepeatAction != REPEAT_NONE) {
-      FireRepeatAction();
+      g_TicksSincePress++;
+      if(g_TicksSincePress >= 6) { // 6 * 20ms = 120ms
+         FireRepeatAction();
+         g_TicksSincePress = 0;
+      }
    }
+   
+   static int candle_timer_ticks = 0;
+   candle_timer_ticks++;
+   if(candle_timer_ticks < 50) return; // 50 * 20ms = 1 sec
+   candle_timer_ticks = 0;
    
    if(!IsPanelVisible) return;
    
@@ -1703,15 +1714,12 @@ int HitTestAdjuster(int mx, int my) {
 void StartRepeat(int action) {
    g_RepeatAction = action;
    g_RepeatActive = true;
-   EventKillTimer();
-   EventSetMillisecondTimer(120); // Fast repeat ~8 adjustments/sec
+   g_TicksSincePress = 0;
 }
 
 void StopRepeat() {
    g_RepeatActive = false;
    g_RepeatAction = REPEAT_NONE;
-   EventKillTimer();
-   EventSetTimer(1); // Restore normal 1-second timer
    
    // Reset all adjuster button states
    ResetBtn(BTN_SL_UP); ResetBtn(BTN_SL_DN);
@@ -1754,6 +1762,7 @@ void CreateGUI() {
    if(!IsPanelVisible) return;
    
    DeleteAllPrefixObjs(); // Enforce clean slate before rebuilding panel
+   ArrayFree(g_ui_elements);
    ArrayResize(g_ui_elements, 0);
    
    int y = PanelY;
