@@ -487,8 +487,19 @@ void Classify(const MqlTick &t, bool &isBuy, bool &isSell)
 //| Process tick array into bars (shared by LoadHistory / OnCalculate|
 //+------------------------------------------------------------------+
 void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
-                  bool skipAlreadySeen, bool updateLastTimeMs)
+                  bool skipAlreadySeen, bool updateLastTimeMs, bool reset_cache = false)
   {
+   static datetime current_bar_time = 0;
+   static int current_sh = -1;
+   static datetime next_bar_time = 0;
+
+   if(reset_cache)
+     {
+      current_bar_time = 0;
+      current_sh = -1;
+      next_bar_time = 0;
+     }
+
    if(count <= 0)
       return;
    int endIdx = startIdx + count;
@@ -522,10 +533,6 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
 
       if(ticks[i].bid != 0.0)
          g_prevBid = ticks[i].bid;
-
-      static datetime current_bar_time = 0;
-      static int current_sh = -1;
-      static datetime next_bar_time = 0;
 
       if(ticks[i].time < current_bar_time || ticks[i].time >= next_bar_time)
         {
@@ -566,7 +573,7 @@ int LoadHistory(datetime t0, datetime t1)
       return -1;
 
    g_prevBid = ticks[0].bid;
-   ProcessTicks(ticks, 0, copied, false, true);
+   ProcessTicks(ticks, 0, copied, false, true, true);
 
    int n = ArraySize(g_bars);
    for(int i = 0; i < n; i++)
@@ -1265,8 +1272,8 @@ int OnInit()
    int mul = InpTickMultiplier;
    if(mul <= 0)
       mul = 1;
-   if(mul > 100)
-      mul = 100;
+   if(mul > 40)
+      mul = 40;
    g_tickMult = mul;
    g_step     = g_baseStep * g_tickMult;
 
