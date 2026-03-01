@@ -179,6 +179,11 @@ void ThrottledRender()
 void ReloadHistory()
   {
    g_dirty = false;
+   int n = ArraySize(g_bars);
+   for(int i = 0; i < n; i++)
+     {
+      ArrayFree(g_bars[i].levels);
+     }
    ArrayFree(g_bars);
    g_last_tick_time_ms = 0;
    int bars_total = iBars(_Symbol, PERIOD_CURRENT);
@@ -227,7 +232,22 @@ int FindBarIndex(datetime bt)
 //+------------------------------------------------------------------+
 int InsertBar(datetime bt)
   {
-   int n   = ArraySize(g_bars);
+   int n = ArraySize(g_bars);
+   
+   // Fast-path for chronological appending
+   if(n > 0 && bt > g_bars[n - 1].bar_time)
+     {
+      ArrayResize(g_bars, n + 1, 128);
+      g_bars[n].bar_time    = bt;
+      g_bars[n].total_vol   = 0;
+      g_bars[n].total_delta = 0;
+      g_bars[n].sorted      = true;
+      g_bars[n].is_bullish  = true;
+      g_bars[n].level_count = 0;
+      ArrayResize(g_bars[n].levels, 64, 64);
+      return n;
+     }
+
    int pos = n;
    for(int i = n - 1; i >= 0; i--)
      {
@@ -242,18 +262,9 @@ int InsertBar(datetime bt)
      }
 
    ArrayResize(g_bars, n + 1, 128);
-   // Explicit copy so each bar keeps its own levels[] (no shared refs)
    for(int i = n; i > pos; i--)
      {
-      g_bars[i].bar_time    = g_bars[i - 1].bar_time;
-      g_bars[i].total_vol   = g_bars[i - 1].total_vol;
-      g_bars[i].total_delta = g_bars[i - 1].total_delta;
-      g_bars[i].sorted      = g_bars[i - 1].sorted;
-      g_bars[i].level_count = g_bars[i - 1].level_count;
-      int cap = ArraySize(g_bars[i - 1].levels);
-      ArrayResize(g_bars[i].levels, MathMax(cap, 64), 64);
-      if(cap > 0)
-         ArrayCopy(g_bars[i].levels, g_bars[i - 1].levels, 0, 0, cap);
+      g_bars[i] = g_bars[i - 1]; // Native MQL5 struct assignment
      }
 
    g_bars[pos].bar_time    = bt;
@@ -287,13 +298,19 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
    int used = g_bars[bi].level_count;
    int idx  = -1;
 
-   // Search for existing level (optimized for recent levels)
-   for(int i = used - 1; i >= 0; i--)
+   // Boundary check to skip search loop
+   bool skipSearch = (price > g_bars[bi].high + g_step || price < g_bars[bi].low - g_step);
+
+   if(!skipSearch)
      {
-      if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
+      // Search for existing level (optimized for recent levels)
+      for(int i = used - 1; i >= 0; i--)
         {
-         idx = i;
-         break;
+         if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
+           {
+            idx = i;
+            break;
+           }
         }
      }
 

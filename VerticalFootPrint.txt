@@ -61,17 +61,17 @@ input int    InpRowHeightPx     = 18;           // Height of each price level ce
 input int    InpFontSize        = 10;           // Font size for volume text
 input int    InpCellPaddingPx   = 2;            // Padding inside cells (left/right margins)
 input int    InpMaxBarsToRender = 20;           // Max bars (most recent only; rightmost on chart)
-input int    InpBarGapPx        = 2;            // Gap between footprint columns
-input color  InpSeparatorColor  = C'220,220,220';  // Bar separator line color
-input color  InpBarOutlineColor = C'220,220,220';  // Bar column outline color
+input int    InpBarGapPx        = 8;            // Gap between footprint columns
+input color  InpSeparatorColor  = clrBlack;     // Bar separator line color
+input color  InpBarOutlineColor = clrBlack;     // Bar column outline color
 
 input group "Colors - Heatmap"
-input color  InpBidBaseColor   = C'255,240,240';   // Bid Volume Base
-input color  InpBidHighColor   = clrRed;           // Bid Volume High
-input color  InpAskBaseColor   = C'240,255,240';   // Ask Volume Base
-input color  InpAskHighColor   = clrForestGreen;   // Ask Volume High
-input color  InpOutOfVAColor   = C'250,245,235';   // Out of Value Area Color (grid cell bg)
-input color  InpEmptyCellColor = C'250,245,235';   // Grid cell background with 0 volume
+input color  InpBidBaseColor   = C'230,250,230';   // Bid Volume Base (Green)
+input color  InpBidHighColor   = C'40,160,40';     // Bid Volume High (Green)
+input color  InpAskBaseColor   = C'250,230,230';   // Ask Volume Base (Red)
+input color  InpAskHighColor   = C'240,80,40';     // Ask Volume High (Red/Orange)
+input color  InpOutOfVAColor   = C'200,200,200';   // Out of Value Area Color (grid cell bg)
+input color  InpEmptyCellColor = C'254,254,224';   // Grid cell background with 0 volume
 
 input group "Colors - Highlights & UI"
 input color  InpImbSellColor    = clrRed;         // Sell Imbalance Border
@@ -603,8 +603,8 @@ void DrawGridCell(int x_left, int y_top, int barWidthPx, int fullTrackW, string 
    ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_YDISTANCE, y_top);
    ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_XSIZE, MAX_HIST_W);
    ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_YSIZE, InpRowHeightPx);
-   ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_BGCOLOR, C'35,35,45');
-   ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_COLOR, C'35,35,45');
+   ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_BGCOLOR, C'43,43,43');
+   ObjectSetInteger(g_chart, g_pool[idx].bg_track, OBJPROP_COLOR, C'43,43,43');
 
    // Split Bid Background
    ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_XDISTANCE, x_left);
@@ -641,8 +641,8 @@ void DrawGridCell(int x_left, int y_top, int barWidthPx, int fullTrackW, string 
    ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_YDISTANCE, y_top);
    ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_XSIZE, 1);
    ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_YSIZE, InpRowHeightPx);
-   ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_BGCOLOR, clrBlack);
-   ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_COLOR, clrBlack);
+   ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_BGCOLOR, C'180,180,180');
+   ObjectSetInteger(g_chart, g_pool[idx].vgrid_line, OBJPROP_COLOR, C'180,180,180');
 
    // Exact 1px horizontal line along bottom spans full Track
    ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_STYLE, STYLE_SOLID);
@@ -650,8 +650,8 @@ void DrawGridCell(int x_left, int y_top, int barWidthPx, int fullTrackW, string 
    ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_YDISTANCE, y_top + InpRowHeightPx - 1);
    ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_XSIZE, fullTrackW);
    ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_YSIZE, 1);
-   ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_BGCOLOR, clrBlack);
-   ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_COLOR, clrBlack);
+   ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_BGCOLOR, C'180,180,180');
+   ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_COLOR, C'180,180,180');
 
    // Bid Text - Right aligned uniformly
    ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_XDISTANCE, center_x - 2);
@@ -968,14 +968,14 @@ void Render()
          long bV = found ? pl.bid_vol : 0;
          long aV = found ? pl.ask_vol : 0;
 
-         color bgBid     = C'250,245,235';
-         color bgAsk     = C'250,245,235';
+         color bgBid     = InpEmptyCellColor; // Empty Cell
+         color bgAsk     = InpEmptyCellColor; // Empty Cell
          color borderCol = InpGridLineColor;
          color txtCol    = clrBlack;
          int   histWidthPx = 0;
-         color histColor = C'255,180,50'; // Yellow/Orange
-         string bidFontStr = "Consolas Bold";
-         string askFontStr = "Consolas Bold";
+         color histColor = C'255,180,50'; // Yellow/Orange default
+         string bidFontStr = "Arial";
+         string askFontStr = "Arial";
          string sBid = " ";
          string sAsk = " ";
 
@@ -989,8 +989,8 @@ void Render()
             double intensityAsk = (maxTotal > 0) ? (double)aV / (double)maxTotal : 0.0;
             double intensityTot = (maxTotal > 0) ? (double)pl.total_vol / (double)maxTotal : 0.0;
 
-            if (pl.is_imb_sell) { bidFontStr = "Consolas Bold"; txtCol = InpImbSellColor; }
-            if (pl.is_imb_buy) { askFontStr = "Consolas Bold"; txtCol = InpImbBuyColor; }
+            if (pl.is_imb_sell) { bidFontStr = "Arial Bold"; txtCol = InpImbSellColor; }
+            if (pl.is_imb_buy) { askFontStr = "Arial Bold"; txtCol = InpImbBuyColor; }
 
             color cBaseBid = InpBidBaseColor;
             color cHighBid = InpBidHighColor;

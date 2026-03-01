@@ -66,12 +66,12 @@ input color  InpSeparatorColor  = C'220,220,220';  // Bar separator line color
 input color  InpBarOutlineColor = C'220,220,220';  // Bar column outline color
 
 input group "Colors - Heatmap"
-input color  InpBidBaseColor   = C'255,240,240';   // Bid Volume Base
+input color  InpBidBaseColor   = C'200,50,50';     // Bid Volume Base
 input color  InpBidHighColor   = clrRed;           // Bid Volume High
-input color  InpAskBaseColor   = C'240,255,240';   // Ask Volume Base
+input color  InpAskBaseColor   = C'50,200,50';     // Ask Volume Base
 input color  InpAskHighColor   = clrForestGreen;   // Ask Volume High
-input color  InpOutOfVAColor   = C'250,245,235';   // Out of Value Area Color (grid cell bg)
-input color  InpEmptyCellColor = C'250,245,235';   // Grid cell background with 0 volume
+input color  InpOutOfVAColor   = C'40,40,40';      // Out of Value Area Color (grid cell bg)
+input color  InpEmptyCellColor = C'40,40,40';      // Grid cell background with 0 volume
 
 input group "Colors - Highlights & UI"
 input color  InpImbSellColor    = clrRed;         // Sell Imbalance Border
@@ -968,12 +968,12 @@ void Render()
          long bV = found ? pl.bid_vol : 0;
          long aV = found ? pl.ask_vol : 0;
 
-         color bgBid     = C'250,245,235';
-         color bgAsk     = C'250,245,235';
+         color bgBid     = InpEmptyCellColor; // Empty Cell
+         color bgAsk     = InpEmptyCellColor; // Empty Cell
          color borderCol = InpGridLineColor;
          color txtCol    = clrBlack;
          int   histWidthPx = 0;
-         color histColor = C'255,180,50'; // Yellow/Orange
+         color histColor = C'255,180,50'; // Yellow/Orange default
          string bidFontStr = "Consolas Bold";
          string askFontStr = "Consolas Bold";
          string sBid = " ";

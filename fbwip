@@ -1,0 +1,25 @@
+I have an MQL5 Footprint Chart indicator that calculates Order Flow (Value Area, POC, Imbalances). The mathematical logic is accurate, but the code suffers from severe performance bottlenecks during history loading and tick processing. 
+
+Please refactor the provided MQL5 code based on the following strict requirements. 
+
+**CRITICAL CONSTRAINT: STRICTLY NO OOP.** Do not convert the structs (`FPBar`, `PriceLevel`) to classes. Do not use object pointers. Maintain the exact procedural architecture and global variables currently in use.
+
+Apply ONLY the following critical performance fixes:
+
+**1. Fix the `InsertBar` Array Shifting Bottleneck:**
+* The current `InsertBar` function forces a reverse search and manual deep-copy of nested dynamic arrays for every single bar. 
+* Add a "fast-path" `if` condition at the beginning of `InsertBar` to handle chronological appending (when `bt > g_bars[n-1].bar_time`), which happens 99.9% of the time. In this case, simply resize by 1 and initialize the new index.
+* For the slow-path (out-of-order insertion), replace the manual `ArrayCopy` of the nested levels with native MQL5 struct assignment (`g_bars[i] = g_bars[i - 1];`), which handles dynamic array copying natively and much faster.
+
+**2. Plug the Memory Leak in `ReloadHistory`:**
+* Currently, `ReloadHistory` calls `ArrayFree(g_bars)`. Because `g_bars` contains structs with dynamically sized arrays (`levels[]`), this causes memory leaks.
+* Before calling `ArrayFree(g_bars)`, loop through all existing bars and explicitly call `ArrayFree(g_bars[i].levels);`.
+
+**3. Optimize Tick Lookup in `AccumulateTick`:**
+* The reverse linear loop in `AccumulateTick` gets slow during high volatility. 
+* Add a boundary check *before* the loop: if the incoming `price` is strictly greater than `g_bars[bi].high + g_step` or strictly less than `g_bars[bi].low - g_step`, we mathematically know the level doesn't exist yet. Skip the `for` loop entirely in these cases to save CPU cycles.
+
+**4. Preserve Everything Else:**
+* Keep all rendering logic, UI math, and order flow signal calculations (Value Area, Imbalances, Absorption, POC) exactly as they are.
+
+Please provide the updated code focusing specifically on implementing these procedural performance fixes.
