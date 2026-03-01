@@ -1,30 +1,17 @@
 //+------------------------------------------------------------------+
 //|                                                    Footprint.mq5 |
 //|   Footprint (Order Flow) - Production Ready                      |
-//|   Strict Footprint Ladder Grid Edition                           |
+//|   Refactored for Clean Strict Grid Target                        |
 //+------------------------------------------------------------------+
-//
-// PASS 0 — DIAGNOSIS (why current output can differ from target):
-// - Single continuous grid: Fixed by per-bar col_left (Pass 1); each bar uses
-//   ChartTimePriceToXY(bt,...) and col_left = x(i) + candle_step_px/2 + x_padding.
-// - Scattered numbers: Fixed by one Bid/Ask pair per row in DrawGridCell (Pass 4),
-//   two OBJ_LABELs per cell, monospace Consolas.
-// - Coloring: Heatmap is intensity = totalVol/maxTotal, gradient; overlays (POC,
-//   imbalance) applied after so they stay visible (Pass 5, 6).
-// - Normalization: No clamping; bid/ask are raw from ticks; IntegerToString(bV/aV).
-//
-// PASS 1–7: Per-bar columns, fixed ladder step, raw tick bid/ask, one "Bid Ask" per
-// cell, heatmap by intensity, POC + stacked imbalance, pooling + visible bars + events.
-//
+
 #property copyright "Ali Magdy"
-#property version   "2.03"
-#property description "Strict Grid-Based Footprint Chart (light theme, fixed columns, outline highlights)"
+#property version   "2.02"
+#property description "Strict Grid-Based Footprint Chart"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
 
 //--- Chart mode
-//--- Layout alignment
 enum ENUM_FOOT_ALIGN_MODE
   {
    FOOT_ALIGN_LEFT   = 0,
@@ -32,7 +19,6 @@ enum ENUM_FOOT_ALIGN_MODE
    FOOT_ALIGN_RIGHT  = 2
   };
 
-//--- Chart mode
 enum ENUM_FOOT_CHART_MODE
   {
    FOOT_CHART_VOLUME = 0,
@@ -42,52 +28,49 @@ enum ENUM_FOOT_CHART_MODE
 
 //--- Inputs
 input group "Data & History"
-input int    InpTickSize        = 10;           // Base cell size (points), 1 point = 1×_Point
-input double InpImbalanceRatio  = 300.0;        // Imbalance Threshold (%)
-input int    InpStackedImbCount = 3;            // Stacked Imbalance Min Count
-input double InpAbsorptionRatio = 4.0;          // Absorption Threshold (x Avg Vol)
-input int    InpHistoryBars     = 100;          // History bars to load
-input double InpVAPercent       = 70.0;         // Value Area % (industry default 70)
+input int    InpTickSize        = 10;
+input double InpImbalanceRatio  = 300.0;
+input int    InpStackedImbCount = 3;            
+input double InpAbsorptionRatio = 4.0;
+input int    InpHistoryBars     = 100;
+input double InpVAPercent       = 70.0;
 
 input group "Aggregation"
-input ENUM_FOOT_CHART_MODE InpChartMode      = FOOT_CHART_BIDASK; // Chart mode
-input int                  InpTicksPerRow    = 2;                 // Ticks per row (step_price = tick_size * this; reduces fragmentation)
-input int                  InpTickMultiplier = 1;                 // [Legacy] Tick multiplier (use InpTicksPerRow)
+input ENUM_FOOT_CHART_MODE InpChartMode      = FOOT_CHART_BIDASK;
+input int                  InpTicksPerRow    = 2;
+input int                  InpTickMultiplier = 1;
 
 input group "Strict Grid Layout"
-input ENUM_FOOT_ALIGN_MODE InpAlignMode = FOOT_ALIGN_RIGHT; // Column alignment to candle
-input int    InpXOffsetPx       = 4;            // X-Offset distance from candle limit
-input int    InpBarWidthPx      = 85;           // Fixed bar width (pixels)
-input int    InpRowHeightPx     = 18;           // Height of each price level cell (pixels)
-input int    InpFontSize        = 9;            // Font size for volume text
-input int    InpCellPaddingPx   = 2;            // Padding inside cells (left/right margins)
-input int    InpMaxBarsToRender = 20;           // Max bars (most recent only; rightmost on chart)
-input int    InpVerticalPadRows = 1;            // Empty rows to pad above/below high/low
-input int    InpBarGapPx        = 2;            // Gap between footprint columns
-input int    InpMinBarWidthPx   = 60;           // Min column width (legacy; strict InpBarWidthPx used)
-input color  InpSeparatorColor  = C'200,195,185'; // Bar separator line color
-input color  InpBarOutlineColor = C'180,175,165'; // Bar column outline color
+input ENUM_FOOT_ALIGN_MODE InpAlignMode = FOOT_ALIGN_RIGHT;
+input int    InpXOffsetPx       = 4;
+input int    InpRowHeightPx     = 18;
+input int    InpFontSize        = 9;
+input int    InpCellPaddingPx   = 2;
+input int    InpMaxBarsToRender = 20;
+input int    InpBarGapPx        = 2;
+input color  InpSeparatorColor  = C'80,80,80';
+input color  InpBarOutlineColor = C'80,80,80';
 
-input group "Colors - Heatmap (Light Theme)"
-input color  InpBidBaseColor   = C'245,230,220';  // Bid Volume Base (light)
-input color  InpBidHighColor   = C'255,200,200';   // Bid Volume High (light red)
-input color  InpAskBaseColor   = C'230,245,230';  // Ask Volume Base (light)
-input color  InpAskHighColor   = C'200,255,200';  // Ask Volume High (light green)
-input color  InpOutOfVAColor   = C'250,248,240';  // Out of Value Area (light)
-input color  InpEmptyCellColor = C'255,250,235';  // Empty / low volume (light beige/cream)
-input color  InpBearishCellColor = C'255,220,220'; // Bearish delta row (light pastel red/pink)
-input color  InpBullishCellColor = C'220,255,220'; // Bullish delta / VA (light pastel green)
+// Match Target Color Palette
+input group "Colors - Heatmap"
+input color  InpBidBaseColor   = C'230,255,230'; // Light Green
+input color  InpBidHighColor   = C'100,255,100'; // Green
+input color  InpAskBaseColor   = C'255,230,230'; // Light Red
+input color  InpAskHighColor   = C'255,100,100'; // Red
+input color  InpOutOfVAColor   = C'245,245,245'; // Faded out of VA
+input color  InpEmptyCellColor = C'250,250,250'; // Background for 0 vol
+input color  InpHistColor      = C'255,180,50';  // Orange Histogram
+input color  InpHistBgColor    = C'60,60,65';    // Dark profile background
 
-input group "Colors - Highlights & UI (Outlines, not fills)"
-input color  InpImbSellColor    = clrCrimson;     // Sell Imbalance (thick red border)
-input color  InpImbBuyColor     = C'0,140,0';    // Buy Imbalance (thick green border)
-input color  InpStackedSellColor= clrCrimson;     
-input color  InpStackedBuyColor = C'0,140,0'; 
-input color  InpUnfinishedColor = clrDodgerBlue;  
+input group "Colors - Highlights & UI"
+input color  InpImbSellColor    = clrRed;
+input color  InpImbBuyColor     = clrForestGreen;
+input color  InpStackedSellColor= clrRed;     
+input color  InpStackedBuyColor = clrForestGreen; 
+input color  InpUnfinishedColor = clrDodgerBlue;
 input color  InpAbsorptionColor = clrMagenta;     
-input color  InpPOCColor        = clrOrange;      // POC row (thick border, no fill)
-input color  InpGridLineColor   = C'200,195,185'; // Grid line (dotted style)
-input color  InpCenterLineColor = C'180,175,165'; // Center vertical separator (Bid|Ask)
+input color  InpPOCColor        = clrBlue;       // Or Red based on target
+input color  InpGridLineColor   = C'180,180,180';
 
 //--- Data structures
 struct PriceLevel
@@ -122,12 +105,24 @@ struct FPBar
    PriceLevel levels[];
   };
 
-//--- Strict Grid Object Pool
+//--- Object Pools
 struct CellObjects
   {
-   string rect_name;
+   string rect_bid;
+   string rect_ask;
+   string hist_name;
    string bid_name;
    string ask_name;
+   string hgrid_line; // Replaced trendline with UI Rectangle
+   bool   active;
+  };
+
+struct HollowBoxObjects
+  {
+   string top_line;
+   string bot_line;
+   string left_line;
+   string right_line;
    bool   active;
   };
 
@@ -135,43 +130,35 @@ CellObjects g_pool[];
 int g_poolCount = 0;
 int g_poolActive = 0;
 
-// Bar separators (thin vertical line between footprint columns)
+HollowBoxObjects g_boxPool[];
+int g_boxCount = 0;
+int g_boxActive = 0;
+
 string g_sepNames[];
 int    g_sepCount = 0;
 int    g_sepActive = 0;
 
-// Stacked imbalance: one rectangle per run (outline around N consecutive rows)
-string g_stackNames[];
-int    g_stackCount = 0;
-int    g_stackActive = 0;
-
-// Bar column outline (one per bar)
-string g_outlineNames[];
-int    g_outlineCount = 0;
-int    g_outlineActive = 0;
-
-// Center vertical dotted line (Bid|Ask separator) per column
-string g_centerLineNames[];
-int    g_centerLineCount = 0;
-int    g_centerLineActive = 0;
+string g_trackNames[];
+int    g_trackCount = 0;
+int    g_trackActive = 0;
 
 //--- Globals
 FPBar                g_bars[];
-double               g_step;         
-double               g_baseStep;     
-int                  g_tickMult = 1; 
+double               g_step;
+double               g_baseStep;
+int                  g_tickMult = 1;
 ENUM_FOOT_CHART_MODE g_mode    = FOOT_CHART_BIDASK;
 long                 g_chart;
 int                  g_sub;
 bool                 g_hasTrades;
 double               g_prevBid;
 bool                 g_dirty;
-double               g_imbRatio;     
+double               g_imbRatio;
 long                 g_last_tick_time_ms = 0;
 ulong                g_last_render_ms    = 0;
 bool                 g_visible   = true;
 double               g_vaPercent = 0;
-int                  g_yOffsetPx = 0; // Vertical offset for level panning
+int                  g_yOffsetPx = 0;
 
 // UI Box coords
 int g_btnUpX1, g_btnUpY1, g_btnUpX2, g_btnUpY2;
@@ -181,7 +168,7 @@ int g_btnCX1,  g_btnCY1,  g_btnCX2,  g_btnCY2;
 #define FP_RENDER_THROTTLE_MS   33
 
 //+------------------------------------------------------------------+
-//| Math & Colors                                                    |
+//| Math & Helpers                                                   |
 //+------------------------------------------------------------------+
 double NormP(double p) { return MathFloor(p / g_step) * g_step; }
 
@@ -195,9 +182,6 @@ color LerpColorOpaque(color a, color b, double t)
    return (color)((bl << 16) | (g << 8) | r);
   }
 
-//+------------------------------------------------------------------+
-//| Array Search / Sorting                                           |
-//+------------------------------------------------------------------+
 int FindBarIndex(datetime bt)
   {
    int lo = 0, hi = ArraySize(g_bars) - 1;
@@ -264,11 +248,7 @@ void SortLevelsPartition(PriceLevel &lv[], int lo, int hi)
    SortLevelsPartition(lv, i + 1, hi);
   }
 
-void SortLevels(PriceLevel &lv[], int n)
-  {
-   if(n <= 1) return;
-   SortLevelsPartition(lv, 0, n - 1);
-  }
+void SortLevels(PriceLevel &lv[], int n) { if(n > 1) SortLevelsPartition(lv, 0, n - 1); }
 
 int FindPOC(const PriceLevel &lv[], int count)
   {
@@ -297,7 +277,7 @@ void FindVA(const PriceLevel &lv[], int count, long totVol, int poc, int &lo, in
   }
 
 //+------------------------------------------------------------------+
-//| Tick Accumulator / Processing                                    |
+//| Tick Processing                                                  |
 //+------------------------------------------------------------------+
 void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
   {
@@ -311,18 +291,10 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
       }
    }
    if(idx == -1) {
-      if(used >= ArraySize(g_bars[bi].levels))
-         ArrayResize(g_bars[bi].levels, used + 64, 64);
+      if(used >= ArraySize(g_bars[bi].levels)) ArrayResize(g_bars[bi].levels, used + 64, 64);
       idx = used;
-      g_bars[bi].levels[idx].price     = price;
-      g_bars[bi].levels[idx].bid_vol   = 0;
-      g_bars[bi].levels[idx].ask_vol   = 0;
-      g_bars[bi].levels[idx].total_vol = 0;
-      g_bars[bi].levels[idx].delta     = 0;
-      g_bars[bi].levels[idx].is_stacked_imb_buy  = false;
-      g_bars[bi].levels[idx].is_stacked_imb_sell = false;
-      g_bars[bi].levels[idx].is_unfinished_hi    = false;
-      g_bars[bi].levels[idx].is_unfinished_lo    = false;
+      ZeroMemory(g_bars[bi].levels[idx]);
+      g_bars[bi].levels[idx].price = price;
       g_bars[bi].level_count++;
       g_bars[bi].sorted = false;
    }
@@ -339,32 +311,28 @@ void ComputeBarSignals(int bi)
   {
    int len = g_bars[bi].level_count;
    if(len <= 0) return;
-   if(!g_bars[bi].sorted) {
-      SortLevels(g_bars[bi].levels, len);
-      g_bars[bi].sorted = true;
-   }
+   if(!g_bars[bi].sorted) { SortLevels(g_bars[bi].levels, len); g_bars[bi].sorted = true; }
+   
    g_bars[bi].poc_idx = FindPOC(g_bars[bi].levels, len);
-   FindVA(g_bars[bi].levels, len, g_bars[bi].total_vol, g_bars[bi].poc_idx,
-          g_bars[bi].va_lo_idx, g_bars[bi].va_hi_idx);
-
-   // Task: imbalance = Ask >= Bid*R (buy), Bid >= Ask*R (sell); R = InpImbalanceRatio as ratio (300 -> 3.0)
+   FindVA(g_bars[bi].levels, len, g_bars[bi].total_vol, g_bars[bi].poc_idx, g_bars[bi].va_lo_idx, g_bars[bi].va_hi_idx);
+   
    double R = InpImbalanceRatio / 100.0;
    if(R < 0.1) R = 0.1;
    long avgVol = (len > 0) ? (g_bars[bi].total_vol / len) : 1;
+   
    for(int i = 0; i < len; i++) {
-      g_bars[bi].levels[i].is_imb_buy          = false;
-      g_bars[bi].levels[i].is_imb_sell         = false;
-      g_bars[bi].levels[i].is_stacked_imb_buy  = false;
+      g_bars[bi].levels[i].is_imb_buy = false;
+      g_bars[bi].levels[i].is_imb_sell = false;
+      g_bars[bi].levels[i].is_stacked_imb_buy = false;
       g_bars[bi].levels[i].is_stacked_imb_sell = false;
-      g_bars[bi].levels[i].is_unfinished_hi    = false;
-      g_bars[bi].levels[i].is_unfinished_lo    = false;
-      g_bars[bi].levels[i].is_absorption       = (g_bars[bi].levels[i].total_vol > avgVol * InpAbsorptionRatio);
+      g_bars[bi].levels[i].is_absorption = (g_bars[bi].levels[i].total_vol > avgVol * InpAbsorptionRatio);
 
       long bv = g_bars[bi].levels[i].bid_vol;
       long av = g_bars[bi].levels[i].ask_vol;
       if(bv > 0 && av >= (long)((double)bv * R)) g_bars[bi].levels[i].is_imb_buy  = true;
       if(av > 0 && bv >= (long)((double)av * R)) g_bars[bi].levels[i].is_imb_sell = true;
    }
+   
    int countBuy = 0, countSell = 0;
    for(int i = 0; i < len; i++) {
       if(g_bars[bi].levels[i].is_imb_buy) countBuy++;
@@ -380,22 +348,13 @@ void ComputeBarSignals(int bi)
          countSell = 0;
       }
    }
-   if(countBuy >= InpStackedImbCount)
-      for(int j = len - countBuy; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_buy = true;
-   if(countSell >= InpStackedImbCount)
-      for(int j = len - countSell; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_sell = true;
-
-   if(len > 1) {
-      g_bars[bi].levels[0].is_unfinished_hi = (g_bars[bi].levels[0].ask_vol > 0 && g_bars[bi].levels[0].bid_vol > 0);
-      g_bars[bi].levels[len - 1].is_unfinished_lo = (g_bars[bi].levels[len - 1].bid_vol > 0 && g_bars[bi].levels[len - 1].ask_vol > 0);
-   }
+   if(countBuy >= InpStackedImbCount) for(int j = len - countBuy; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_buy = true;
+   if(countSell >= InpStackedImbCount) for(int j = len - countSell; j < len; j++) g_bars[bi].levels[j].is_stacked_imb_sell = true;
   }
 
-// PASS 3: last >= ask-eps -> askVol, last <= bid+eps -> bidVol (raw volumes, no clamping)
 void Classify(const MqlTick &t, bool &isBuy, bool &isSell)
   {
-   isBuy  = false;
-   isSell = false;
+   isBuy  = false; isSell = false;
    double eps = _Point * 0.5;
    if(g_hasTrades) {
       isBuy  = (t.flags & TICK_FLAG_BUY) == TICK_FLAG_BUY;
@@ -423,25 +382,23 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count, bool skipAlreadySee
          price = ticks[i].last; vol = (long)ticks[i].volume;
          if(vol <= 0 || price == 0.0) continue;
       } else {
-         price = ticks[i].bid; 
+         price = ticks[i].bid;
          vol = (long)ticks[i].volume_real;
          if (vol <= 0) vol = (long)ticks[i].volume;
-         if (vol <= 0) vol = 1; // absolute fallback
+         if (vol <= 0) vol = 1;
          if(price == 0.0) continue;
       }
       bool isBuy, isSell;
       Classify(ticks[i], isBuy, isSell);
       if(ticks[i].bid != 0.0) g_prevBid = ticks[i].bid;
+      
       int sh = iBarShift(_Symbol, PERIOD_CURRENT, ticks[i].time);
       if(sh < 0) continue;
       datetime bt = iTime(_Symbol, PERIOD_CURRENT, sh);
       int bi = GetBar(bt);
       
-      double bOpen  = iOpen(_Symbol, PERIOD_CURRENT, sh);
-      double bClose = iClose(_Symbol, PERIOD_CURRENT, sh);
-      g_bars[bi].is_bullish = (bClose >= bOpen);
-      g_bars[bi].high       = iHigh(_Symbol, PERIOD_CURRENT, sh);
-      g_bars[bi].low        = iLow(_Symbol, PERIOD_CURRENT, sh);
+      g_bars[bi].high = iHigh(_Symbol, PERIOD_CURRENT, sh);
+      g_bars[bi].low  = iLow(_Symbol, PERIOD_CURRENT, sh);
 
       AccumulateTick(bi, price, vol, isBuy, isSell);
       ComputeBarSignals(bi);
@@ -452,13 +409,12 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count, bool skipAlreadySee
 int LoadHistory(datetime t0, datetime t1)
   {
    MqlTick ticks[];
-   uint flag = COPY_TICKS_ALL; // force pulling volumes always
+   uint flag = COPY_TICKS_ALL; 
    int copied = CopyTicksRange(_Symbol, ticks, flag, (long)t0 * 1000, (long)t1 * 1000);
    if(copied <= 0) return -1;
    g_prevBid = ticks[0].bid;
    ProcessTicks(ticks, 0, copied, false, true);
-   int n = ArraySize(g_bars);
-   for(int i = 0; i < n; i++) {
+   for(int i = 0; i < ArraySize(g_bars); i++) {
       SortLevels(g_bars[i].levels, g_bars[i].level_count);
       g_bars[i].sorted = true;
    }
@@ -481,8 +437,17 @@ void ReloadHistory()
   }
 
 //+------------------------------------------------------------------+
-//| Strict Grid Object Pool Manager                                  |
+//| Strict Render Engine (Hollow Boxes & Rectangles)                 |
 //+------------------------------------------------------------------+
+void ObjectInitRect(string name, int zorder=0) {
+    ObjectCreate(g_chart, name, OBJ_RECTANGLE_LABEL, g_sub, 0, 0);
+    ObjectSetInteger(g_chart, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetInteger(g_chart, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+    ObjectSetInteger(g_chart, name, OBJPROP_BACK, false);
+    ObjectSetInteger(g_chart, name, OBJPROP_ZORDER, zorder);
+    ObjectSetInteger(g_chart, name, OBJPROP_XDISTANCE, -1000);
+}
+
 void InitPool(int required)
   {
    if(required <= g_poolCount) return;
@@ -490,147 +455,137 @@ void InitPool(int required)
    g_poolCount = required;
    ArrayResize(g_pool, g_poolCount);
    for(int i = old; i < g_poolCount; i++) {
-      g_pool[i].rect_name = "FP_R_" + IntegerToString(i);
-      g_pool[i].bid_name  = "FP_B_" + IntegerToString(i);
-      g_pool[i].ask_name  = "FP_A_" + IntegerToString(i);
-      g_pool[i].active    = false;
-      
-      ObjectCreate(g_chart, g_pool[i].rect_name, OBJ_RECTANGLE_LABEL, g_sub, 0, 0);
-      ObjectSetInteger(g_chart, g_pool[i].rect_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_pool[i].rect_name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-      ObjectSetInteger(g_chart, g_pool[i].rect_name, OBJPROP_BACK, true); // True to show background heatmap
-      ObjectSetInteger(g_chart, g_pool[i].rect_name, OBJPROP_XDISTANCE, -1000);
-      
+      g_pool[i].rect_bid   = "FP_RB_" + IntegerToString(i);
+      g_pool[i].rect_ask   = "FP_RA_" + IntegerToString(i);
+      g_pool[i].hist_name  = "FP_H_" + IntegerToString(i);
+      g_pool[i].bid_name   = "FP_B_" + IntegerToString(i);
+      g_pool[i].ask_name   = "FP_A_" + IntegerToString(i);
+      g_pool[i].hgrid_line = "FP_HG_" + IntegerToString(i);
+      g_pool[i].active     = false;
+
+      ObjectInitRect(g_pool[i].rect_bid, 1);
+      ObjectInitRect(g_pool[i].rect_ask, 1);
+      ObjectInitRect(g_pool[i].hist_name, 1);
+      ObjectInitRect(g_pool[i].hgrid_line, 5); // grid over background
+
       ObjectCreate(g_chart, g_pool[i].bid_name, OBJ_LABEL, g_sub, 0, 0);
       ObjectSetInteger(g_chart, g_pool[i].bid_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_pool[i].bid_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_pool[i].bid_name, OBJPROP_BACK, false);
-      ObjectSetString(g_chart, g_pool[i].bid_name, OBJPROP_TEXT, " ");
+      ObjectSetInteger(g_chart, g_pool[i].bid_name, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER);
       ObjectSetInteger(g_chart, g_pool[i].bid_name, OBJPROP_XDISTANCE, -1000);
       
       ObjectCreate(g_chart, g_pool[i].ask_name, OBJ_LABEL, g_sub, 0, 0);
       ObjectSetInteger(g_chart, g_pool[i].ask_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_pool[i].ask_name, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER);
-      ObjectSetInteger(g_chart, g_pool[i].ask_name, OBJPROP_BACK, false);
-      ObjectSetString(g_chart, g_pool[i].ask_name, OBJPROP_TEXT, " ");
+      ObjectSetInteger(g_chart, g_pool[i].ask_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
       ObjectSetInteger(g_chart, g_pool[i].ask_name, OBJPROP_XDISTANCE, -1000);
    }
   }
 
-void ResetPool() { g_poolActive = 0; }
-
-void HideUnusedPool()
+void InitBoxPool(int required)
   {
-   for(int i = g_poolActive; i < g_poolCount; i++) {
+   if(required <= g_boxCount) return;
+   int old = g_boxCount;
+   g_boxCount = required;
+   ArrayResize(g_boxPool, g_boxCount);
+   for(int i = old; i < g_boxCount; i++) {
+      g_boxPool[i].top_line   = "FP_BX_T_" + IntegerToString(i);
+      g_boxPool[i].bot_line   = "FP_BX_B_" + IntegerToString(i);
+      g_boxPool[i].left_line  = "FP_BX_L_" + IntegerToString(i);
+      g_boxPool[i].right_line = "FP_BX_R_" + IntegerToString(i);
+      g_boxPool[i].active     = false;
+
+      ObjectInitRect(g_boxPool[i].top_line, 10);
+      ObjectInitRect(g_boxPool[i].bot_line, 10);
+      ObjectInitRect(g_boxPool[i].left_line, 10);
+      ObjectInitRect(g_boxPool[i].right_line, 10);
+   }
+  }
+
+void InitSeparators(int required) {
+   if(required <= g_sepCount) return;
+   int old = g_sepCount;
+   g_sepCount = required;
+   ArrayResize(g_sepNames, g_sepCount);
+   for(int i = old; i < g_sepCount; i++) {
+      g_sepNames[i] = "FP_SEP_" + IntegerToString(i);
+      ObjectInitRect(g_sepNames[i], 5);
+   }
+}
+
+void InitTracks(int required) {
+   if(required <= g_trackCount) return;
+   int old = g_trackCount;
+   g_trackCount = required;
+   ArrayResize(g_trackNames, g_trackCount);
+   for(int i = old; i < g_trackCount; i++) {
+      g_trackNames[i] = "FP_TRK_" + IntegerToString(i);
+      ObjectInitRect(g_trackNames[i], 0); // Bottom layer
+   }
+}
+
+void HideAll()
+  {
+   for(int i = 0; i < g_poolCount; i++) {
       if(!g_pool[i].active) continue;
-      ObjectSetInteger(g_chart, g_pool[i].rect_name, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_pool[i].rect_bid, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_pool[i].rect_ask, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_pool[i].hist_name, OBJPROP_XDISTANCE, -1000);
       ObjectSetInteger(g_chart, g_pool[i].bid_name, OBJPROP_XDISTANCE, -1000);
       ObjectSetInteger(g_chart, g_pool[i].ask_name, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_pool[i].hgrid_line, OBJPROP_XDISTANCE, -1000);
       g_pool[i].active = false;
    }
-  }
-
-int GetNextCell()
-  {
-   if(g_poolActive >= g_poolCount) InitPool(g_poolCount + 1000);
-   int idx = g_poolActive++;
-   g_pool[idx].active = true;
-   return idx;
-  }
-
-void DrawGridCell(int x_left, int y_top, int barWidthPx, string sBid, string sAsk, color bgCol, color borderCol, color bidTxtCol, color askTxtCol, int borderW)
-  {
-   int idx = GetNextCell();
-   if(barWidthPx < 10) barWidthPx = 10;
-
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_XDISTANCE, x_left);
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_YDISTANCE, y_top);
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_XSIZE, barWidthPx);
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_YSIZE, InpRowHeightPx - 1);
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_BGCOLOR, bgCol);
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_COLOR, borderCol);
-   ObjectSetInteger(g_chart, g_pool[idx].rect_name, OBJPROP_WIDTH, borderW);
-
-   int textY = y_top + (InpRowHeightPx - InpFontSize) / 2 - 1;
-   int halfWidth = barWidthPx / 2;
-   // Bid: right-aligned in left half; Ask: left-aligned in right half (beside center dotted line)
-   int bidX = x_left + halfWidth - InpCellPaddingPx;
-   int askX = x_left + halfWidth + InpCellPaddingPx;
-
-   ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER);
-   ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_XDISTANCE, bidX);
-   ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_YDISTANCE, textY);
-   ObjectSetString (g_chart, g_pool[idx].bid_name, OBJPROP_TEXT, sBid);
-   ObjectSetString (g_chart, g_pool[idx].bid_name, OBJPROP_FONT, "Consolas");
-   ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_FONTSIZE, InpFontSize);
-   ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_COLOR, bidTxtCol);
-
-   ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-   ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_XDISTANCE, askX);
-   ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_YDISTANCE, textY);
-   ObjectSetString (g_chart, g_pool[idx].ask_name, OBJPROP_TEXT, sAsk);
-   ObjectSetString (g_chart, g_pool[idx].ask_name, OBJPROP_FONT, "Consolas");
-   ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_FONTSIZE, InpFontSize);
-   ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_COLOR, askTxtCol);
-  }
-
-//+------------------------------------------------------------------+
-//| UI Controls Render                                               |
-//+------------------------------------------------------------------+
-void LayoutUIControls(int cw, int ch)
-  {
-   int btnW = 30;
-   int btnH = 20;
-   int gap = 4;
-   int marginRight = 10;
-   int marginBottom = 20;
-
-   // Layout: [ ^ ] [ v ] [ C ] positioned bot right
-   g_btnCX2 = cw - marginRight;
-   g_btnCX1 = g_btnCX2 - btnW;
-   g_btnCY2 = ch - marginBottom;
-   g_btnCY1 = g_btnCY2 - btnH; 
-
-   g_btnDnX2 = g_btnCX1 - gap;
-   g_btnDnX1 = g_btnDnX2 - btnW;
-   g_btnDnY2 = g_btnCY2;
-   g_btnDnY1 = g_btnCY1;
-
-   g_btnUpX2 = g_btnDnX1 - gap;
-   g_btnUpX1 = g_btnUpX2 - btnW;
-   g_btnUpY2 = g_btnCY2;
-   g_btnUpY1 = g_btnCY1;
-  }
-
-void CreateUIButton(string name, int x, int y, int w, int h, string text, color bg)
-  {
-   if(ObjectFind(g_chart, name) < 0) {
-      ObjectCreate(g_chart, name, OBJ_BUTTON, g_sub, 0, 0);
-      ObjectSetInteger(g_chart, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetString(g_chart, name, OBJPROP_FONT, "Arial");
-      ObjectSetInteger(g_chart, name, OBJPROP_FONTSIZE, 9);
+   for(int i = 0; i < g_boxCount; i++) {
+      if(!g_boxPool[i].active) continue;
+      ObjectSetInteger(g_chart, g_boxPool[i].top_line, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_boxPool[i].bot_line, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_boxPool[i].left_line, OBJPROP_XDISTANCE, -1000);
+      ObjectSetInteger(g_chart, g_boxPool[i].right_line, OBJPROP_XDISTANCE, -1000);
+      g_boxPool[i].active = false;
    }
-   ObjectSetInteger(g_chart, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(g_chart, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(g_chart, name, OBJPROP_XSIZE, w);
-   ObjectSetInteger(g_chart, name, OBJPROP_YSIZE, h);
-   ObjectSetString(g_chart, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(g_chart, name, OBJPROP_BGCOLOR, bg);
-   ObjectSetInteger(g_chart, name, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(g_chart, name, OBJPROP_BORDER_COLOR, clrDarkGray);
-   ObjectSetInteger(g_chart, name, OBJPROP_STATE, false);
+   for(int i = g_sepActive; i < g_sepCount; i++) ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_XDISTANCE, -1000);
+   for(int i = g_trackActive; i < g_trackCount; i++) ObjectSetInteger(g_chart, g_trackNames[i], OBJPROP_XDISTANCE, -1000);
   }
 
-void DrawUI()
+void DrawHollowBox(int x, int y, int w, int h, int thickness, color borderCol)
   {
-   CreateUIButton("FP_BTN_UP", g_btnUpX1, g_btnUpY1, g_btnUpX2 - g_btnUpX1, g_btnUpY2 - g_btnUpY1, "^", C'40,40,50');
-   CreateUIButton("FP_BTN_DN", g_btnDnX1, g_btnDnY1, g_btnDnX2 - g_btnDnX1, g_btnDnY2 - g_btnDnY1, "v", C'40,40,50');
-   CreateUIButton("FP_BTN_C",  g_btnCX1,  g_btnCY1,  g_btnCX2 - g_btnCX1,   g_btnCY2 - g_btnCY1,   "C", C'40,40,50');
+   if(g_boxActive >= g_boxCount) InitBoxPool(g_boxCount + 50);
+   if(g_boxActive >= g_boxCount) return;
+   int idx = g_boxActive++;
+   g_boxPool[idx].active = true;
+
+   // Top
+   ObjectSetInteger(g_chart, g_boxPool[idx].top_line, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(g_chart, g_boxPool[idx].top_line, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(g_chart, g_boxPool[idx].top_line, OBJPROP_XSIZE, w);
+   ObjectSetInteger(g_chart, g_boxPool[idx].top_line, OBJPROP_YSIZE, thickness);
+   ObjectSetInteger(g_chart, g_boxPool[idx].top_line, OBJPROP_BGCOLOR, borderCol);
+   ObjectSetInteger(g_chart, g_boxPool[idx].top_line, OBJPROP_COLOR, borderCol);
+
+   // Bottom
+   ObjectSetInteger(g_chart, g_boxPool[idx].bot_line, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(g_chart, g_boxPool[idx].bot_line, OBJPROP_YDISTANCE, y + h - thickness);
+   ObjectSetInteger(g_chart, g_boxPool[idx].bot_line, OBJPROP_XSIZE, w);
+   ObjectSetInteger(g_chart, g_boxPool[idx].bot_line, OBJPROP_YSIZE, thickness);
+   ObjectSetInteger(g_chart, g_boxPool[idx].bot_line, OBJPROP_BGCOLOR, borderCol);
+   ObjectSetInteger(g_chart, g_boxPool[idx].bot_line, OBJPROP_COLOR, borderCol);
+
+   // Left
+   ObjectSetInteger(g_chart, g_boxPool[idx].left_line, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(g_chart, g_boxPool[idx].left_line, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(g_chart, g_boxPool[idx].left_line, OBJPROP_XSIZE, thickness);
+   ObjectSetInteger(g_chart, g_boxPool[idx].left_line, OBJPROP_YSIZE, h);
+   ObjectSetInteger(g_chart, g_boxPool[idx].left_line, OBJPROP_BGCOLOR, borderCol);
+   ObjectSetInteger(g_chart, g_boxPool[idx].left_line, OBJPROP_COLOR, borderCol);
+
+   // Right
+   ObjectSetInteger(g_chart, g_boxPool[idx].right_line, OBJPROP_XDISTANCE, x + w - thickness);
+   ObjectSetInteger(g_chart, g_boxPool[idx].right_line, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(g_chart, g_boxPool[idx].right_line, OBJPROP_XSIZE, thickness);
+   ObjectSetInteger(g_chart, g_boxPool[idx].right_line, OBJPROP_YSIZE, h);
+   ObjectSetInteger(g_chart, g_boxPool[idx].right_line, OBJPROP_BGCOLOR, borderCol);
+   ObjectSetInteger(g_chart, g_boxPool[idx].right_line, OBJPROP_COLOR, borderCol);
   }
 
-//+------------------------------------------------------------------+
-//| Coordinate Helpers                                               |
-//+------------------------------------------------------------------+
 int GetBarX(datetime time)
   {
    int x, y;
@@ -638,153 +593,17 @@ int GetBarX(datetime time)
    return -1;
   }
 
-int GetPriceY(datetime time, double price)
-  {
-   int x, y;
-   if(ChartTimePriceToXY(g_chart, g_sub, time, price, x, y)) return y;
-   return -1;
-  }
-
-// Candle pixel width (from bar time to next period); used to place footprint RIGHT of candle.
 int GetCandleWidthPx(datetime bt)
   {
    datetime nextTime = bt + PeriodSeconds(PERIOD_CURRENT);
    int x0 = GetBarX(bt);
    int x1 = GetBarX(nextTime);
    if(x1 > x0) return x1 - x0;
-   return 40; // fallback
-  }
-
-void InitSeparators(int required)
-  {
-   if(required <= g_sepCount) return;
-   int old = g_sepCount;
-   g_sepCount = required;
-   ArrayResize(g_sepNames, g_sepCount);
-   for(int i = old; i < g_sepCount; i++) {
-      g_sepNames[i] = "FP_SEP_" + IntegerToString(i);
-      ObjectCreate(g_chart, g_sepNames[i], OBJ_RECTANGLE_LABEL, g_sub, 0, 0);
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_BACK, true);
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_XDISTANCE, -1000);
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_XSIZE, 1);
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_BGCOLOR, InpSeparatorColor);
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   }
-  }
-
-void DrawSeparator(int x, int y_top, int heightPx)
-  {
-   if(g_sepActive >= g_sepCount) InitSeparators(g_sepCount + InpMaxBarsToRender);
-   if(g_sepActive >= g_sepCount) return;
-   ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_YDISTANCE, y_top);
-   ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_YSIZE, MathMax(1, heightPx));
-   g_sepActive++;
-  }
-
-void HideUnusedSeparators()
-  {
-   for(int i = g_sepActive; i < g_sepCount; i++)
-      ObjectSetInteger(g_chart, g_sepNames[i], OBJPROP_XDISTANCE, -1000);
-  }
-
-void InitStackPool(int required)
-  {
-   if(required <= g_stackCount) return;
-   int old = g_stackCount;
-   g_stackCount = required;
-   ArrayResize(g_stackNames, g_stackCount);
-   for(int i = old; i < g_stackCount; i++) {
-      g_stackNames[i] = "FP_STK_" + IntegerToString(i);
-      ObjectCreate(g_chart, g_stackNames[i], OBJ_RECTANGLE_LABEL, g_sub, 0, 0);
-      ObjectSetInteger(g_chart, g_stackNames[i], OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_stackNames[i], OBJPROP_BACK, false);
-      ObjectSetInteger(g_chart, g_stackNames[i], OBJPROP_XDISTANCE, -1000);
-      ObjectSetInteger(g_chart, g_stackNames[i], OBJPROP_BORDER_TYPE, BORDER_FLAT);
-      ObjectSetInteger(g_chart, g_stackNames[i], OBJPROP_WIDTH, 3);
-   }
-  }
-
-void InitOutlinePool(int required)
-  {
-   if(required <= g_outlineCount) return;
-   int old = g_outlineCount;
-   g_outlineCount = required;
-   ArrayResize(g_outlineNames, g_outlineCount);
-   for(int i = old; i < g_outlineCount; i++) {
-      g_outlineNames[i] = "FP_OUT_" + IntegerToString(i);
-      ObjectCreate(g_chart, g_outlineNames[i], OBJ_RECTANGLE_LABEL, g_sub, 0, 0);
-      ObjectSetInteger(g_chart, g_outlineNames[i], OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_outlineNames[i], OBJPROP_BACK, true);
-      ObjectSetInteger(g_chart, g_outlineNames[i], OBJPROP_XDISTANCE, -1000);
-      ObjectSetInteger(g_chart, g_outlineNames[i], OBJPROP_BORDER_TYPE, BORDER_FLAT);
-      ObjectSetInteger(g_chart, g_outlineNames[i], OBJPROP_WIDTH, 1);
-   }
-  }
-
-void DrawBarOutline(int x_left, int y_top, int barWidthPx, int heightPx)
-  {
-   if(g_outlineActive >= g_outlineCount) InitOutlinePool(g_outlineCount + InpMaxBarsToRender);
-   if(g_outlineActive >= g_outlineCount) return;
-   ObjectSetInteger(g_chart, g_outlineNames[g_outlineActive], OBJPROP_XDISTANCE, x_left);
-   ObjectSetInteger(g_chart, g_outlineNames[g_outlineActive], OBJPROP_YDISTANCE, y_top);
-   ObjectSetInteger(g_chart, g_outlineNames[g_outlineActive], OBJPROP_XSIZE, barWidthPx);
-   ObjectSetInteger(g_chart, g_outlineNames[g_outlineActive], OBJPROP_YSIZE, MathMax(1, heightPx));
-   ObjectSetInteger(g_chart, g_outlineNames[g_outlineActive], OBJPROP_BGCOLOR, clrNONE);
-   ObjectSetInteger(g_chart, g_outlineNames[g_outlineActive], OBJPROP_COLOR, InpBarOutlineColor);
-   g_outlineActive++;
-  }
-
-void DrawStackRect(int x_left, int y_top, int barWidthPx, int heightPx, color borderCol)
-  {
-   if(g_stackActive >= g_stackCount) InitStackPool(g_stackCount + InpMaxBarsToRender * 10);
-   if(g_stackActive >= g_stackCount) return;
-   ObjectSetInteger(g_chart, g_stackNames[g_stackActive], OBJPROP_XDISTANCE, x_left);
-   ObjectSetInteger(g_chart, g_stackNames[g_stackActive], OBJPROP_YDISTANCE, y_top);
-   ObjectSetInteger(g_chart, g_stackNames[g_stackActive], OBJPROP_XSIZE, barWidthPx);
-   ObjectSetInteger(g_chart, g_stackNames[g_stackActive], OBJPROP_YSIZE, MathMax(1, heightPx));
-   ObjectSetInteger(g_chart, g_stackNames[g_stackActive], OBJPROP_BGCOLOR, clrNONE);
-   ObjectSetInteger(g_chart, g_stackNames[g_stackActive], OBJPROP_COLOR, borderCol);
-   g_stackActive++;
-  }
-
-void InitCenterLinePool(int required)
-  {
-   if(required <= g_centerLineCount) return;
-   int old = g_centerLineCount;
-   g_centerLineCount = required;
-   ArrayResize(g_centerLineNames, g_centerLineCount);
-   for(int i = old; i < g_centerLineCount; i++) {
-      g_centerLineNames[i] = "FP_CL_" + IntegerToString(i);
-      ObjectCreate(g_chart, g_centerLineNames[i], OBJ_RECTANGLE_LABEL, g_sub, 0, 0);
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_BACK, true);
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_XDISTANCE, -1000);
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_XSIZE, 1);
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_BGCOLOR, InpCenterLineColor);
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   }
-  }
-
-void DrawCenterLine(int x_center, int y_top, int heightPx)
-  {
-   if(g_centerLineActive >= g_centerLineCount) InitCenterLinePool(g_centerLineCount + InpMaxBarsToRender);
-   if(g_centerLineActive >= g_centerLineCount) return;
-   ObjectSetInteger(g_chart, g_centerLineNames[g_centerLineActive], OBJPROP_XDISTANCE, x_center);
-   ObjectSetInteger(g_chart, g_centerLineNames[g_centerLineActive], OBJPROP_YDISTANCE, y_top);
-   ObjectSetInteger(g_chart, g_centerLineNames[g_centerLineActive], OBJPROP_YSIZE, MathMax(1, heightPx));
-   g_centerLineActive++;
-  }
-
-void HideUnusedCenterLines()
-  {
-   for(int i = g_centerLineActive; i < g_centerLineCount; i++)
-      ObjectSetInteger(g_chart, g_centerLineNames[i], OBJPROP_XDISTANCE, -1000);
+   return 50; 
   }
 
 //+------------------------------------------------------------------+
-//| Strict Ladder Render                                             |
+//| Core Rendering                                                   |
 //+------------------------------------------------------------------+
 void Render()
   {
@@ -797,50 +616,40 @@ void Render()
    int firstVis = (int)ChartGetInteger(g_chart, CHART_FIRST_VISIBLE_BAR);
    int visBars  = (int)ChartGetInteger(g_chart, CHART_VISIBLE_BARS);
    if(visBars < 1) visBars = 1;
+
+   g_poolActive = 0; g_boxActive = 0; g_sepActive = 0; g_trackActive = 0;
+   InitBoxPool(InpMaxBarsToRender * 10);
+   InitSeparators(InpMaxBarsToRender * 2);
+   InitTracks(InpMaxBarsToRender);
    
-   LayoutUIControls(cw, ch);
-   DrawUI();
-
-   ResetPool();
-   g_sepActive = 0;
-   g_stackActive = 0;
-   g_outlineActive = 0;
-   g_centerLineActive = 0;
-   InitStackPool(InpMaxBarsToRender * 12);
-   InitOutlinePool(InpMaxBarsToRender);
-   InitCenterLinePool(InpMaxBarsToRender);
-
-   // Draw from left to right so rightmost (most recent) bars are drawn last and visible on top
    int rightmostShift = firstVis - visBars + 1;
    if(rightmostShift < 0) rightmostShift = 0;
    int maxBars = MathMin(visBars, InpMaxBarsToRender);
-   const int rightMarginPx = 12;
 
-   for(int v = maxBars - 1; v >= 0; v--)
+   for(int v = 0; v < maxBars; v++)
      {
       int shift = rightmostShift + v;
       if(shift > firstVis || shift < 0) continue;
 
       datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
       int bi = FindBarIndex(bt);
-      if(bi < 0 || g_bars[bi].level_count == 0) continue;
+      if(bi < 0 || g_bars[bi].level_count == 0 || GetBarX(bt) < 0) continue;
 
       ComputeBarSignals(bi);
 
-      // Strict fixed width; columns drawn right-to-left with fixed gap (detached from candle X)
-      int barWidthPx = InpBarWidthPx;
-      int barsFromRight = maxBars - 1 - v;
-      int x_left = cw - rightMarginPx - barWidthPx - barsFromRight * (InpBarWidthPx + InpBarGapPx);
+      int candleX = GetBarX(bt);
+      int fullTrackW = MathMax(30, GetCandleWidthPx(bt) - InpBarGapPx);
+      int barWidthPx = (int)(fullTrackW * 0.6); // 60% text width
+      int histMaxW = fullTrackW - barWidthPx;
+      int x_left = candleX - (barWidthPx / 2) - histMaxW;
+      
+      if(barWidthPx < 8 || x_left > cw || x_left + fullTrackW < 0) continue;
 
-      if(x_left > cw || x_left + barWidthPx < 0) continue;
-
-      // PASS 2: top = ceil(High/step)*step, bot = floor(Low/step)*step (padded)
-      double topStep = MathCeil(g_bars[bi].high / g_step) * g_step + g_step * InpVerticalPadRows;
-      double botStep = MathFloor(g_bars[bi].low / g_step) * g_step - g_step * InpVerticalPadRows;
+      double topStep = MathCeil(g_bars[bi].high / g_step) * g_step;
+      double botStep = MathFloor(g_bars[bi].low / g_step) * g_step;
       int stepsNum = (int)MathRound((topStep - botStep) / g_step) + 1;
-
-      // Strict ladder: anchor Y from bar midPrice, fixed row height in pixels (no chart-scale squeeze)
       double midPrice = NormP((g_bars[bi].high + g_bars[bi].low) / 2.0);
+      
       int tmpX, anchorY;
       if(!ChartTimePriceToXY(g_chart, g_sub, bt, midPrice, tmpX, anchorY)) continue;
 
@@ -849,115 +658,173 @@ void Render()
          if(g_bars[bi].levels[i].total_vol > maxTotal) maxTotal = g_bars[bi].levels[i].total_vol;
       }
 
-      int colHeightPx = stepsNum * InpRowHeightPx;
+      int colHeight = stepsNum * InpRowHeightPx;
       int y_top_first = anchorY - (int)MathRound((topStep - midPrice) / g_step) * InpRowHeightPx + g_yOffsetPx - InpRowHeightPx / 2;
-      DrawBarOutline(x_left, y_top_first, barWidthPx, colHeightPx);
+      
+      // Draw background track for Histogram area
+      if(g_trackActive < g_trackCount) {
+         ObjectSetInteger(g_chart, g_trackNames[g_trackActive], OBJPROP_XDISTANCE, x_left + barWidthPx);
+         ObjectSetInteger(g_chart, g_trackNames[g_trackActive], OBJPROP_YDISTANCE, y_top_first);
+         ObjectSetInteger(g_chart, g_trackNames[g_trackActive], OBJPROP_XSIZE, histMaxW);
+         ObjectSetInteger(g_chart, g_trackNames[g_trackActive], OBJPROP_YSIZE, colHeight);
+         ObjectSetInteger(g_chart, g_trackNames[g_trackActive], OBJPROP_BGCOLOR, InpHistBgColor);
+         ObjectSetInteger(g_chart, g_trackNames[g_trackActive], OBJPROP_COLOR, InpHistBgColor);
+         g_trackActive++;
+      }
 
-      int y_tops[]; int lvl_indices[];
-      ArrayResize(y_tops, stepsNum);
-      ArrayResize(lvl_indices, stepsNum);
-      for(int k = 0; k < stepsNum; k++) lvl_indices[k] = -1;
+      // Main Outer Box Outline
+      DrawHollowBox(x_left, y_top_first, fullTrackW, colHeight, 1, InpBarOutlineColor);
 
-      int y_top_first_actual = 0;
+      // Vertical Divider inside Footprint (Center line for Bid|Ask)
+      int center_x = x_left + barWidthPx / 2;
+      if(g_sepActive < g_sepCount) {
+         ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_XDISTANCE, center_x);
+         ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_YDISTANCE, y_top_first);
+         ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_XSIZE, 1);
+         ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_YSIZE, colHeight);
+         ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_BGCOLOR, InpGridLineColor);
+         ObjectSetInteger(g_chart, g_sepNames[g_sepActive], OBJPROP_COLOR, InpGridLineColor);
+         g_sepActive++;
+      }
+
       for(int i = 0; i < stepsNum; i++)
         {
          double price = topStep - i * g_step;
          int diffSteps = (int)MathRound((price - midPrice) / g_step);
          int y_center = anchorY - diffSteps * InpRowHeightPx + g_yOffsetPx;
          int y_top = y_center - InpRowHeightPx / 2;
-         if(i == 0) y_top_first_actual = y_top;
-         y_tops[i] = y_top;
+
          if(y_top > ch || y_top + InpRowHeightPx < 0) continue;
 
-         PriceLevel pl;
-         ZeroMemory(pl);
-         bool found = false;
-         int lvlIdx = -1;
+         PriceLevel pl; ZeroMemory(pl);
+         bool found = false; int lvlIdx = -1;
          for(int j = 0; j < g_bars[bi].level_count; j++) {
             if(MathAbs(g_bars[bi].levels[j].price - price) < g_step * 0.4) {
-               pl = g_bars[bi].levels[j];
-               found = true;
-               lvlIdx = j;
-               break;
+               pl = g_bars[bi].levels[j]; found = true; lvlIdx = j; break;
             }
          }
 
          long bV = found ? pl.bid_vol : 0;
          long aV = found ? pl.ask_vol : 0;
 
-         // Light theme: black text; empty = beige/cream; bearish = pastel red, bullish = pastel green
-         color bgCol     = InpEmptyCellColor;
-         color borderCol = InpGridLineColor;
-         color bidTxtCol = clrBlack;
-         color askTxtCol = clrBlack;
-         int   borderW   = 1;
+         color bgBid = InpEmptyCellColor;
+         color bgAsk = InpEmptyCellColor;
+         int histW = 0;
+         color hColor = InpHistColor;
+         string sBid = found && bV > 0 ? IntegerToString(bV) : " ";
+         string sAsk = found && aV > 0 ? IntegerToString(aV) : " ";
 
-         string sBid = " ";
-         string sAsk = " ";
-
-         if(found && (bV > 0 || aV > 0)) {
-            sBid = IntegerToString(bV);
-            sAsk = IntegerToString(aV);
-            if(g_mode == FOOT_CHART_VOLUME && bV == 0 && aV == 0) { sBid = " "; sAsk = " "; }
-
+         if(found && pl.total_vol > 0) {
             bool inVA = (lvlIdx >= g_bars[bi].va_lo_idx && lvlIdx <= g_bars[bi].va_hi_idx);
-            double intensity = (maxTotal > 0) ? (double)pl.total_vol / (double)maxTotal : 0.0;
+            double intBid = (maxTotal > 0) ? (double)bV / maxTotal : 0.0;
+            double intAsk = (maxTotal > 0) ? (double)aV / maxTotal : 0.0;
+            double intTot = (maxTotal > 0) ? (double)pl.total_vol / maxTotal : 0.0;
+            
+            color cbBid = inVA ? InpBidBaseColor : InpOutOfVAColor;
+            color chBid = inVA ? InpBidHighColor : InpOutOfVAColor;
+            color cbAsk = inVA ? InpAskBaseColor : InpOutOfVAColor;
+            color chAsk = inVA ? InpAskHighColor : InpOutOfVAColor;
 
-            // Cell background: light pastel red for bearish delta, light pastel green for bullish/VA
-            if(pl.delta < 0)
-               bgCol = LerpColorOpaque(InpEmptyCellColor, InpBearishCellColor, MathMin(1.0, intensity + 0.3));
-            else
-               bgCol = LerpColorOpaque(InpEmptyCellColor, inVA ? InpBullishCellColor : InpOutOfVAColor, MathMin(1.0, intensity + 0.2));
+            bgBid = LerpColorOpaque(cbBid, chBid, intBid);
+            bgAsk = LerpColorOpaque(cbAsk, chAsk, intAsk);
 
-            // Imbalances & POC: thick borders only, no solid fills (transparent inner)
-            if(pl.is_imb_sell)       { borderCol = InpImbSellColor; borderW = 3; }
-            else if(pl.is_imb_buy)  { borderCol = InpImbBuyColor;  borderW = 3; }
-
-            if(pl.is_stacked_imb_sell) { borderCol = InpStackedSellColor; borderW = 3; }
-            else if(pl.is_stacked_imb_buy) { borderCol = InpStackedBuyColor; borderW = 3; }
-            if(lvlIdx == g_bars[bi].poc_idx) { borderCol = InpPOCColor; borderW = 3; }
+            histW = (int)(intTot * histMaxW);
+            if(histW < 1) histW = 1;
          }
-         lvl_indices[i] = found ? lvlIdx : -1;
 
-         DrawGridCell(x_left, y_top, barWidthPx, sBid, sAsk, bgCol, borderCol, bidTxtCol, askTxtCol, borderW);
+         if(g_poolActive >= g_poolCount) InitPool(g_poolCount + 1000);
+         int idx = g_poolActive++;
+         g_pool[idx].active = true;
+
+         // Row Horizontal grid line
+         ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_XDISTANCE, x_left);
+         ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_YDISTANCE, y_top + InpRowHeightPx - 1);
+         ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_XSIZE, barWidthPx);
+         ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_YSIZE, 1);
+         ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_BGCOLOR, InpGridLineColor);
+         ObjectSetInteger(g_chart, g_pool[idx].hgrid_line, OBJPROP_COLOR, InpGridLineColor);
+
+         // Background Blocks
+         int halfW = barWidthPx / 2;
+         ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_XDISTANCE, x_left);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_YDISTANCE, y_top);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_XSIZE, halfW);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_YSIZE, InpRowHeightPx - 1);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_BGCOLOR, bgBid);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_bid, OBJPROP_COLOR, bgBid);
+
+         ObjectSetInteger(g_chart, g_pool[idx].rect_ask, OBJPROP_XDISTANCE, center_x);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_ask, OBJPROP_YDISTANCE, y_top);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_ask, OBJPROP_XSIZE, barWidthPx - halfW);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_ask, OBJPROP_YSIZE, InpRowHeightPx - 1);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_ask, OBJPROP_BGCOLOR, bgAsk);
+         ObjectSetInteger(g_chart, g_pool[idx].rect_ask, OBJPROP_COLOR, bgAsk);
+
+         // Histogram Overlay
+         if (histW > 0) {
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_XDISTANCE, x_left + barWidthPx);
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_YDISTANCE, y_top + 2);
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_XSIZE, histW);
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_YSIZE, InpRowHeightPx - 4);
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_BGCOLOR, (lvlIdx == g_bars[bi].poc_idx) ? InpPOCColor : hColor);
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_COLOR, (lvlIdx == g_bars[bi].poc_idx) ? InpPOCColor : hColor);
+         } else {
+             ObjectSetInteger(g_chart, g_pool[idx].hist_name, OBJPROP_XDISTANCE, -1000);
+         }
+
+         // Text Overlay
+         int textY = y_top + (InpRowHeightPx - InpFontSize) / 2 - 1;
+         ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_XDISTANCE, center_x - 4);
+         ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_YDISTANCE, textY);
+         ObjectSetString (g_chart, g_pool[idx].bid_name, OBJPROP_TEXT, sBid);
+         ObjectSetString (g_chart, g_pool[idx].bid_name, OBJPROP_FONT, "Consolas");
+         ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_FONTSIZE, InpFontSize);
+         ObjectSetInteger(g_chart, g_pool[idx].bid_name, OBJPROP_COLOR, pl.is_imb_sell ? InpImbSellColor : clrBlack);
+
+         ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_XDISTANCE, center_x + 4);
+         ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_YDISTANCE, textY);
+         ObjectSetString (g_chart, g_pool[idx].ask_name, OBJPROP_TEXT, sAsk);
+         ObjectSetString (g_chart, g_pool[idx].ask_name, OBJPROP_FONT, "Consolas");
+         ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_FONTSIZE, InpFontSize);
+         ObjectSetInteger(g_chart, g_pool[idx].ask_name, OBJPROP_COLOR, pl.is_imb_buy ? InpImbBuyColor : clrBlack);
+
+         // POC Box
+         if(found && lvlIdx == g_bars[bi].poc_idx) {
+             DrawHollowBox(x_left, y_top, fullTrackW, InpRowHeightPx, 2, InpPOCColor);
+         }
         }
 
-      // Stacked imbalance: ONE rectangle around each run of N consecutive rows (task)
-      for(int runStart = 0; runStart < stepsNum; ) {
-         int li = lvl_indices[runStart];
-         bool isSell = (li >= 0 && li < g_bars[bi].level_count && g_bars[bi].levels[li].is_stacked_imb_sell);
-         bool isBuy  = (li >= 0 && li < g_bars[bi].level_count && g_bars[bi].levels[li].is_stacked_imb_buy);
-         if(!isSell && !isBuy) { runStart++; continue; }
-         int runEnd = runStart;
-         while(runEnd + 1 < stepsNum) {
-            int li2 = lvl_indices[runEnd + 1];
-            bool nextSell = (li2 >= 0 && li2 < g_bars[bi].level_count && g_bars[bi].levels[li2].is_stacked_imb_sell);
-            bool nextBuy  = (li2 >= 0 && li2 < g_bars[bi].level_count && g_bars[bi].levels[li2].is_stacked_imb_buy);
-            if((isSell && nextSell) || (isBuy && nextBuy)) runEnd++;
-            else break;
+      // Draw Stacked Imbalance Rectangles using crisp Hollow Boxes
+      for (int pass = 0; pass < 2; pass++) {
+         bool checkingBuy = (pass == 0);
+         int stackStartLvl = -1;
+         for (int j = 0; j <= g_bars[bi].level_count; j++) {
+            bool isStacked = false;
+            if (j < g_bars[bi].level_count) {
+               isStacked = checkingBuy ? g_bars[bi].levels[j].is_stacked_imb_buy : g_bars[bi].levels[j].is_stacked_imb_sell;
+            }
+            if (isStacked) {
+               if (stackStartLvl == -1) stackStartLvl = j;
+            } else {
+               if (stackStartLvl != -1) {
+                  int startIdx = stackStartLvl;
+                  int endIdx = j - 1; 
+                  double top_p = g_bars[bi].levels[startIdx].price;
+                  double bot_p = g_bars[bi].levels[endIdx].price;
+                  
+                  int y_top_rect = anchorY - (int)MathRound((top_p - midPrice) / g_step) * InpRowHeightPx + g_yOffsetPx - InpRowHeightPx / 2;
+                  int y_bot_rect = anchorY - (int)MathRound((bot_p - midPrice) / g_step) * InpRowHeightPx + g_yOffsetPx + InpRowHeightPx / 2;
+                  
+                  color c = checkingBuy ? InpStackedBuyColor : InpStackedSellColor;
+                  DrawHollowBox(x_left, y_top_rect, barWidthPx, y_bot_rect - y_top_rect, 2, c);
+                  stackStartLvl = -1;
+               }
+            }
          }
-         int runY = y_tops[runStart];
-         int runH = y_tops[runEnd] + InpRowHeightPx - runY;
-         color stackCol = isSell ? InpStackedSellColor : InpStackedBuyColor;
-         DrawStackRect(x_left, runY, barWidthPx, runH, stackCol);
-         runStart = runEnd + 1;
       }
-
-      // Center vertical dotted line (Bid|Ask separator) down middle of column
-      DrawCenterLine(x_left + barWidthPx / 2, y_top_first_actual, colHeightPx);
-
-      // Bar separator: thin vertical line between footprint columns
-      int sepX = x_left + barWidthPx;
-      DrawSeparator(sepX, y_top_first_actual, colHeightPx);
      }
 
-   HideUnusedPool();
-   HideUnusedSeparators();
-   HideUnusedCenterLines();
-   for(int i = g_stackActive; i < g_stackCount; i++)
-      ObjectSetInteger(g_chart, g_stackNames[i], OBJPROP_XDISTANCE, -1000);
-   for(int i = g_outlineActive; i < g_outlineCount; i++)
-      ObjectSetInteger(g_chart, g_outlineNames[i], OBJPROP_XDISTANCE, -1000);
+   HideAll();
    ChartRedraw();
   }
 
@@ -977,12 +844,9 @@ int OnInit()
   {
    int pts = MathMax(1, MathMin(10000, InpTickSize));
    g_baseStep = pts * _Point;
-   
    int ticksPerRow = (InpTicksPerRow > 0) ? InpTicksPerRow : MathMax(1, InpTickMultiplier);
-   if(ticksPerRow > 100) ticksPerRow = 100;
-   g_tickMult = ticksPerRow;
+   g_tickMult = MathMin(100, ticksPerRow);
    g_step     = g_baseStep * g_tickMult;
-   
    g_mode     = InpChartMode;
    g_chart    = ChartID();
    g_sub      = 0;
@@ -991,8 +855,16 @@ int OnInit()
    g_imbRatio = InpImbalanceRatio;
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
    
-   InitPool(InpMaxBarsToRender * 50); // initial small pool
-   InitSeparators(InpMaxBarsToRender);
+   // Hide native chart candlesticks strictly so they don't bleed through
+   ChartSetInteger(g_chart, CHART_COLOR_CHART_UP, clrNONE);
+   ChartSetInteger(g_chart, CHART_COLOR_CHART_DOWN, clrNONE);
+   ChartSetInteger(g_chart, CHART_COLOR_CANDLE_BULL, clrNONE);
+   ChartSetInteger(g_chart, CHART_COLOR_CANDLE_BEAR, clrNONE);
+   ChartSetInteger(g_chart, CHART_COLOR_VOLUME, clrNONE);
+   ChartSetInteger(g_chart, CHART_MODE, CHART_CANDLES);
+   ChartSetInteger(g_chart, CHART_FOREGROUND, false);
+   
+   InitPool(InpMaxBarsToRender * 50); 
    ReloadHistory();
    return INIT_SUCCEEDED;
   }
@@ -1000,22 +872,25 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    for(int i = 0; i < g_poolCount; i++) {
-      ObjectDelete(g_chart, g_pool[i].rect_name);
+      ObjectDelete(g_chart, g_pool[i].rect_bid);
+      ObjectDelete(g_chart, g_pool[i].rect_ask);
+      ObjectDelete(g_chart, g_pool[i].hist_name);
       ObjectDelete(g_chart, g_pool[i].bid_name);
       ObjectDelete(g_chart, g_pool[i].ask_name);
+      ObjectDelete(g_chart, g_pool[i].hgrid_line);
+   }
+   for(int i = 0; i < g_boxCount; i++) {
+      ObjectDelete(g_chart, g_boxPool[i].top_line);
+      ObjectDelete(g_chart, g_boxPool[i].bot_line);
+      ObjectDelete(g_chart, g_boxPool[i].left_line);
+      ObjectDelete(g_chart, g_boxPool[i].right_line);
    }
    for(int i = 0; i < g_sepCount; i++) ObjectDelete(g_chart, g_sepNames[i]);
-   for(int i = 0; i < g_stackCount; i++) ObjectDelete(g_chart, g_stackNames[i]);
-   for(int i = 0; i < g_outlineCount; i++) ObjectDelete(g_chart, g_outlineNames[i]);
-   for(int i = 0; i < g_centerLineCount; i++) ObjectDelete(g_chart, g_centerLineNames[i]);
-   ObjectDelete(g_chart, "FP_BTN_UP");
-   ObjectDelete(g_chart, "FP_BTN_DN");
-   ObjectDelete(g_chart, "FP_BTN_C");
+   for(int i = 0; i < g_trackCount; i++) ObjectDelete(g_chart, g_trackNames[i]);
    ArrayFree(g_pool);
+   ArrayFree(g_boxPool);
    ArrayFree(g_sepNames);
-   ArrayFree(g_stackNames);
-   ArrayFree(g_outlineNames);
-   ArrayFree(g_centerLineNames);
+   ArrayFree(g_trackNames);
    ArrayFree(g_bars);
   }
 
@@ -1031,17 +906,13 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    uint flag = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
    long now_msc = (long)TimeCurrent() * 1000;
    long from_msc = g_last_tick_time_ms;
-   if(from_msc == 0) {
-      long lookback = 60000;
-      from_msc = (now_msc > lookback) ? now_msc - lookback : now_msc;
-   }
+   if(from_msc == 0) from_msc = now_msc - 60000;
    
    int copied = CopyTicksRange(_Symbol, ticks, flag, from_msc, now_msc);
    if(copied > 0) {
       if(g_prevBid == 0.0) g_prevBid = ticks[0].bid;
       ProcessTicks(ticks, 0, copied, true, true);
    }
-   
    if(g_dirty) ThrottledRender();
    return rates_total;
   }
@@ -1051,53 +922,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(id == CHARTEVENT_CHART_CHANGE) {
       if(ArraySize(g_bars) > 0) {
          datetime expectedLastBar  = iTime(_Symbol, PERIOD_CURRENT, 0);
-         int bars_total = iBars(_Symbol, PERIOD_CURRENT);
-         int span = MathMin(InpHistoryBars, bars_total - 1);
+         int span = MathMin(InpHistoryBars, iBars(_Symbol, PERIOD_CURRENT) - 1);
          datetime expectedFirstBar = iTime(_Symbol, PERIOD_CURRENT, span);
-
-         if(g_bars[0].bar_time != expectedFirstBar && g_bars[ArraySize(g_bars) - 1].bar_time != expectedLastBar) {
-            ReloadHistory();
-         }
+         if(g_bars[0].bar_time != expectedFirstBar && g_bars[ArraySize(g_bars) - 1].bar_time != expectedLastBar) ReloadHistory();
       }
       g_dirty = true;
       ThrottledRender();
    }
-   
-   if(id == CHARTEVENT_OBJECT_CLICK) {
-      if(sparam == "FP_BTN_UP") {
-         g_yOffsetPx += InpRowHeightPx * 3; // Scroll up 3 rows
-         g_dirty = true;
-         ObjectSetInteger(g_chart, sparam, OBJPROP_STATE, false);
-      }
-      else if(sparam == "FP_BTN_DN") {
-         g_yOffsetPx -= InpRowHeightPx * 3; // Scroll down 3 rows
-         g_dirty = true;
-         ObjectSetInteger(g_chart, sparam, OBJPROP_STATE, false);
-      }
-      else if(sparam == "FP_BTN_C") {
-         g_yOffsetPx = 0; // Center
-         g_dirty = true;
-         ObjectSetInteger(g_chart, sparam, OBJPROP_STATE, false);
-      }
-      if (g_dirty) ThrottledRender();
-   }
   }
-//+------------------------------------------------------------------+
-//| PASS SUMMARY — What you'll see after each pass                    |
-//+------------------------------------------------------------------+
-// Pass 1: Separate bar columns aligned to candles (col_left per bar), no continuous wall; separators between columns.
-// Pass 2: Consistent ladder cells per bar with fixed row height (InpRowHeightPx) and step (tick*ticks_per_row); every row has a filled cell.
-// Pass 3: Per-level bid/ask as real counts from CopyTicksRange; last>=ask-eps -> ask, last<=bid+eps -> bid; no clamping.
-// Pass 4: One "Bid Ask" per cell (bid left, ask right), monospace font, fixed font size.
-// Pass 5: Heatmap by intensity = (bid+ask)/maxTotal; gradient fill on every cell; low intensity still has base fill.
-// Pass 6: POC = blue band on maxTotal level; imbalance Ask>=Bid*R / Bid>=Ask*R; stacked imbalance = one box around N consecutive levels.
-// Pass 7: Object pooling, visible bars only, refresh on CHARTEVENT_CHART_CHANGE and new ticks.
-//
-// TASK APPLIED — CURRENT ISSUE → CODE CHANGE:
-// 1) Columns too thin: InpMinBarWidthPx (default 60) added; barWidthPx = MathMax(InpMinBarWidthPx,...) so columns don't shrink below 60px.
-// 2) Every row filled: Already iterating every level (topStep to botStep); InpEmptyCellColor for zero; heatmap intensity = totalVol/maxTotal with LerpColorOpaque on every cell.
-// 3) One "Bid Ask" per cell: DrawGridCell uses one rect + bid label (left) + ask label (right), Consolas, InpFontSize; no scattered numbers.
-// 4) ticks_per_row: InpTicksPerRow input added; g_step = g_baseStep * InpTicksPerRow in OnInit; reduces row count and volume fragmentation.
-// 5) Bar separators: DrawSeparator (existing); bar outline: DrawBarOutline (InpBarOutlineColor); POC band: LerpColorOpaque(bgCol, InpPOCColor, 0.4) on POC row; stacked imbalance: one DrawStackRect per run of N consecutive rows.
-//
-// SUGGESTED DEFAULTS (target proportions): InpTicksPerRow=2, InpBarWidthPx=85, InpRowHeightPx=18, InpXOffsetPx=4, InpFontSize=9, InpImbalanceRatio=300 (R), InpStackedImbCount=3 (N), InpMaxBarsToRender=20, InpMinBarWidthPx=60.
