@@ -61,6 +61,14 @@ input color  InpBearishFrame    = clrCrimson;     // Bearish Session Frame (Red)
 input color  InpWickColor       = C'140,140,150'; // Candle Structure Color
 input color  InpGridColor       = clrBlack;       // Grid Separation Color
 
+input group "Colors - Text"
+input color  InpTextBaseColor   = C'160,160,170'; // Default Cell Text
+input color  InpTextDarkBg      = clrWhite;       // Text on Dark Backgrounds
+input color  InpTextLightBg     = clrBlack;       // Text on Light Backgrounds
+input color  InpTextBottomVol   = clrWhite;       // Bottom Label: Volume
+input color  InpTextBottomPos   = clrLime;        // Bottom Label: Positive Delta
+input color  InpTextBottomNeg   = clrRed;         // Bottom Label: Negative Delta
+
 //--- Data structures
 struct PriceLevel
   {
@@ -698,6 +706,19 @@ uint FpARGB(color c, int a)
    return ColorToARGB(c, (uchar)MathMin(MathMax(a, 0), 255));
   }
 
+//+------------------------------------------------------------------+
+//| Helper: luminance-based dark/light detection                     |
+//+------------------------------------------------------------------+
+bool IsColorDark(color c)
+  {
+   int r = (c) & 0xFF;
+   int g = (c >> 8) & 0xFF;
+   int b = (c >> 16) & 0xFF;
+   // Standard perceived luminance formula
+   double luma = 0.299 * r + 0.587 * g + 0.114 * b;
+   return (luma < 128.0); // True if dark
+  }
+
 color LerpColor(color a, color b, double t)
   {
    if(t < 0.0)
@@ -798,24 +819,24 @@ void DrawBar(int bi, int shift, int barW)
       g_scratchY2[i] = g_scratchY1[i] + cellH;
      }
 
-   bool  skipText     = g_hideText || g_userHideText || (cellH < 9);
    int   opaScale     = g_opacity;
-   uint  colWhiteText = FpARGB(clrWhite, (250 * opaScale) / 255);
-   uint  colBlackText = FpARGB(clrBlack, (250 * opaScale) / 255);
    bool  isBullish    = g_bars[bi].is_bullish;
    color sentimentCol = isBullish ? InpBullishFrame : InpBearishFrame;
 
-   // Font size scales with cell height and available width
+   // Font size scales with cell height and available width (min 10px to avoid blur)
    int maxH = (int)(cellH * 0.65);
    int maxW;
    if(g_mode == FOOT_CHART_BIDASK)
       maxW = (int)(halfW * 0.75);
    else
       maxW = (int)(halfW * 1.50);
-   int cellFontSz = MathMax(8, MathMin(MathMin(maxH, maxW), 36));
+   int cellFontSz = MathMin(MathMin(maxH, maxW), 36);
+
+   // Skip text if font would be below 10px (unreadably blurry on canvas)
+   bool  skipText     = g_hideText || g_userHideText || (cellFontSz < 10);
 
    if(!skipText)
-      canvas.FontSet("Segoe UI", cellFontSz, FW_BOLD);
+      canvas.FontSet("Consolas", cellFontSz, FW_BOLD);
 
    for(int i = 0; i < len; i++)
      {
@@ -920,23 +941,30 @@ void DrawBar(int bi, int shift, int barW)
          canvas.Rectangle(x1 - 2, y_top - 2, x2 + 2, y_bot + 2, FpARGB(InpAbsorptionColor, 255));
         }
 
-      // Text
+      // Text (luminance-based contrast)
       if(!skipText)
         {
          int  yy           = (y_top + y_bot) / 2;
-         uint colMutedText = FpARGB(C'110,110,120', (180 * opaScale) / 255);
-         uint tCBid        = colMutedText;
-         uint tCAsk        = colMutedText;
+         uint colBaseText  = FpARGB(InpTextBaseColor, (220 * opaScale) / 255);
 
          if(g_mode == FOOT_CHART_BIDASK)
            {
-            tCBid = (pl.is_imb_sell || pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
-            tCAsk = (pl.is_imb_buy || pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
-            if(levelIntensity > 0.85 && inVA)
-              {
-               tCBid = colBlackText;
-               tCAsk = colBlackText;
-              }
+            // Determine actual cell background colors for contrast check
+            color bidBgCol = LerpColor(InpBidBaseColor, InpBidHighColor, bidIntensity);
+            color askBgCol = LerpColor(InpAskBaseColor, InpAskHighColor, askIntensity);
+            if(!inVA)              { bidBgCol = InpOutOfVAColor; askBgCol = InpOutOfVAColor; }
+            if(pl.is_imb_sell)     { bidBgCol = InpImbSellColor; askBgCol = InpImbSellColor; }
+            if(pl.is_imb_buy)      { bidBgCol = InpImbBuyColor;  askBgCol = InpImbBuyColor;  }
+
+            uint tCBid = IsColorDark(bidBgCol) ? FpARGB(InpTextDarkBg, (250 * opaScale) / 255)
+                                               : FpARGB(InpTextLightBg, (250 * opaScale) / 255);
+            uint tCAsk = IsColorDark(askBgCol) ? FpARGB(InpTextDarkBg, (250 * opaScale) / 255)
+                                               : FpARGB(InpTextLightBg, (250 * opaScale) / 255);
+
+            // Use base (muted) color for low-activity cells
+            if(!pl.is_imb_sell && !pl.is_imb_buy && !pl.is_absorption && i != pocIdx && inVA)
+              { tCBid = colBaseText; tCAsk = colBaseText; }
+
             if(pl.bid_vol > 0)
                canvas.TextOut((x1 + midX) / 2, yy, IntegerToString(pl.bid_vol),
                               tCBid, TA_CENTER | TA_VCENTER);
@@ -946,19 +974,31 @@ void DrawBar(int bi, int shift, int barW)
            }
          else if(g_mode == FOOT_CHART_VOLUME)
            {
-            uint tCVol = (pl.is_absorption || i == pocIdx) ? colWhiteText : colMutedText;
-            if(levelIntensity > 0.85 && inVA)
-               tCVol = colBlackText;
+            color volBgCol = LerpColor(InpBidBaseColor, InpBidHighColor, levelIntensity);
+            if(!inVA) volBgCol = InpOutOfVAColor;
+
+            uint tCVol = IsColorDark(volBgCol) ? FpARGB(InpTextDarkBg, (250 * opaScale) / 255)
+                                               : FpARGB(InpTextLightBg, (250 * opaScale) / 255);
+            if(!pl.is_absorption && i != pocIdx && inVA)
+               tCVol = colBaseText;
+
             if(pl.total_vol > 0)
                canvas.TextOut((x1 + x2) / 2, yy, IntegerToString((int)pl.total_vol),
                               tCVol, TA_CENTER | TA_VCENTER);
            }
          else // DELTA
            {
-            double dNorm = (double)MathAbs(pl.delta) / (double)maxAbsDelta;
-            uint   tCD   = (dNorm >= 0.3 ? colWhiteText : colMutedText);
-            if(dNorm > 0.85 && inVA)
-               tCD = colBlackText;
+            double dNorm2 = (double)MathAbs(pl.delta) / (double)maxAbsDelta;
+            color  dBase  = (pl.delta >= 0 ? InpAskBaseColor : InpBidBaseColor);
+            color  dHigh  = (pl.delta >= 0 ? InpAskHighColor : InpBidHighColor);
+            color  dBgCol = LerpColor(dBase, dHigh, dNorm2);
+            if(!inVA) dBgCol = InpOutOfVAColor;
+
+            uint tCD = IsColorDark(dBgCol) ? FpARGB(InpTextDarkBg, (250 * opaScale) / 255)
+                                           : FpARGB(InpTextLightBg, (250 * opaScale) / 255);
+            if(dNorm2 < 0.3 && inVA)
+               tCD = colBaseText;
+
             if(pl.delta != 0)
                canvas.TextOut((x1 + x2) / 2, yy, IntegerToString((int)pl.delta),
                               tCD, TA_CENTER | TA_VCENTER);
@@ -986,19 +1026,36 @@ void DrawBar(int bi, int shift, int barW)
       int labelY    = g_scratchY2[len - 1] + 2;
       int maxLblH   = (int)(cellH * 0.50);
       int maxLblW   = (int)(barW * 0.25);
-      int lblFontSz = MathMax(8, MathMin(MathMin(maxLblH, maxLblW), 24));
-      canvas.FontSet("Segoe UI", lblFontSz, FW_BOLD);
+      int lblFontSz = MathMin(MathMin(maxLblH, maxLblW), 24);
+      if(lblFontSz < 10)
+         lblFontSz = 10;
+      canvas.FontSet("Consolas", lblFontSz, FW_BOLD);
 
-      // Volume label (white)
-      string volStr = IntegerToString(g_bars[bi].total_vol);
-      canvas.TextOut((x1 + x2) / 2, labelY, volStr,
-                     FpARGB(clrWhite, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
-
-      // Delta label (green if positive, red if negative)
-      long  barDelta  = g_bars[bi].total_delta;
-      color deltaCol  = (barDelta >= 0) ? clrLime : clrRed;
+      // Measure text for background pills
+      string volStr   = IntegerToString(g_bars[bi].total_vol);
+      long   barDelta = g_bars[bi].total_delta;
+      color  deltaCol = (barDelta >= 0) ? InpTextBottomPos : InpTextBottomNeg;
       string deltaStr = (barDelta >= 0 ? "+" : "") + IntegerToString(barDelta);
-      canvas.TextOut((x1 + x2) / 2, labelY + lblFontSz + 2, deltaStr,
+
+      int tw1 = 0, th1 = 0, tw2 = 0, th2 = 0;
+      canvas.TextSize(volStr,   tw1, th1);
+      canvas.TextSize(deltaStr, tw2, th2);
+      int lblPad = 3;
+
+      // Dark background pill behind volume label
+      int vx = (x1 + x2) / 2;
+      canvas.FillRectangle(vx - tw1 / 2 - lblPad, labelY - 1,
+                           vx + tw1 / 2 + lblPad, labelY + th1 + 1,
+                           FpARGB(C'10,10,14', (200 * opaScale) / 255));
+      canvas.TextOut(vx, labelY, volStr,
+                     FpARGB(InpTextBottomVol, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
+
+      // Dark background pill behind delta label
+      int dLabelY = labelY + th1 + 2;
+      canvas.FillRectangle(vx - tw2 / 2 - lblPad, dLabelY - 1,
+                           vx + tw2 / 2 + lblPad, dLabelY + th2 + 1,
+                           FpARGB(C'10,10,14', (200 * opaScale) / 255));
+      canvas.TextOut(vx, dLabelY, deltaStr,
                      FpARGB(deltaCol, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
      }
   }

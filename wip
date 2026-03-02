@@ -1,0 +1,62 @@
+# Refactoring MQL5 Footprint Chart: Text Visibility & Dark Mode Optimization
+
+## Context
+I have an MQL5 custom indicator (`Footprint.mq5`) that renders an Order Flow / Footprint chart using `CCanvas`. I am using it on a dark-mode chart. 
+
+Currently, there are severe UI/UX issues regarding text readability:
+1. **Black Text on Dark Backgrounds**: At high volume intensity, the code forces black text (`colBlackText`), but my high-intensity background colors (like dark purple `C'74,0,105'`) are actually dark. This creates invisible text.
+2. **Blurry / Unreadable Fonts**: When zooming out, the text scales down too much, making the font extremely blurry and impossible to read.
+3. **Lack of Text Color Control**: There are no input parameters to customize the text colors inside the candles or below them.
+4. **Bottom Labels ("Under the candles")**: The Volume and Delta summaries below the candles become blurry, cramped, and unreadable.
+
+## Refactoring Requirements
+
+Please refactor the provided code to implement the following changes:
+
+### 1. Add Text Color Inputs
+Add a new input group to expose text colors to the user.
+```cpp
+input group "Colors - Text"
+input color InpTextBaseColor    = C'160,160,170'; // Default Cell Text
+input color InpTextDarkBg       = clrWhite;       // Text on Dark Backgrounds
+input color InpTextLightBg      = clrBlack;       // Text on Light Backgrounds
+input color InpTextBottomVol    = clrWhite;       // Bottom Label: Volume
+input color InpTextBottomPos    = clrLime;        // Bottom Label: Positive Delta
+input color InpTextBottomNeg    = clrRed;         // Bottom Label: Negative Delta
+
+```
+
+### 2. Dynamic Contrast (Luminance Check)
+
+Remove the hardcoded `levelIntensity > 0.85` check that forces black text. Instead, write a helper function to calculate the relative luminance of the cell's background color. If the cell color is dark, use `InpTextDarkBg` (White); if it's light, use `InpTextLightBg` (Black).
+
+**Helper Function Example:**
+
+```cpp
+bool IsColorDark(color c)
+  {
+   int r = (c) & 0xFF;
+   int g = (c >> 8) & 0xFF;
+   int b = (c >> 16) & 0xFF;
+   // Standard perceived luminance formula
+   double luma = 0.299 * r + 0.587 * g + 0.114 * b;
+   return (luma < 128.0); // True if dark
+  }
+
+```
+
+### 3. Fix Font Scaling and Blurriness inside `DrawBar()`
+
+* Update the font scaling logic. Do not let the font drop below `10` pixels (size 8 Segoe UI gets incredibly blurry on a transparent canvas).
+* If the calculated `cellFontSz` is less than 10, or the cell height is too small to fit the text cleanly, skip rendering the text entirely to avoid a cluttered, blurry mess.
+* Change the font from `"Segoe UI"` to `"Consolas"` or `"Arial"` for better pixel readability at smaller sizes.
+
+### 4. Improve Bottom Labels (Under the Candles)
+
+* Ensure the Volume and Delta text drawn below the bar does not scale down infinitely. Set a hard minimum font size (e.g., `10`).
+* Add a subtle dark background rectangle behind these specific labels so they don't blend into grid lines or wicks on dark charts.
+
+### 5. Code Target Areas
+
+* **Text Size**: Update the `cellFontSz` calculation around the `DrawBar` function.
+* **Text Color Mapping**: Update the logic defining `tCBid`, `tCAsk`, `tCVol`, and `tCD` inside the `DrawBar` loop to utilize the new `IsColorDark()` function against `bidCol`, `askCol`, etc.
