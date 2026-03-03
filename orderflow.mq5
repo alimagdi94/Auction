@@ -43,10 +43,10 @@ input uchar  InpBgAlpha        = 210;          // Cell Background Alpha (0-255)
 input uchar  InpVAOffAlpha     = 80;           // Alpha outside Value Area (0-255)
 
 input group "Colors - Heatmap"
-input color  InpBidBaseColor   = C'15,0,20';   // Bid (Sell) Volume Base (Muted)
-input color  InpBidHighColor   = C'74,0,105';  // Bid (Sell) Volume High
-input color  InpAskBaseColor   = C'0,15,15';   // Ask (Buy) Volume Base (Muted)
-input color  InpAskHighColor   = C'0,64,64';   // Ask (Buy) Volume High
+input color  InpBidBaseColor   = C'10,15,40';  // Bid (Sell) Volume Base
+input color  InpBidHighColor   = C'200,60,30'; // Bid (Sell) Volume High (orange-red)
+input color  InpAskBaseColor   = C'5,20,35';   // Ask (Buy) Volume Base
+input color  InpAskHighColor   = C'20,140,200';// Ask (Buy) Volume High (cyan)
 input color  InpOutOfVAColor   = C'10,10,12';  // Out of Value Area Color
 
 input group "Colors - Highlights & UI"
@@ -72,14 +72,14 @@ input color  InpTextBottomNeg   = clrRed;         // Bottom Label: Negative Delt
 
 input group "Bookmap — Concentric Ring Overlay"
 input bool   InpShowBubbles     = true;           // Show trade ring bubbles
-input int    InpBubbleCellPts   = 200;            // Bubble price bucket (points) — separate from footprint
-input int    InpMaxBubbleR      = 40;             // Max bubble radius (px)
-input int    InpMinBubbleR      = 8;              // Min bubble radius (px)
+input int    InpBubbleCellPts   = 50;             // Bubble price bucket (points) — separate from footprint
+input int    InpMaxBubbleR      = 60;             // Max bubble radius (px)
+input int    InpMinBubbleR      = 10;             // Min bubble radius (px)
 input int    InpRingCount       = 4;              // Concentric rings per bubble
 input int    InpRingThickness   = 2;              // Ring line thickness (px)
-input double InpBubbleMinPct    = 40.0;           // Min % of global max vol to show ring
-input color  InpBuyBubbleCol    = C'30,210,60';   // Buy ring color (green)
-input color  InpSellBubbleCol   = C'210,30,30';   // Sell ring color (red)
+input double InpBubbleMinPct    = 20.0;           // Min % of global max vol to show ring
+input color  InpBuyBubbleCol    = C'40,240,80';   // Buy glow (bright green)
+input color  InpSellBubbleCol   = C'240,50,30';   // Sell glow (bright red-orange)
 
 //--- Data structures
 struct PriceLevel
@@ -121,7 +121,8 @@ FPBar                g_bars[];
 double               g_step;         // aggregated step = g_baseStep * g_tickMult
 double               g_baseStep;     // base step from InpTickSize
 double               g_bubbleStep;   // bubble price bucket step (independent)
-int                  g_basePts = 10; // runtime base cell size (points)
+int                  g_basePts = 10;   // runtime base cell size (points)
+int                  g_bubblePts = 50; // runtime bubble resolution (cycles 50-100)
 int                  g_tickMult = 1; // runtime tick multiplier
 ENUM_FOOT_CHART_MODE g_mode    = FOOT_CHART_BIDASK;
 long                 g_chart;
@@ -770,36 +771,25 @@ void EnsureScratch(int needed)
 //| Bookmap: Draw concentric rings at a chart position               |
 //| Optimized: pre-computed alpha table, minimal per-ring overhead   |
 //+------------------------------------------------------------------+
-void DrawRings(int xc, int yc, int maxR, color col, int baseAlpha)
+void DrawBubble(int xc, int yc, int maxR, color col, int baseAlpha)
   {
-   int rings = InpRingCount;
-   if(rings < 1) rings = 1;
-   int thick = InpRingThickness;
-   if(thick < 1) thick = 1;
-
-   double invRings = 1.0 / (double)rings;
-
-   for(int r = 0; r < rings; r++)
+   // Filled gradient orb — Bookmap style: bright center, soft glow at edge
+   if(maxR < 2) maxR = 2;
+   int steps = MathMin(maxR, 30);
+   for(int s = steps; s >= 0; s--)
      {
-      double frac = (double)(r + 1) * invRings;
-      int rad = (int)(maxR * frac);
-      if(rad < 2) rad = 2;
-
-      int ringAlpha = (int)(baseAlpha * (1.0 - frac * 0.5));
-      if(ringAlpha < 10) ringAlpha = 10;
-      uint argb = FpARGB(col, ringAlpha);
-
-      for(int t = 0; t < thick; t++)
-        {
-         int rr = rad + t;
-         if(rr > 0)
-            canvas.Circle(xc, yc, rr, argb);
-        }
+      int r = (int)((double)s / (double)steps * maxR);
+      if(r < 1) r = 1;
+      double frac      = 1.0 - (double)s / (double)steps; // 0 at edge, 1 at center
+      double intensity = frac * frac;                      // quadratic: bright core
+      int alpha = (int)(baseAlpha * 0.12 + baseAlpha * 0.88 * intensity);
+      if(alpha > 255) alpha = 255;
+      if(alpha < 3) continue;
+      canvas.FillCircle(xc, yc, r, FpARGB(col, alpha));
      }
-
-   // Bright core dot
-   int coreR = MathMax(1, maxR / 8);
-   canvas.FillCircle(xc, yc, coreR, FpARGB(clrWhite, baseAlpha / 2));
+   // White-hot core
+   int coreR = MathMax(2, maxR / 5);
+   canvas.FillCircle(xc, yc, coreR, FpARGB(clrWhite, MathMin(baseAlpha, 180)));
   }
 
 //+------------------------------------------------------------------+
@@ -1092,7 +1082,7 @@ void DrawBar(int bi, int shift, int barW)
       double globalNorm  = MathMax(1.0, g_globalMaxCellVol);
       double minThresh   = globalNorm * InpBubbleMinPct / 100.0;
       double bubStep     = g_bubbleStep;
-      int    ringAlpha   = (160 * g_opacity) / 255;
+      int    ringAlpha   = (220 * g_opacity) / 255;
       int    rangeR      = InpMaxBubbleR - InpMinBubbleR;
       double barLo       = g_bars[bi].low  - g_step * 0.5;
       double barHi       = g_bars[bi].high + g_step * 0.5;
@@ -1117,10 +1107,15 @@ void DrawBar(int bi, int shift, int barW)
                if(vr > 1.0) vr = 1.0;
                int maxR = InpMinBubbleR + (int)(vr * rangeR);
 
-               if(bAsk >= bBid && bAsk > 0)
-                  DrawRings(xc, ycr, maxR, InpBuyBubbleCol, ringAlpha);
-               else if(bBid > 0)
-                  DrawRings(xc, ycr, maxR, InpSellBubbleCol, ringAlpha);
+               if(bAsk > bBid && bAsk > 0)
+                  DrawBubble(xc, ycr, maxR, InpBuyBubbleCol, ringAlpha);
+               else if(bBid > bAsk && bBid > 0)
+                  DrawBubble(xc, ycr, maxR, InpSellBubbleCol, ringAlpha);
+               else if(bAsk > 0 || bBid > 0)
+                 {
+                  DrawBubble(xc, ycr, maxR, InpBuyBubbleCol,  ringAlpha / 2);
+                  DrawBubble(xc, ycr, maxR, InpSellBubbleCol, ringAlpha / 2);
+                 }
               }
             bAsk = 0; bBid = 0; bTot = 0;
             bYSum = 0; bYCnt = 0;
@@ -1410,18 +1405,10 @@ void DrawPanel()
    canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
                   IntegerToString((int)vaPct) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // 12. Bub (Bookmap rings toggle)
-   uint bubFill   = g_showBubbles ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
-   uint bubBorder = g_showBubbles ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
-   if(hoveredBub)
-     {
-      bubFill   = hoverFill;
-      bubBorder = hoverBorder;
-     }
-   canvas.FillRectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, bubFill);
-   canvas.Rectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, bubBorder);
+   canvas.FillRectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, baseFill);
+   canvas.Rectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, hoveredBub ? hoverBorder : baseBorder);
    canvas.TextOut(g_btnBubX1 + btnCenterX, btnCenterY,
-                  "Bub", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+                  IntegerToString(g_bubblePts) + "B", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
    // 13. FP (Footprint cells toggle)
    uint fpFill   = g_showFootprint ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
@@ -1563,8 +1550,9 @@ int OnInit()
    int mul = MathMax(1, MathMin(40, InpTickMultiplier));
    g_tickMult = mul;
    g_step     = g_baseStep * g_tickMult;
-   g_bubbleStep = MathMax(1, MathMin(10000, InpBubbleCellPts)) * _Point;
-   if(g_bubbleStep < g_step) g_bubbleStep = g_step; // can't be finer than footprint
+   g_bubblePts  = MathMax(10, MathMin(10000, InpBubbleCellPts));
+   g_bubbleStep = g_bubblePts * _Point;
+   if(g_bubbleStep < g_step) g_bubbleStep = g_step;
 
    g_mode         = InpChartMode;
    g_chart        = ChartID();
@@ -1843,10 +1831,17 @@ void OnChartEvent(const int id, const long &lparam,
          g_needs_reload = true;
          g_dirty        = true;
         }
-      // Bubble toggle
+      // Bubble cycle toggle (50 -> 60 ... 100 -> 50)
       else if(HitTest(mx, my, g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2))
         {
-         g_showBubbles = !g_showBubbles;
+         if(g_bubblePts >= 100)
+            g_bubblePts = 50;
+         else
+            g_bubblePts += 10;
+         g_bubbleStep = g_bubblePts * _Point;
+         if(g_bubbleStep < g_step) g_bubbleStep = g_step;
+
+         g_needs_reload = true;
          g_dirty = true;
         }
       // Footprint toggle
