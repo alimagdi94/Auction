@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                              ChartTrader.mq5     |
 //|              Professional Chart Trader - Production Ready         |
 //|    Market/Pending execution, Risk/Manual lot, SL/TP visual lines |
