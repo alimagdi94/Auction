@@ -59,7 +59,7 @@ input color  InpPOCColor        = clrDodgerBlue;  // POC Frame Color (blue per r
 input color  InpBullishFrame    = clrLime;        // Bullish Session Frame (Green)
 input color  InpBearishFrame    = clrCrimson;     // Bearish Session Frame (Red)
 input color  InpWickColor       = C'140,140,150'; // Candle Structure Color
-input color  InpGridColor       = clrBlack;       // Grid Separation Color
+input color  InpGridColor       = C'50,50,60';    // Grid Separation Color
 
 input group "Colors - Text"
 input color  InpTextBaseColor   = C'160,160,170'; // Default Cell Text
@@ -268,9 +268,14 @@ int InsertBar(datetime bt)
       g_bars[n].bar_time    = bt;
       g_bars[n].total_vol   = 0;
       g_bars[n].total_delta = 0;
+      g_bars[n].high        = 0.0;
+      g_bars[n].low         = 0.0;
       g_bars[n].sorted      = true;
       g_bars[n].is_bullish  = true;
       g_bars[n].level_count = 0;
+      g_bars[n].poc_idx     = -1;
+      g_bars[n].va_lo_idx   = -1;
+      g_bars[n].va_hi_idx   = -1;
       ArrayResize(g_bars[n].levels, 64, 64);
       return n;
      }
@@ -288,18 +293,64 @@ int InsertBar(datetime bt)
       pos = i;
      }
 
+   // Append a fresh slot at the end, then bubble it into position.
+   // We MUST NOT use struct assignment to shift elements because FPBar
+   // contains a dynamic array (levels[]); MQL5 struct assignment does a
+   // shallow copy of dynamic arrays, leaving both the source and the
+   // destination pointing at the same buffer — corrupting memory.
+   // Bubbling via ArraySwap-style pointer swap is not available in MQL5
+   // for custom structs, so we instead shift the plain scalar fields and
+   // move level data explicitly with ArraySwap on the levels sub-array.
    ArrayResize(g_bars, n + 1, 128);
+
+   // Initialise the brand-new slot at the end
+   g_bars[n].bar_time    = 0;
+   g_bars[n].total_vol   = 0;
+   g_bars[n].total_delta = 0;
+   g_bars[n].high        = 0.0;
+   g_bars[n].low         = 0.0;
+   g_bars[n].sorted      = true;
+   g_bars[n].is_bullish  = true;
+   g_bars[n].level_count = 0;
+   g_bars[n].poc_idx     = -1;
+   g_bars[n].va_lo_idx   = -1;
+   g_bars[n].va_hi_idx   = -1;
+   ArrayResize(g_bars[n].levels, 0);
+
+   // Shift scalar fields and swap dynamic arrays from n..pos+1 downward
    for(int i = n; i > pos; i--)
      {
-      g_bars[i] = g_bars[i - 1]; // Native MQL5 struct assignment
+      // Copy scalars from i-1 to i
+      g_bars[i].bar_time    = g_bars[i - 1].bar_time;
+      g_bars[i].total_vol   = g_bars[i - 1].total_vol;
+      g_bars[i].total_delta = g_bars[i - 1].total_delta;
+      g_bars[i].high        = g_bars[i - 1].high;
+      g_bars[i].low         = g_bars[i - 1].low;
+      g_bars[i].sorted      = g_bars[i - 1].sorted;
+      g_bars[i].is_bullish  = g_bars[i - 1].is_bullish;
+      g_bars[i].level_count = g_bars[i - 1].level_count;
+      g_bars[i].poc_idx     = g_bars[i - 1].poc_idx;
+      g_bars[i].va_lo_idx   = g_bars[i - 1].va_lo_idx;
+      g_bars[i].va_hi_idx   = g_bars[i - 1].va_hi_idx;
+      // Move the dynamic levels array: copy contents then clear source
+      int lc = g_bars[i - 1].level_count;
+      ArrayResize(g_bars[i].levels, lc, 64);
+      for(int k = 0; k < lc; k++)
+         g_bars[i].levels[k] = g_bars[i - 1].levels[k];
      }
 
+   // Place new bar at pos
    g_bars[pos].bar_time    = bt;
    g_bars[pos].total_vol   = 0;
    g_bars[pos].total_delta = 0;
+   g_bars[pos].high        = 0.0;
+   g_bars[pos].low         = 0.0;
    g_bars[pos].sorted      = true;
    g_bars[pos].is_bullish  = true;
    g_bars[pos].level_count = 0;
+   g_bars[pos].poc_idx     = -1;
+   g_bars[pos].va_lo_idx   = -1;
+   g_bars[pos].va_hi_idx   = -1;
    ArrayResize(g_bars[pos].levels, 64, 64);
    return pos;
   }
@@ -372,6 +423,8 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
 
    g_bars[bi].total_vol   += vol;
    g_bars[bi].total_delta += (isBuy ? vol : (isSell ? -vol : 0));
+   // Mark signals as stale so DrawBar will recompute on next render
+   g_bars[bi].sorted = false;
    g_dirty = true;
   }
 
@@ -572,7 +625,8 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
       datetime bt = current_bar_time;
       int      bi = GetBar(bt);
 
-      // Update dimensions and sentiment
+      // Update dimensions and sentiment BEFORE accumulating so AccumulateTick
+      // boundary checks (skipSearch) use correct high/low on first tick of bar.
       double bOpen  = iOpen(_Symbol, PERIOD_CURRENT, sh);
       double bClose = iClose(_Symbol, PERIOD_CURRENT, sh);
       g_bars[bi].is_bullish = (bClose >= bOpen);
@@ -580,7 +634,6 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
       g_bars[bi].low        = iLow(_Symbol, PERIOD_CURRENT, sh);
 
       AccumulateTick(bi, price, vol, isBuy, isSell);
-      ComputeBarSignals(bi);
 
       if(updateLastTimeMs)
          g_last_tick_time_ms = ticks[i].time_msc;
@@ -657,7 +710,7 @@ int FindPOC(const PriceLevel &lv[], int count)
 //+------------------------------------------------------------------+
 double GetEffectiveVAPercent()
   {
-   return (g_vaPercent > 0.0) ? g_vaPercent : (double)InpVAPercent;
+   return g_vaPercent;
   }
 
 //+------------------------------------------------------------------+
@@ -751,7 +804,9 @@ void DrawBar(int bi, int shift, int barW)
    if(len == 0)
       return;
 
-   ComputeBarSignals(bi); // ensure signals
+   // Recompute signals only when needed (tick accumulation marks sorted=false)
+   if(!g_bars[bi].sorted)
+      ComputeBarSignals(bi);
 
    int pocIdx  = g_bars[bi].poc_idx;
    int vaLoIdx = g_bars[bi].va_lo_idx;
@@ -1411,6 +1466,10 @@ int OnInit()
    g_hideText     = false;
    g_userHideText = !InpShowText;
    g_imbRatio     = InpImbalanceRatio;
+   // Seed runtime VA% from input so the button label is correct on load.
+   // GetEffectiveVAPercent() returns InpVAPercent when g_vaPercent==0,
+   // but the VA cycle button checks g_vaPercent directly, so seed it.
+   g_vaPercent    = (double)InpVAPercent;
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
 
@@ -1538,7 +1597,7 @@ void OnChartEvent(const int id, const long &lparam,
          int      span             = MathMin(InpHistoryBars, bars_total - 1);
          datetime expectedFirstBar = iTime(_Symbol, PERIOD_CURRENT, span);
 
-         if(g_bars[0].bar_time != expectedFirstBar &&
+         if(g_bars[0].bar_time != expectedFirstBar ||
             g_bars[ArraySize(g_bars) - 1].bar_time != expectedLastBar)
             ReloadHistory();
         }
@@ -1681,14 +1740,13 @@ void OnChartEvent(const int id, const long &lparam,
       // VA%: cycle Value Area 70% -> 80% -> 90% -> 70%
       else if(HitTest(mx, my, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2))
         {
-         if(g_vaPercent < 70.0 || g_vaPercent >= 90.0)
-            g_vaPercent = 70.0;
-         else if(g_vaPercent < 80.0)
+         if(g_vaPercent < 80.0)
             g_vaPercent = 80.0;
-         else
+         else if(g_vaPercent < 90.0)
             g_vaPercent = 90.0;
+         else
+            g_vaPercent = 70.0;
          g_dirty = true;
         }
      }
   }
-

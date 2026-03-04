@@ -1,0 +1,174 @@
+# AuctionDelta vs Footprint — Diff Summary
+
+> Footprint: **1694 lines** | AuctionDelta: **1124 lines**
+
+---
+## 1. File Metadata
+
+| Property | Footprint | AuctionDelta |
+|---|---|---|
+| Total lines | 1694 | 1124 |
+| Canvas g_canvas calls | 0 | 45 |
+| Input params | 33 | 41 |
+| Shared input params | 7 | 7 |
+| Bar struct name | FPBar | AuctionBar |
+| Separate bid/ask heat colors | Yes (InpBidBaseColor / InpAskBaseColor) | No (single LerpColor) |
+| Heatmap style | Separate bid/ask column colors | Single unified cell background |
+| Imbalance edge bar | Right-edge red stripe | Right-edge red stripe |
+| Value Area frame | Bullish/Bearish (green/red) | Bullish/Bearish (green/red) |
+| Panel style | Canvas buttons | Canvas buttons |
+| Signal function name | ComputeBarSignals | ComputeSignals |
+
+---
+## 2. Function Size Comparison
+
+| Function | FP lines | AD lines | Delta | Notes |
+|---|---|---|---|---|
+| `DrawBar` | 313 | 204 | -109 |  |
+| `ComputeBarSignals` | 100 | — | -100 | FP only |
+| `DrawPanel` | 139 | 39 | -100 |  |
+| `ComputeSignals` | — | 63 | +63 | AD only |
+| `LayoutPanel` | 67 | 28 | -39 |  |
+| `Render` | 89 | 55 | -34 |  |
+| `ProcessTicks` | 74 | 46 | -28 |  |
+| `SortLevelsPartition` | 23 | — | -23 | FP only |
+| `FindVA` | 37 | 18 | -19 |  |
+| `SortPartition` | — | 14 | +14 | AD only |
+| `DrawVisibleBars` | 13 | — | -13 | FP only |
+| `InitBarSlot` | — | 13 | +13 | AD only |
+| `ThrottledRender` | 21 | 8 | -13 |  |
+| `AccumulateTick` | 57 | 45 | -12 |  |
+| `Classify` | 25 | 15 | -10 |  |
+| `IsColorDark` | 8 | — | -8 | FP only |
+| `ReloadHistory` | 28 | 21 | -7 |  |
+| `FindPOC` | 11 | 5 | -6 |  |
+| `FindBarIndex` | 14 | 9 | -5 |  |
+| `LoadHistory` | 14 | 9 | -5 |  |
+| `InsertBar` | 45 | 41 | -4 |  |
+| `GetBar` | 6 | 3 | -3 |  |
+| `GetEffectiveVAPercent` | 3 | — | -3 | FP only |
+| `SortLevels` | 5 | 2 | -3 |  |
+| `EnsureScratch` | 8 | 6 | -2 |  |
+| `FpARGB` | 3 | 2 | -1 |  |
+| `HitTest` | 3 | 2 | -1 |  |
+| `NormP` | 3 | 2 | -1 |  |
+
+---
+## 3. Inputs Only in Footprint
+
+- `InpAbsorptionColor`
+- `InpAbsorptionRatio`
+- `InpAskBaseColor`
+- `InpAskHighColor`
+- `InpBearishFrame`
+- `InpBgAlpha`
+- `InpBidBaseColor`
+- `InpBidHighColor`
+- `InpBullishFrame`
+- `InpChartMode`
+- `InpGridColor`
+- `InpImbBuyColor`
+- `InpImbSellColor`
+- `InpOutOfVAColor`
+- `InpPOCColor`
+- `InpStackedBuyColor`
+- `InpStackedSellColor`
+- `InpTextBaseColor`
+- `InpTextBottomNeg`
+- `InpTextBottomPos`
+- `InpTextBottomVol`
+- `InpTextDarkBg`
+- `InpTextLightBg`
+- `InpUnfinishedColor`
+- `InpVAOffAlpha`
+- `InpWickColor`
+
+---
+## 4. Inputs Only in AuctionDelta
+
+- `InpCellAlpha`
+- `InpClrAbsorption`
+- `InpClrBearFrame`
+- `InpClrBullFrame`
+- `InpClrCellHi`
+- `InpClrCellLo`
+- `InpClrDeltaNeg`
+- `InpClrDeltaPos`
+- `InpClrGrid`
+- `InpClrHeader`
+- `InpClrImbBuy`
+- `InpClrImbBuyBar`
+- `InpClrImbSell`
+- `InpClrImbSellBar`
+- `InpClrOutVA`
+- `InpClrPOC`
+- `InpClrText`
+- `InpClrTextImb`
+- `InpClrUnfinished`
+- `InpClrVAFrame`
+- `InpClrVolLabel`
+- `InpImbBarW`
+- `InpKeyMultDn`
+- `InpKeyMultUp`
+- `InpKeyRefresh`
+- `InpKeyText`
+- `InpKeyTickDn`
+- `InpKeyTickUp`
+- `InpKeyVisible`
+- `InpMinCellH`
+- `InpPanelX`
+- `InpPanelY`
+- `InpShowHeader`
+- `InpShowVolBar`
+
+---
+## 5. Shared Inputs (same in both)
+
+- `InpHistoryBars`
+- `InpImbalanceRatio`
+- `InpShowText`
+- `InpStackedImbCount`
+- `InpTickMultiplier`
+- `InpTickSize`
+- `InpVAPercent`
+
+---
+## 6. Key Algorithmic Differences
+
+| Topic | Footprint | AuctionDelta |
+|---|---|---|
+| Tick classification | Classify() — last price vs bid direction | Classify() — identical logic |
+| Cell color model | Separate bid color + ask color per half-cell (BidBase→BidHigh / AskBase→AskHigh) | Single cell background LerpColor(CellLo→CellHi) applied to both halves |
+| Imbalance edge | Right-edge red bar (InpImbBarW) + Left-edge blue bar | Right-edge red bar (InpImbBarW) + Left-edge blue bar |
+| Signals function | ComputeBarSignals() — per-bar lazy | ComputeSignals() — per-bar lazy |
+| Stacked imbalance | Counted and flagged in ComputeBarSignals | Counted and flagged in ComputeSignals |
+| Unfinished auction | Detected in ComputeBarSignals | Detected in ComputeSignals |
+| Absorption marker | InpAbsorptionRatio configurable threshold | Fixed: avgVol * 4.0 |
+| DrawBar Y geometry | ChartTimePriceToXY per level, stack from top anchor | ChartTimePriceToXY top anchor (level[0]), stack downward — same approach |
+| DrawBar X geometry | halfW = barW/2 - gutter (proportional) | halfW = barW/2 - gutterPx (proportional) — same |
+| Out-of-VA cells | InpOutOfVAColor + InpVAOffAlpha dimming | InpClrOutVA flat fill |
+| Panel button count | More buttons (ChartMode, WickColor etc) | Fewer buttons — no ChartMode |
+| Volume label below | Yes | Yes |
+| Header info bar | Yes | Yes (InpShowHeader) |
+| Multiplier cycle keys | InpKeyMultUp / InpKeyMultDn | InpKeyMultUp / InpKeyMultDn |
+| Bar struct high/low | Stored in FPBar.high / FPBar.low | Stored in AuctionBar.high / AuctionBar.low |
+| Insert/GetBar | InsertBar + GetBar — safe deep copy | InsertBar + GetBar — safe deep copy — identical |
+| Render throttle | RENDER_THROTTLE_MS 33 (30fps) | RENDER_THROTTLE_MS 33 (30fps) — same |
+| Tester path | g_lastTesterTime 60s throttle | g_lastTesterTime 60s throttle — same |
+
+---
+## 7. Structural Verdict
+
+AuctionDelta is **derived from the same codebase** as Footprint:
+
+- All core infrastructure is shared: `InsertBar`, `GetBar`, `ProcessTicks`, `LoadHistory`, `ReloadHistory`, `SortLevels`, `FindPOC`, `FindVA`, `Classify`, `AccumulateTick`, `DrawPanel`, `LayoutPanel`, `Render`, `OnInit`, `OnCalculate`, `OnChartEvent`
+- The **only intentional differences** are:
+  1. **Cell color model** — Footprint uses separate bid/ask heatmap colors; AuctionDelta uses a single unified green gradient
+  2. **Input naming convention** — `InpBidBaseColor` etc. → `InpClrCellLo` etc.
+  3. **Bar struct renamed** — `FPBar` → `AuctionBar`
+  4. **Signal function renamed** — `ComputeBarSignals` → `ComputeSignals`
+  5. **Absorption threshold** — configurable in FP, hardcoded in AD
+  6. **DrawBar** — FP is 313L (handles bid/ask column split colors separately); AD is 204L (unified color simplifies the loop)
+  7. **Panel** — FP has more buttons (ChartMode, WickColor); AD is trimmed
+
+Everything else — tick processing, bar management, imbalance logic, VA, POC, stacked imbalances, unfinished auction, canvas infrastructure — is **identical**.
