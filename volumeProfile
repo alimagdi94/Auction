@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, User"
 #property link      "https://www.mql5.com"
-#property version   "5.10"
+#property version   "5.11"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -49,46 +49,38 @@ sinput double               InpValueAreaPct      = 70.0;          // Value Area 
 sinput int                  InpWidthRatio        = 40;            // Max Histogram Width %
 
 input group "─── COLORS: VALUE AREA ───"
-sinput color                InpColorVAUp         = C'70,130,180'; // VA Up Volume (Steel Blue)
-sinput color                InpColorVADown       = C'100,149,237';// VA Down Volume (Cornflower Blue)
-sinput color                InpColorOutUp        = C'128,128,128';// Outside VA Up (Grey)
-sinput color                InpColorOutDown      = C'169,169,169';// Outside VA Down (Silver)
+sinput color                InpColorVAUp         = C'40,160,80';  // VA Up Volume (Green — industry standard)
+sinput color                InpColorVADown       = C'160,40,40';  // VA Down Volume (Red — industry standard)
+sinput color                InpColorOutUp        = C'30,80,40';   // Outside VA Up (Dim Green)
+sinput color                InpColorOutDown      = C'80,30,30';   // Outside VA Down (Dim Red)
 
 input group "─── COLORS: POC & LINES ───"
-sinput color                InpColorPOCLine      = clrOrange;     // POC Line Color
-sinput int                  InpPOCWidth          = 2;             // POC Line Width
-sinput ENUM_LINE_STYLE      InpPOCStyle          = STYLE_SOLID;   // POC Line Style
+sinput color                InpColorPOCLine      = C'255,160,0';  // POC Line Color (Amber — industry standard)
+sinput int                  InpPOCWidth          = 3;             // POC Line Width (px total)
 sinput bool                 InpHighlightPOCBar   = true;          // Highlight POC Bucket
-sinput color                InpColorPOCBar       = clrGold;       // POC Bucket Highlight
+sinput color                InpColorPOCBar       = C'255,180,0';  // POC Bucket Highlight (Gold)
 
 input group "─── COLORS: VA BOUNDARIES ───"
 sinput bool                 InpShowVABounds      = true;          // Show VAH/VAL Lines
-sinput color                InpColorVABounds     = clrDimGray;    // VAH/VAL Color
-sinput ENUM_LINE_STYLE      InpVAStyle           = STYLE_DASH;    // VAH/VAL Style
-sinput int                  InpVAWidth           = 1;             // VAH/VAL Width
+sinput color                InpColorVABounds     = C'160,160,180';// VAH/VAL Color (Light Slate — clearly visible)
+sinput int                  InpVAWidth           = 2;             // VAH/VAL Width (px total)
 
 input group "─── VISUALS & LABELS ───"
 sinput bool                 InpBackground        = true;          // Draw as Background
 sinput bool                 InpFill              = true;          // Fill Histogram Bars
+sinput uchar                InpHistAlpha         = 200;           // Histogram Opacity (0=transparent, 255=solid)
 sinput bool                 InpShowValues        = true;          // Show Volume Labels
-sinput color                InpValueColor        = clrDarkGray;   // Volume Labels Color
+sinput color                InpValueColor        = C'220,220,220';// Volume Labels Color (bright — visible on dark charts)
 sinput int                  InpValueFontSize     = 8;             // Labels Font Size
-sinput color                InpColorSelector     = clrSlateGray;  // Selector Box Color
+sinput color                InpColorSelector     = C'100,140,200';// Selector Box Color (Blue-grey)
 
-//--- Object name constants
+//--- Object name constants (canvas overlay + selector only)
 const string RECT_NAME     = "VP_Selector";
-const string LINE_PREFIX   = "VP_Line_";
-const string LABEL_PREFIX  = "VP_Val_";
-const string POC_OBJ_NAME  = "VP_POC_Line";
-const string VAH_OBJ_NAME  = "VP_VAH_Line";
-const string VAL_OBJ_NAME  = "VP_VAL_Line";
 
 //--- State
 CCanvas canvas;
-int    g_prevSteps         = 0;
-int    g_prevLabelCount    = 0;
 long   g_last_tick_time_ms = 0;   // last processed tick (for dynamic tick mode)
-ulong  g_last_render_ms    = 0;    // throttle redraws
+ulong  g_last_render_ms    = 0;   // throttle redraws
 double g_prevBid           = 0.0; // for buy/sell classification (Forex)
 datetime g_tester_last_time = 0;  // tester optimization throttle
 //--- Compile-time constants
@@ -106,9 +98,16 @@ double SafeValueAreaPct()  { return MathMax(MathMin(InpValueAreaPct, 100.0), 10.
 int    SafePOCWidth()      { return MathMax(MathMin(InpPOCWidth, 5), 1); }
 int    SafeVAWidth()       { return MathMax(MathMin(InpVAWidth, 5), 1); }
 
+// Histogram bars use InpHistAlpha; key lines pass explicit alpha
 uint GetARGB(color col, uchar alpha = 200)
   {
    return ColorToARGB(col, alpha);
+  }
+
+// Histogram bar ARGB — uses user-controlled opacity
+uint GetHistARGB(color col)
+  {
+   return ColorToARGB(col, InpHistAlpha);
   }
 
 //+------------------------------------------------------------------+
@@ -240,6 +239,7 @@ int OnInit()
    int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    canvas.CreateBitmapLabel(0, 0, "VP_Canvas", 0, 0, chart_width, chart_height, COLOR_FORMAT_ARGB_NORMALIZE);
    ObjectSetInteger(0, "VP_Canvas", OBJPROP_BACK, InpBackground);
+   ObjectSetInteger(0, "VP_Canvas", OBJPROP_ZORDER, 0);   // Render below price objects
    g_tester_last_time = 0;
 
    if(ObjectFind(0, RECT_NAME) < 0)
@@ -275,6 +275,14 @@ int OnCalculate(const int rates_total,
    if(ObjectFind(0, RECT_NAME) < 0)
      {
       CreateSelector();
+      CalculateAndDraw();
+      return rates_total;
+     }
+
+   // Always recalculate on the very first call (symbol/TF change, indicator reload)
+   // This ensures static profiles (InpDynamic=false) appear after every chart change
+   if(prev_calculated == 0)
+     {
       CalculateAndDraw();
       return rates_total;
      }
@@ -317,7 +325,9 @@ void OnChartEvent(const int id,
       int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
       canvas.Resize(chart_width, chart_height);
 
-      if(InpDynamic && ObjectFind(0, RECT_NAME) >= 0)
+      // Redraw unconditionally: zoom/scroll invalidates pixel positions
+      // regardless of whether InpDynamic is on or off
+      if(ObjectFind(0, RECT_NAME) >= 0)
          CalculateAndDraw();
       return;
      }
@@ -346,7 +356,7 @@ void CreateSelector()
 
    ObjectCreate(0, RECT_NAME, OBJ_RECTANGLE, 0, time_start, price_high, time_current, price_low);
    ObjectSetInteger(0, RECT_NAME, OBJPROP_COLOR, InpColorSelector);
-   ObjectSetInteger(0, RECT_NAME, OBJPROP_STYLE, STYLE_DOT);
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_STYLE, STYLE_DASH);
    ObjectSetInteger(0, RECT_NAME, OBJPROP_WIDTH, 1);
    ObjectSetInteger(0, RECT_NAME, OBJPROP_FILL, false);
    ObjectSetInteger(0, RECT_NAME, OBJPROP_BACK, false);
@@ -739,7 +749,7 @@ void GetBarColors(int idx, int poc_idx, int va_low_idx, int va_high_idx,
 void DrawBars(int steps, double range_bottom, double resolution,
               const double &buckets_up[], const double &buckets_down[],
               double max_total_vol,
-              datetime start_time, datetime end_time, datetime rect_full_time,
+              datetime start_time, datetime end_time,
               int poc_idx, int va_low_idx, int va_high_idx)
   {
    double max_width_factor = SafeWidthFactor();
@@ -749,15 +759,14 @@ void DrawBars(int steps, double range_bottom, double resolution,
    if(InpShowValues)
       label_skip = CalcLabelSkip(steps, resolution);
 
-   int label_count = 0;
-   
    canvas.Erase(0);
-   canvas.FontSet("Arial", InpValueFontSize);
-   
+   // Consolas: monospace — digits align vertically across rows (industry standard for volume ladders)
+   canvas.FontSet("Consolas", InpValueFontSize, FW_NORMAL);
+
    // 1. Query chart bounds exactly ONCE to prevent 1000s of sync calls
    int x_start = 0, y_bottom = 0;
    int x_end = 0, y_top = 0;
-   
+
    ChartTimePriceToXY(0, 0, start_time, range_bottom, x_start, y_bottom);
    ChartTimePriceToXY(0, 0, end_time, range_bottom + (steps * resolution), x_end, y_top);
 
@@ -777,17 +786,17 @@ void DrawBars(int steps, double range_bottom, double resolution,
       color col_up_bar, col_down_bar;
       GetBarColors(i, poc_idx, va_low_idx, va_high_idx, col_up_bar, col_down_bar);
 
-      double total_ratio      = vol_total / max_total_vol;
-      double up_ratio_val     = (vol_total > 0) ? vol_up / vol_total : 0.5;
+      double total_ratio  = vol_total / max_total_vol;
+      double up_ratio_val = (vol_total > 0) ? vol_up / vol_total : 0.5;
 
       int total_width_px = (int)(MathAbs(x_end - x_start) * total_ratio * max_width_factor);
       int up_width_px    = (int)(total_width_px * up_ratio_val);
       int down_width_px  = total_width_px - up_width_px;
 
-      // Linear interpolation for Y axis (instead of calling ChartTimePriceToXY)
+      // Linear interpolation for Y axis (avoids per-bucket ChartTimePriceToXY calls)
       double t_ratio1 = (double)i / (double)steps;
       double t_ratio2 = (double)(i + 1) / (double)steps;
-      
+
       int y1 = y_bottom + (int)(dY * t_ratio1);
       int y2 = y_bottom + (int)(dY * t_ratio2);
 
@@ -806,28 +815,28 @@ void DrawBars(int steps, double range_bottom, double resolution,
          x1     = x2 - total_width_px;
         }
 
-      // Down on Left
+      // Down volume (Bid side — left half)
       if(vol_down > VP_MIN_VOLUME)
         {
-         if(InpFill) canvas.FillRectangle(x1, y2, xsplit, y1, GetARGB(col_down_bar, 200));
-         else        canvas.Rectangle(x1, y2, xsplit, y1, GetARGB(col_down_bar, 200));
+         if(InpFill) canvas.FillRectangle(x1, y2, xsplit, y1, GetHistARGB(col_down_bar));
+         else        canvas.Rectangle(x1, y2, xsplit, y1, GetHistARGB(col_down_bar));
         }
 
-      // Up on Right
+      // Up volume (Ask side — right half)
       if(vol_up > VP_MIN_VOLUME)
         {
-         if(InpFill) canvas.FillRectangle(xsplit, y2, x2, y1, GetARGB(col_up_bar, 200));
-         else        canvas.Rectangle(xsplit, y2, x2, y1, GetARGB(col_up_bar, 200));
+         if(InpFill) canvas.FillRectangle(xsplit, y2, x2, y1, GetHistARGB(col_up_bar));
+         else        canvas.Rectangle(xsplit, y2, x2, y1, GetHistARGB(col_up_bar));
         }
 
-      // Volume value label — only render at spaced intervals
+      // Volume value label — only render at spaced intervals to prevent overlap
       if(InpShowValues && (i % label_skip == 0))
         {
-         int lx = (InpAlignment == VP_ALIGN_LEFT) ? x2 : x1;
-         int ly = y_bottom + (int)(dY * (t_ratio1 + t_ratio2) / 2.0); // Midpoint of bucket mathematically
-         uint align = (InpAlignment == VP_ALIGN_LEFT) ? 0 : 2; // TA_LEFT or TA_RIGHT
-         canvas.TextOut(lx, ly - (InpValueFontSize / 2), FormatVolume(vol_total), GetARGB(InpValueColor, 255), align);
-         label_count++;
+         int lx = (InpAlignment == VP_ALIGN_LEFT) ? x2 + 2 : x1 - 2;  // Small offset from bar edge
+         int ly = y_bottom + (int)(dY * (t_ratio1 + t_ratio2) / 2.0);  // Vertical midpoint of bucket
+         uint align = (InpAlignment == VP_ALIGN_LEFT) ? TA_LEFT : TA_RIGHT;
+         canvas.TextOut(lx, ly - (InpValueFontSize / 2), FormatVolume(vol_total),
+                        GetARGB(InpValueColor, 255), align);
         }
      }
   }
@@ -848,15 +857,21 @@ void DrawKeyLines(int poc_idx, int va_high_idx, int va_low_idx,
    if(steps <= 0) steps = 1;
 
    int y_poc = y_bottom + (int)(dY * ((double)poc_idx + 0.5) / (double)steps);
-   canvas.FillRectangle(x_start, y_poc - SafePOCWidth()/2, x_end, y_poc + SafePOCWidth()/2, GetARGB(InpColorPOCLine, 255));
+   // Ensure POC is always at least 3px tall (1px centre ± 1px), regardless of InpPOCWidth setting
+   int poc_half = MathMax(SafePOCWidth() / 2, 1);
+   canvas.FillRectangle(x_start, y_poc - poc_half, x_end, y_poc + poc_half,
+                        GetARGB(InpColorPOCLine, 255));
 
    if(InpShowVABounds)
      {
       int y_vah = y_bottom + (int)(dY * ((double)va_high_idx + 1.0) / (double)steps);
       int y_val = y_bottom + (int)(dY * ((double)va_low_idx) / (double)steps);
-
-      canvas.FillRectangle(x_start, y_vah - SafeVAWidth()/2, x_end, y_vah + SafeVAWidth()/2, GetARGB(InpColorVABounds, 150));
-      canvas.FillRectangle(x_start, y_val - SafeVAWidth()/2, x_end, y_val + SafeVAWidth()/2, GetARGB(InpColorVABounds, 150));
+      // VA bounds at 210 alpha — clearly visible reference levels (like Sierra Chart / cTrader)
+      int va_half = MathMax(SafeVAWidth() / 2, 1);
+      canvas.FillRectangle(x_start, y_vah - va_half, x_end, y_vah + va_half,
+                           GetARGB(InpColorVABounds, 210));
+      canvas.FillRectangle(x_start, y_val - va_half, x_end, y_val + va_half,
+                           GetARGB(InpColorVABounds, 210));
      }
   }
 
@@ -943,9 +958,8 @@ void CalculateAndDraw()
 
    if(max_total_vol <= 0) return;
 
-   datetime rect_full_time = (datetime)MathAbs((long)(end_time - start_time));
    DrawBars(steps, range_bottom, resolution, buckets_up, buckets_down,
-            max_total_vol, start_time, end_time, rect_full_time,
+            max_total_vol, start_time, end_time,
             poc_idx, va_low_idx, va_high_idx);
 
    DrawKeyLines(poc_idx, va_high_idx, va_low_idx,
