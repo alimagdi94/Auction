@@ -25,7 +25,7 @@ enum ENUM_FOOT_CHART_MODE
 
 //--- Inputs
 input group "Data & History"
-input int    InpTickSize        = 50;           // Base cell size (points), 1 point = 1×_Point
+input int    InpTickSize        = 100;          // Base cell size (points), 1 point = 1×_Point
 input double InpImbalanceRatio  = 300.0;        // Imbalance Threshold (%)
 input int    InpStackedImbCount = 3;            // Stacked Imbalance Min Count
 input double InpAbsorptionRatio = 4.0;          // Absorption Threshold (x Avg Vol)
@@ -34,7 +34,7 @@ input double InpVAPercent       = 70.0;         // Value Area % (industry defaul
 
 input group "Aggregation"
 input ENUM_FOOT_CHART_MODE InpChartMode      = FOOT_CHART_BIDASK; // Chart mode
-input int                  InpTickMultiplier = 10;                // Tick multiplier (1,2,5,10,20,40)
+input int                  InpTickMultiplier = 20;                // Tick multiplier (1,2,5,10,20,40)
 
 input group "Display"
 input bool   InpShowFootprint  = true;          // Show Footprint cells/frames
@@ -72,7 +72,7 @@ input color  InpTextBottomNeg   = clrRed;         // Bottom Label: Negative Delt
 
 input group "Bookmap — Concentric Ring Overlay"
 input bool   InpShowBubbles     = true;           // Show trade ring bubbles
-input int    InpBubbleCellPts   = 50;             // Bubble price bucket (points) — separate from footprint
+input int    InpBubbleCellPts   = 100;            // Bubble price bucket (points) — separate from footprint
 input int    InpMaxBubbleR      = 60;             // Max bubble radius (px)
 input int    InpMinBubbleR      = 10;             // Min bubble radius (px)
 input int    InpRingCount       = 4;              // Concentric rings per bubble
@@ -1405,10 +1405,17 @@ void DrawPanel()
    canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
                   IntegerToString((int)vaPct) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   canvas.FillRectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, baseFill);
-   canvas.Rectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, hoveredBub ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnBubX1 + btnCenterX, btnCenterY,
-                  IntegerToString(g_bubblePts) + "B", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+    uint bubFill   = g_showBubbles ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
+    uint bubBorder = g_showBubbles ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
+    if(hoveredBub)
+      {
+       bubFill   = hoverFill;
+       bubBorder = hoverBorder;
+      }
+    canvas.FillRectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, bubFill);
+    canvas.Rectangle(g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2, bubBorder);
+    canvas.TextOut(g_btnBubX1 + btnCenterX, btnCenterY,
+                   "Bub", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
    // 13. FP (Footprint cells toggle)
    uint fpFill   = g_showFootprint ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
@@ -1831,19 +1838,12 @@ void OnChartEvent(const int id, const long &lparam,
          g_needs_reload = true;
          g_dirty        = true;
         }
-      // Bubble cycle toggle (50 -> 60 ... 100 -> 50)
-      else if(HitTest(mx, my, g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2))
-        {
-         if(g_bubblePts >= 100)
-            g_bubblePts = 50;
-         else
-            g_bubblePts += 10;
-         g_bubbleStep = g_bubblePts * _Point;
-         if(g_bubbleStep < g_step) g_bubbleStep = g_step;
-
-         g_needs_reload = true;
-         g_dirty = true;
-        }
+       // Bubble show/hide toggle
+       else if(HitTest(mx, my, g_btnBubX1, g_btnBubY1, g_btnBubX2, g_btnBubY2))
+         {
+          g_showBubbles = !g_showBubbles;
+          g_dirty = true;
+         }
       // Footprint toggle
       else if(HitTest(mx, my, g_btnFpX1, g_btnFpY1, g_btnFpX2, g_btnFpY2))
         {
