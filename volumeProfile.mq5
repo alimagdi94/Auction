@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, User"
 #property link      "https://www.mql5.com"
-#property version   "5.11"
+#property version   "6.00"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -74,8 +74,35 @@ sinput color                InpValueColor        = C'220,220,220';// Volume Labe
 sinput int                  InpValueFontSize     = 8;             // Labels Font Size
 sinput color                InpColorSelector     = C'100,140,200';// Selector Box Color (Blue-grey)
 
+input group "─── SELECTOR ───"
+sinput bool                 InpHideSelector      = true;           // Hide selector box after initial load
+sinput bool                 InpExtendLines       = true;           // Extend POC/VAH/VAL lines to right screen edge
+
+input group "─── PRICE LABELS ───"
+sinput bool                 InpShowKeyLabels     = true;           // Show price labels on POC / VAH / VAL
+sinput int                  InpKeyLabelFontSize  = 9;              // Key-line label font size
+sinput color                InpPOCLabelColor     = C'255,210,50';  // POC label color
+sinput color                InpVALabelColor      = C'160,160,180'; // VAH / VAL label color
+
 //--- Object name constants (canvas overlay + selector only)
-const string RECT_NAME     = "VP_Selector";
+const string RECT_NAME       = "VP_Selector";
+const string BTN_SELECTOR    = "VP_BtnSelector";
+const string BTN_PROFILE     = "VP_BtnProfile";
+
+//--- Button layout
+#define VP_BTN_W   68
+#define VP_BTN_H   20
+#define VP_BTN_GAP  4
+#define VP_BTN_TOP  6
+#define VP_BTN_RIGHT 80
+
+//--- Stored profile range — allows the profile to persist after selector is hidden
+datetime g_t1 = 0;
+datetime g_t2 = 0;
+
+//--- UI state flags
+bool g_selectorVisible = false;  // starts hidden (matches InpHideSelector default)
+bool g_vpVisible       = true;   // volume profile histogram on/off
 
 //--- State
 CCanvas canvas;
@@ -108,6 +135,112 @@ uint GetARGB(color col, uchar alpha = 200)
 uint GetHistARGB(color col)
   {
    return ColorToARGB(col, InpHistAlpha);
+  }
+
+//+------------------------------------------------------------------+
+//| Hide the selector by moving it off every timeframe               |
+//| Coordinates are preserved so range can still be read/updated.    |
+//+------------------------------------------------------------------+
+void HideSelector()
+  {
+   if(ObjectFind(0, RECT_NAME) < 0) return;
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_SELECTED,   false);
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_SELECTABLE, false);
+  }
+
+//+------------------------------------------------------------------+
+//| Show the selector (re-enable all timeframes + dragging)          |
+//+------------------------------------------------------------------+
+void ShowSelector()
+  {
+   if(ObjectFind(0, RECT_NAME) < 0) return;
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, RECT_NAME, OBJPROP_SELECTED,   true);
+  }
+
+//+------------------------------------------------------------------+
+//| Create the two control buttons (top-right corner)               |
+//+------------------------------------------------------------------+
+void CreateButtons()
+  {
+   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+
+   // --- VP toggle button ---
+   if(ObjectFind(0, BTN_PROFILE) < 0)
+     {
+      ObjectCreate(0, BTN_PROFILE, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_XDISTANCE, VP_BTN_RIGHT);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_YDISTANCE, VP_BTN_TOP);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_XSIZE,     VP_BTN_W);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_YSIZE,     VP_BTN_H);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_FONTSIZE,  8);
+      ObjectSetString (0, BTN_PROFILE, OBJPROP_FONT,      "Consolas");
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_HIDDEN,    false);
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_ZORDER,    100);
+     }
+
+   // --- Selector toggle button (positioned just left of VP button) ---
+   if(ObjectFind(0, BTN_SELECTOR) < 0)
+     {
+      ObjectCreate(0, BTN_SELECTOR, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_CORNER,    CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_XDISTANCE, VP_BTN_RIGHT + VP_BTN_W + VP_BTN_GAP);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_YDISTANCE, VP_BTN_TOP);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_XSIZE,     VP_BTN_W);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_YSIZE,     VP_BTN_H);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_FONTSIZE,  8);
+      ObjectSetString (0, BTN_SELECTOR, OBJPROP_FONT,      "Consolas");
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_HIDDEN,    false);
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_ZORDER,    100);
+     }
+
+   UpdateButtonStates();
+  }
+
+//+------------------------------------------------------------------+
+//| Refresh button labels and colours to match current state         |
+//+------------------------------------------------------------------+
+void UpdateButtonStates()
+  {
+   // VP button
+   if(ObjectFind(0, BTN_PROFILE) >= 0)
+     {
+      ObjectSetString (0, BTN_PROFILE, OBJPROP_TEXT,    g_vpVisible ? "VP  ON" : "VP  OFF");
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_BGCOLOR,
+                       g_vpVisible ? C'20,90,50' : C'70,25,25');
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_COLOR,   C'220,220,225');
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_BORDER_COLOR,
+                       g_vpVisible ? C'50,180,100' : C'160,50,50');
+      ObjectSetInteger(0, BTN_PROFILE, OBJPROP_STATE,   false); // keep un-pressed
+     }
+
+   // Selector button
+   if(ObjectFind(0, BTN_SELECTOR) >= 0)
+     {
+      ObjectSetString (0, BTN_SELECTOR, OBJPROP_TEXT,   g_selectorVisible ? "SEL  ON" : "SEL  OFF");
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_BGCOLOR,
+                       g_selectorVisible ? C'20,60,110' : C'40,40,55');
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_COLOR,  C'220,220,225');
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_BORDER_COLOR,
+                       g_selectorVisible ? C'60,130,220' : C'80,80,100');
+      ObjectSetInteger(0, BTN_SELECTOR, OBJPROP_STATE,  false);
+     }
+
+   ChartRedraw(0);
+  }
+
+//+------------------------------------------------------------------+
+//| Delete both buttons                                              |
+//+------------------------------------------------------------------+
+void DeleteButtons()
+  {
+   ObjectDelete(0, BTN_PROFILE);
+   ObjectDelete(0, BTN_SELECTOR);
   }
 
 //+------------------------------------------------------------------+
@@ -239,12 +372,27 @@ int OnInit()
    int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    canvas.CreateBitmapLabel(0, 0, "VP_Canvas", 0, 0, chart_width, chart_height, COLOR_FORMAT_ARGB_NORMALIZE);
    ObjectSetInteger(0, "VP_Canvas", OBJPROP_BACK, InpBackground);
-   ObjectSetInteger(0, "VP_Canvas", OBJPROP_ZORDER, 0);   // Render below price objects
+   ObjectSetInteger(0, "VP_Canvas", OBJPROP_ZORDER, 0);
    g_tester_last_time = 0;
 
    if(ObjectFind(0, RECT_NAME) < 0)
       CreateSelector();
+
+   // Seed g_t1/g_t2 from the selector's current position
+   g_t1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
+   g_t2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
+
+   g_vpVisible       = true;
+   g_selectorVisible = !InpHideSelector; // sync flag to input default
+
    CalculateAndDraw();
+
+   if(InpHideSelector)
+      HideSelector();
+   else
+      ShowSelector();
+
+   CreateButtons();
    return(INIT_SUCCEEDED);
   }
 
@@ -253,6 +401,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   DeleteButtons();
    canvas.Destroy();
    ClearProfileObjects();
    ObjectDelete(0, RECT_NAME);
@@ -275,15 +424,24 @@ int OnCalculate(const int rates_total,
    if(ObjectFind(0, RECT_NAME) < 0)
      {
       CreateSelector();
+      g_t1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
+      g_t2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
       CalculateAndDraw();
+      if(InpHideSelector) HideSelector();
       return rates_total;
      }
 
-   // Always recalculate on the very first call (symbol/TF change, indicator reload)
-   // This ensures static profiles (InpDynamic=false) appear after every chart change
    if(prev_calculated == 0)
      {
+      // Re-seed range in case selector was recreated (e.g. TF change)
+      long tf = ObjectGetInteger(0, RECT_NAME, OBJPROP_TIMEFRAMES);
+      if(tf != OBJ_NO_PERIODS)
+        {
+         g_t1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
+         g_t2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
+        }
       CalculateAndDraw();
+      if(InpHideSelector) HideSelector();
       return rates_total;
      }
 
@@ -294,9 +452,8 @@ int OnCalculate(const int rates_total,
 
       if(is_tester)
         {
-         // Throttle logic for Strategy Tester using Chart Time
          datetime tester_now = TimeCurrent();
-         if(tester_now - g_tester_last_time >= 60) // Update max once per simulated minute
+         if(tester_now - g_tester_last_time >= 60)
            {
             CalculateAndDraw();
             g_tester_last_time = tester_now;
@@ -323,17 +480,58 @@ void OnChartEvent(const int id,
      {
       int chart_width  = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
       int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      canvas.Erase(0);
       canvas.Resize(chart_width, chart_height);
-
-      // Redraw unconditionally: zoom/scroll invalidates pixel positions
-      // regardless of whether InpDynamic is on or off
-      if(ObjectFind(0, RECT_NAME) >= 0)
+      // Recreate buttons if they were lost (e.g. chart template change)
+      if(ObjectFind(0, BTN_PROFILE)  < 0 ||
+         ObjectFind(0, BTN_SELECTOR) < 0)
+         CreateButtons();
+      if(g_t1 != 0 || g_t2 != 0)
          CalculateAndDraw();
       return;
      }
-   if(id == CHARTEVENT_OBJECT_DRAG) // Changed from DRAG || CHANGE to prevent overwhelming UI thread
+
+   if(id == CHARTEVENT_OBJECT_CLICK)
      {
-      if(sparam == RECT_NAME)
+      if(sparam == BTN_PROFILE)
+        {
+         g_vpVisible = !g_vpVisible;
+         if(!g_vpVisible)
+            ClearProfileObjects(); // blank the canvas immediately
+         else
+            CalculateAndDraw();
+         UpdateButtonStates();
+         return;
+        }
+
+      if(sparam == BTN_SELECTOR)
+        {
+         g_selectorVisible = !g_selectorVisible;
+         if(g_selectorVisible)
+           {
+            ShowSelector();
+            // If selector was hidden, its coords are still in g_t1/g_t2 —
+            // reposition selector object to match stored range
+            if(ObjectFind(0, RECT_NAME) >= 0)
+              {
+               ObjectSetInteger(0, RECT_NAME, OBJPROP_TIME, 0, g_t1);
+               ObjectSetInteger(0, RECT_NAME, OBJPROP_TIME, 1, g_t2);
+              }
+           }
+         else
+            HideSelector();
+         UpdateButtonStates();
+         return;
+        }
+     }
+
+   // Both DRAG and CHANGE fire when the user moves or resizes the selector
+   if((id == CHARTEVENT_OBJECT_DRAG || id == CHARTEVENT_OBJECT_CHANGE) &&
+      sparam == RECT_NAME)
+     {
+      g_t1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
+      g_t2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
+      if(g_vpVisible)
          CalculateAndDraw();
      }
   }
@@ -842,36 +1040,63 @@ void DrawBars(int steps, double range_bottom, double resolution,
   }
 
 //+------------------------------------------------------------------+
-//| Draw POC, VAH, and VAL key lines                                 |
+//| Draw POC, VAH, and VAL key lines with price labels               |
 //+------------------------------------------------------------------+
 void DrawKeyLines(int poc_idx, int va_high_idx, int va_low_idx,
                   double range_bottom, double resolution,
                   datetime start_time, datetime end_time, int steps)
   {
    int x_start = 0, y_bottom = 0;
-   int x_end = 0, y_top = 0;
-   ChartTimePriceToXY(0, 0, start_time, range_bottom, x_start, y_bottom);
-   ChartTimePriceToXY(0, 0, end_time, range_bottom + (steps * resolution), x_end, y_top);
+   int x_end   = 0, y_top   = 0;
+   ChartTimePriceToXY(0, 0, start_time, range_bottom,                    x_start, y_bottom);
+   ChartTimePriceToXY(0, 0, end_time,   range_bottom + steps * resolution, x_end,   y_top);
+
+   // When extending lines, use the full chart width as the right boundary
+   int x_line_end = x_end;
+   if(InpExtendLines)
+      x_line_end = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
 
    double dY = y_top - y_bottom;
    if(steps <= 0) steps = 1;
 
-   int y_poc = y_bottom + (int)(dY * ((double)poc_idx + 0.5) / (double)steps);
-   // Ensure POC is always at least 3px tall (1px centre ± 1px), regardless of InpPOCWidth setting
-   int poc_half = MathMax(SafePOCWidth() / 2, 1);
-   canvas.FillRectangle(x_start, y_poc - poc_half, x_end, y_poc + poc_half,
+   // --- POC ---
+   int y_poc     = y_bottom + (int)(dY * ((double)poc_idx + 0.5) / (double)steps);
+   int poc_half  = MathMax(SafePOCWidth() / 2, 1);
+   double poc_price = range_bottom + (poc_idx + 0.5) * resolution;
+   canvas.FillRectangle(x_start, y_poc - poc_half, x_line_end, y_poc + poc_half,
                         GetARGB(InpColorPOCLine, 255));
+   if(InpShowKeyLabels)
+     {
+      canvas.FontSet("Consolas", InpKeyLabelFontSize, FW_BOLD);
+      string poc_str = "POC " + DoubleToString(poc_price, _Digits);
+      canvas.TextOut(x_line_end - 2, y_poc - InpKeyLabelFontSize - 2,
+                     poc_str, GetARGB(InpPOCLabelColor, 255), TA_RIGHT | TA_TOP);
+     }
 
+   // --- VAH / VAL ---
    if(InpShowVABounds)
      {
-      int y_vah = y_bottom + (int)(dY * ((double)va_high_idx + 1.0) / (double)steps);
-      int y_val = y_bottom + (int)(dY * ((double)va_low_idx) / (double)steps);
-      // VA bounds at 210 alpha — clearly visible reference levels (like Sierra Chart / cTrader)
-      int va_half = MathMax(SafeVAWidth() / 2, 1);
-      canvas.FillRectangle(x_start, y_vah - va_half, x_end, y_vah + va_half,
+      int y_vah    = y_bottom + (int)(dY * ((double)va_high_idx + 1.0) / (double)steps);
+      int y_val    = y_bottom + (int)(dY * ((double)va_low_idx)         / (double)steps);
+      int va_half  = MathMax(SafeVAWidth() / 2, 1);
+      double vah_price = range_bottom + (va_high_idx + 1) * resolution;
+      double val_price = range_bottom + va_low_idx * resolution;
+
+      canvas.FillRectangle(x_start, y_vah - va_half, x_line_end, y_vah + va_half,
                            GetARGB(InpColorVABounds, 210));
-      canvas.FillRectangle(x_start, y_val - va_half, x_end, y_val + va_half,
+      canvas.FillRectangle(x_start, y_val - va_half, x_line_end, y_val + va_half,
                            GetARGB(InpColorVABounds, 210));
+
+      if(InpShowKeyLabels)
+        {
+         canvas.FontSet("Consolas", InpKeyLabelFontSize, FW_NORMAL);
+         string vah_str = "VAH " + DoubleToString(vah_price, _Digits);
+         string val_str = "VAL " + DoubleToString(val_price, _Digits);
+         canvas.TextOut(x_line_end - 2, y_vah - InpKeyLabelFontSize - 2,
+                        vah_str, GetARGB(InpVALabelColor, 230), TA_RIGHT | TA_TOP);
+         canvas.TextOut(x_line_end - 2, y_val + 3,
+                        val_str, GetARGB(InpVALabelColor, 230), TA_RIGHT | TA_TOP);
+        }
      }
   }
 
@@ -889,19 +1114,41 @@ void ClearProfileObjects()
 //+------------------------------------------------------------------+
 void CalculateAndDraw()
   {
-   if(ObjectFind(0, RECT_NAME) < 0) return;
+   // If the profile is toggled off, leave canvas blank
+   if(!g_vpVisible)
+      return;
+   // Read range from selector only when it is visible/selectable;
+   // otherwise use g_t1/g_t2 stored from the last visible position.
+   if(ObjectFind(0, RECT_NAME) >= 0)
+     {
+      long tf = ObjectGetInteger(0, RECT_NAME, OBJPROP_TIMEFRAMES);
+      if(tf != OBJ_NO_PERIODS) // selector is currently shown — update stored range
+        {
+         datetime pt1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
+         datetime pt2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
+         g_t1 = pt1;
+         g_t2 = pt2;
+        }
+     }
 
-   datetime t1 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 0);
-   datetime t2 = (datetime)ObjectGetInteger(0, RECT_NAME, OBJPROP_TIME, 1);
-   datetime start_time = MathMin(t1, t2);
-   datetime end_time   = MathMax(t1, t2);
+   if(g_t1 == 0 && g_t2 == 0) return; // no range set yet
+
+   datetime start_time = MathMin(g_t1, g_t2);
+   datetime end_time   = MathMax(g_t1, g_t2);
 
    if(InpUseTicks && InpDynamic)
      {
       datetime now_t = TimeCurrent();
       end_time = MathMax(end_time, now_t);
-      int end_corner = (t1 >= t2) ? 0 : 1;
-      ObjectSetInteger(0, RECT_NAME, OBJPROP_TIME, end_corner, now_t);
+      // Keep stored range in sync
+      if(g_t1 >= g_t2) g_t1 = now_t; else g_t2 = now_t;
+      // Update the selector object coordinates even when hidden
+      // so it can be shown again at the correct position
+      if(ObjectFind(0, RECT_NAME) >= 0)
+        {
+         int end_corner = (g_t1 >= g_t2) ? 0 : 1;
+         ObjectSetInteger(0, RECT_NAME, OBJPROP_TIME, end_corner, now_t);
+        }
      }
 
    double buckets_up[], buckets_down[];
