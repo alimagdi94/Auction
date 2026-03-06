@@ -1,16 +1,16 @@
 //+------------------------------------------------------------------+
 //|                                                    Footprint.mq5  |
-//|   Footprint (Order Flow) — Production Ready v5.10                |
+//|   Footprint (Order Flow) - Production Ready v4.00                |
 //|   Volume / Delta / Bid x Ask per price level                     |
-//|   POC · VA% · Imbalance · Absorption · Stacked Imbalances        |
-//|   HVN/LVN · Delta Divergence · Buy/Sell Ratio Stripe             |
-//|   Delta Gradient · Exhaustion Signal · OFS Score                 |
-//|   Tick-size aggregation · Tick Multiplier (x1..x40)              |
-//|   Compact canvas overlay + control panel                         |
+//|   POC, VA%, Imbalance, Absorption, Stacked Imbalances            |
+//|   HVN/LVN, Delta Divergence, Buy/Sell Ratio Stripe               |
+//|   Delta Gradient, Exhaustion Signal, OFS Score                   |
+//|   Tick-size aggregation + Tick Multiplier (x1..x40)              |
+//|   Compact canvas overlay + control panel + keyboard shortcuts    |
 //+------------------------------------------------------------------+
 #property copyright "Ali Magdy"
-#property version   "5.10"
-#property description "Footprint Chart v5 — Delta default · Naked POC · CumΔ Profile · VP-style POC/VAH/VAL"
+#property version   "5.00"
+#property description "Footprint Chart v5 — Delta default, Naked POC, Cumulative Delta Profile, direct D/B/V shortcuts"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -42,10 +42,8 @@ input int                  InpTickMultiplier = 5;                 // Tick multip
 
 input group "Display"
 input bool   InpShowText       = false;         // Show Cell Numbers (Bid/Ask/Vol/Delta text)
-input bool   InpShowWick       = true;          // Show candle wick on footprint bars
-input bool   InpProfileOnly    = false;         // Profile-Only mode: hide footprint, keep CumΔ profile
-input uchar  InpBgAlpha        = 210;           // Cell Background Alpha (0-255)
-input uchar  InpVAOffAlpha     = 80;            // Alpha outside Value Area (0-255)
+input uchar  InpBgAlpha        = 210;          // Cell Background Alpha (0-255)
+input uchar  InpVAOffAlpha     = 80;           // Alpha outside Value Area (0-255)
 
 input group "Colors - Heatmap"
 input color  InpBidBaseColor   = C'28,6,38';    // Bid (Sell) Base — deep violet (visible floor)
@@ -113,8 +111,6 @@ input int    InpCumDeltaProfW     = 55;              // Profile panel width (px)
 input uchar  InpCumDeltaProfAlpha = 170;             // Profile bar alpha (0-255)
 input color  InpCumDeltaPosColor  = C'20,160,80';    // Profile: positive cumulative delta (green)
 input color  InpCumDeltaNegColor  = C'180,30,50';    // Profile: negative cumulative delta (red)
-input bool   InpCumDeltaGradient  = true;            // Profile: gradient bars (origin dim → tip bright)
-input bool   InpCumDeltaVPLabels  = true;            // Profile: show POC / VAH / VAL lines and labels
 
 //--- Data structures
 struct PriceLevel
@@ -197,9 +193,6 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 #define FP_IMB_LO      200.0
 #define FP_IMB_MID     300.0
 #define FP_IMB_HI      400.0
-#define FP_HIST_EDIT   "FP_HistEdit"   // OBJ_EDIT name for history-bars input
-#define FP_HIST_MIN    1               // minimum allowed history bars
-#define FP_HIST_MAX    5000            // maximum allowed history bars
 
 int   g_panelX1, g_panelY1, g_panelX2, g_panelY2;
 int   g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2;
@@ -213,18 +206,10 @@ int   g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2;
 int   g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2;
 int   g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2;
 int   g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2;
-int   g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2;
-int   g_btnProfX1, g_btnProfY1, g_btnProfX2, g_btnProfY2;
-// History input edit-box screen coords (updated each LayoutPanel call)
-int   g_histEditX  = 0;
-int   g_histEditY  = 0;
-int   g_histEditW  = FP_PANEL_BTN_W;
-int   g_histEditH  = FP_PANEL_H - 2 * FP_PANEL_PAD;
-int   g_histBars   = 100;             // runtime history-bars count
+int   g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2;  // Mode cycle button
 int   g_mouseX = -1, g_mouseY = -1;
-double g_vaPercent = 0;
-bool   g_visible     = true;
-bool   g_profileOnly = false;
+double g_vaPercent = 0;   // 0 = use InpVAPercent; else runtime VA%
+bool   g_visible   = true;
 
 // Persistent scratch buffers
 int  g_scratchY1[];
@@ -323,7 +308,7 @@ void ReloadHistory()
    int bars_total = iBars(_Symbol, PERIOD_CURRENT);
    if(bars_total <= 0)
       return;
-   int      maxShift  = MathMin(g_histBars, bars_total - 1);
+   int      maxShift  = MathMin(InpHistoryBars, bars_total - 1);
    datetime startTime = iTime(_Symbol, PERIOD_CURRENT, maxShift);
    datetime endTime   = TimeCurrent();
    int loaded = LoadHistory(startTime, endTime);
@@ -1540,11 +1525,8 @@ void DrawBar(int bi, int shift, int barW)
      }
 
    // Candle wick on top
-   if(InpShowWick)
-     {
-      uint wickCol = FpARGB(InpWickColor, (210 * g_opacity) / 255);
-      canvas.LineVertical(wx, wy_h, wy_l, wickCol);
-     }
+   uint wickCol = FpARGB(InpWickColor, (210 * g_opacity) / 255);
+   canvas.LineVertical(wx, wy_h, wy_l, wickCol);
 
    // --- Per-bar total volume and delta labels below the bar ---
    if(!skipText)
@@ -1609,84 +1591,79 @@ void DrawBar(int bi, int shift, int barW)
 
 //+------------------------------------------------------------------+
 //| Layout panel and button coordinates (no drawing)                 |
-//| Groups (left to right):                                          |
-//|  [Bars|Sync] [Mode] [Imb|VA] [Fade|Lbl] [Z-|Z+|Lock]           |
-//|  [Cell|Tick|Viz/Hid|Prof]                                        |
 //+------------------------------------------------------------------+
 void LayoutPanel(int cw, int ch)
   {
+   int panelH = FP_PANEL_H;
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   // 1 history OBJ_EDIT + 13 buttons = 14 items
-   int panelW = pad + (btnW * 14 + btnGap * 13) + pad;
+   int panelW = pad + (btnW * 12 + btnGap * 11) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
-   g_panelY1 = ch - FP_PANEL_H - FP_PANEL_MARGIN;
-   g_panelY2 = g_panelY1 + FP_PANEL_H;
+   g_panelY1 = ch - panelH - FP_PANEL_MARGIN;
+   g_panelY2 = g_panelY1 + panelH;
 
-   int y1 = g_panelY1 + pad;
-   int y2 = g_panelY2 - pad;
-   int x  = g_panelX1 + pad;
+   g_btnZoomOutX1 = g_panelX1 + pad;
+   g_btnZoomOutY1 = g_panelY1 + pad;
+   g_btnZoomOutX2 = g_btnZoomOutX1 + btnW;
+   g_btnZoomOutY2 = g_panelY2 - pad;
 
-   // Group 1: Data -----------------------------------------------
-   g_histEditX = x; g_histEditY = y1;
-   g_histEditW = btnW; g_histEditH = y2 - y1;
-   x += btnW + btnGap;
+   g_btnZoomInX1  = g_btnZoomOutX2 + btnGap;
+   g_btnZoomInY1  = g_btnZoomOutY1;
+   g_btnZoomInX2  = g_btnZoomInX1 + btnW;
+   g_btnZoomInY2  = g_btnZoomOutY2;
 
-   g_btnRefreshX1 = x; g_btnRefreshY1 = y1; g_btnRefreshX2 = x + btnW; g_btnRefreshY2 = y2;
-   x += btnW + btnGap;
+   g_btnScaleFixX1 = g_btnZoomInX2 + btnGap;
+   g_btnScaleFixY1 = g_btnZoomOutY1;
+   g_btnScaleFixX2 = g_btnScaleFixX1 + btnW;
+   g_btnScaleFixY2 = g_btnZoomOutY2;
 
-   // Group 2: Chart mode -----------------------------------------
-   g_btnModeX1 = x; g_btnModeY1 = y1; g_btnModeX2 = x + btnW; g_btnModeY2 = y2;
-   x += btnW + btnGap;
+   g_btnSizeX1 = g_btnScaleFixX2 + btnGap;
+   g_btnSizeY1 = g_btnZoomOutY1;
+   g_btnSizeX2 = g_btnSizeX1 + btnW;
+   g_btnSizeY2 = g_btnZoomOutY2;
 
-   // Group 3: Analysis -------------------------------------------
-   g_btnImbX1 = x; g_btnImbY1 = y1; g_btnImbX2 = x + btnW; g_btnImbY2 = y2;
-   x += btnW + btnGap;
+   g_btnTickX1 = g_btnSizeX2 + btnGap;
+   g_btnTickY1 = g_btnZoomOutY1;
+   g_btnTickX2 = g_btnTickX1 + btnW;
+   g_btnTickY2 = g_btnZoomOutY2;
 
-   g_btnVAX1 = x; g_btnVAY1 = y1; g_btnVAX2 = x + btnW; g_btnVAY2 = y2;
-   x += btnW + btnGap;
+   g_btnImbX1 = g_btnTickX2 + btnGap;
+   g_btnImbY1 = g_btnZoomOutY1;
+   g_btnImbX2 = g_btnImbX1 + btnW;
+   g_btnImbY2 = g_btnZoomOutY2;
 
-   // Group 4: Display --------------------------------------------
-   g_btnOpaX1 = x; g_btnOpaY1 = y1; g_btnOpaX2 = x + btnW; g_btnOpaY2 = y2;
-   x += btnW + btnGap;
+   g_btnOpaX1 = g_btnImbX2 + btnGap;
+   g_btnOpaY1 = g_btnZoomOutY1;
+   g_btnOpaX2 = g_btnOpaX1 + btnW;
+   g_btnOpaY2 = g_btnZoomOutY2;
 
-   g_btnTxtX1 = x; g_btnTxtY1 = y1; g_btnTxtX2 = x + btnW; g_btnTxtY2 = y2;
-   x += btnW + btnGap;
+   g_btnTxtX1 = g_btnOpaX2 + btnGap;
+   g_btnTxtY1 = g_btnZoomOutY1;
+   g_btnTxtX2 = g_btnTxtX1 + btnW;
+   g_btnTxtY2 = g_btnZoomOutY2;
 
-   // Group 5: Zoom -----------------------------------------------
-   g_btnZoomOutX1 = x; g_btnZoomOutY1 = y1; g_btnZoomOutX2 = x + btnW; g_btnZoomOutY2 = y2;
-   x += btnW + btnGap;
+   g_btnShowX1 = g_btnTxtX2 + btnGap;
+   g_btnShowY1 = g_btnZoomOutY1;
+   g_btnShowX2 = g_btnShowX1 + btnW;
+   g_btnShowY2 = g_btnZoomOutY2;
 
-   g_btnZoomInX1 = x; g_btnZoomInY1 = y1; g_btnZoomInX2 = x + btnW; g_btnZoomInY2 = y2;
-   x += btnW + btnGap;
+   g_btnRefreshX1 = g_btnShowX2 + btnGap;
+   g_btnRefreshY1 = g_btnZoomOutY1;
+   g_btnRefreshX2 = g_btnRefreshX1 + btnW;
+   g_btnRefreshY2 = g_btnZoomOutY2;
 
-   g_btnScaleFixX1 = x; g_btnScaleFixY1 = y1; g_btnScaleFixX2 = x + btnW; g_btnScaleFixY2 = y2;
-   x += btnW + btnGap;
+   g_btnVAX1 = g_btnRefreshX2 + btnGap;
+   g_btnVAY1 = g_btnZoomOutY1;
+   g_btnVAX2 = g_btnVAX1 + btnW;
+   g_btnVAY2 = g_btnZoomOutY2;
 
-   // Group 6: Granularity + Visibility (right cluster) -----------
-   g_btnSizeX1 = x; g_btnSizeY1 = y1; g_btnSizeX2 = x + btnW; g_btnSizeY2 = y2;
-   x += btnW + btnGap;
-
-   g_btnTickX1 = x; g_btnTickY1 = y1; g_btnTickX2 = x + btnW; g_btnTickY2 = y2;
-   x += btnW + btnGap;
-
-   g_btnShowX1 = x; g_btnShowY1 = y1; g_btnShowX2 = x + btnW; g_btnShowY2 = y2;
-   x += btnW + btnGap;
-
-   // Prof — always last
-   g_btnProfX1 = x; g_btnProfY1 = y1; g_btnProfX2 = x + btnW; g_btnProfY2 = y2;
-
-   // Keep native OBJ_EDIT in sync with panel position
-   if(ObjectFind(g_chart, FP_HIST_EDIT) >= 0)
-     {
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XDISTANCE, g_histEditX);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YDISTANCE, g_histEditY);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XSIZE,     g_histEditW);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YSIZE,     g_histEditH);
-     }
+   g_btnModeX1 = g_btnVAX2 + btnGap;
+   g_btnModeY1 = g_btnZoomOutY1;
+   g_btnModeX2 = g_btnModeX1 + btnW;
+   g_btnModeY2 = g_btnZoomOutY2;
   }
 
 //+------------------------------------------------------------------+
@@ -1694,44 +1671,29 @@ void LayoutPanel(int cw, int ch)
 //+------------------------------------------------------------------+
 void DrawPanel()
   {
-   int btnW       = FP_PANEL_BTN_W;
-   int btnCenterX = btnW / 2;
-   int btnCenterY = g_btnZoomOutY1 + (FP_PANEL_H - 6) / 2;
+   int panelH    = FP_PANEL_H;
+   int btnW      = FP_PANEL_BTN_W;
+   int btnCenterX= btnW / 2;
+   int btnCenterY= g_btnZoomOutY1 + (panelH - 6) / 2;
 
    canvas.FillRectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2,
                         FpARGB(C'20,20,28', 200));
    canvas.Rectangle(g_panelX1, g_panelY1, g_panelX2, g_panelY2,
                     FpARGB(C'70,70,80', 200));
 
-   // Subtle group-separator lines
-   // After Sync | after Mode | after VA | after Lbl | after Lock
-   int sepY1 = g_panelY1 + 4;
-   int sepY2 = g_panelY2 - 4;
-   int sepAlpha = 55;
-   uint sepCol = FpARGB(C'100,100,120', sepAlpha);
-   int sepPositions[5];
-   sepPositions[0] = g_btnRefreshX2 + FP_PANEL_BTN_GAP / 2;
-   sepPositions[1] = g_btnModeX2    + FP_PANEL_BTN_GAP / 2;
-   sepPositions[2] = g_btnVAX2      + FP_PANEL_BTN_GAP / 2;
-   sepPositions[3] = g_btnTxtX2     + FP_PANEL_BTN_GAP / 2;
-   sepPositions[4] = g_btnScaleFixX2 + FP_PANEL_BTN_GAP / 2;
-   for(int s = 0; s < 5; s++)
-      canvas.LineVertical(sepPositions[s], sepY1, sepY2, sepCol);
-
    // Hover detection
-   bool hoveredSize     = HitTest(g_mouseX, g_mouseY, g_btnSizeX1,     g_btnSizeY1,     g_btnSizeX2,     g_btnSizeY2);
-   bool hoveredTick     = HitTest(g_mouseX, g_mouseY, g_btnTickX1,     g_btnTickY1,     g_btnTickX2,     g_btnTickY2);
-   bool hoveredImb      = HitTest(g_mouseX, g_mouseY, g_btnImbX1,      g_btnImbY1,      g_btnImbX2,      g_btnImbY2);
-   bool hoveredZoomIn   = HitTest(g_mouseX, g_mouseY, g_btnZoomInX1,   g_btnZoomInY1,   g_btnZoomInX2,   g_btnZoomInY2);
-   bool hoveredZoomOut  = HitTest(g_mouseX, g_mouseY, g_btnZoomOutX1,  g_btnZoomOutY1,  g_btnZoomOutX2,  g_btnZoomOutY2);
+   bool hoveredSize     = HitTest(g_mouseX, g_mouseY, g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2);
+   bool hoveredTick     = HitTest(g_mouseX, g_mouseY, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2);
+   bool hoveredImb      = HitTest(g_mouseX, g_mouseY, g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2);
+   bool hoveredZoomIn   = HitTest(g_mouseX, g_mouseY, g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2);
+   bool hoveredZoomOut  = HitTest(g_mouseX, g_mouseY, g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2);
    bool hoveredScaleFix = HitTest(g_mouseX, g_mouseY, g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2);
-   bool hoveredOpa      = HitTest(g_mouseX, g_mouseY, g_btnOpaX1,      g_btnOpaY1,      g_btnOpaX2,      g_btnOpaY2);
-   bool hoveredShow     = HitTest(g_mouseX, g_mouseY, g_btnShowX1,     g_btnShowY1,     g_btnShowX2,     g_btnShowY2);
-   bool hoveredRefresh  = HitTest(g_mouseX, g_mouseY, g_btnRefreshX1,  g_btnRefreshY1,  g_btnRefreshX2,  g_btnRefreshY2);
-   bool hoveredVA       = HitTest(g_mouseX, g_mouseY, g_btnVAX1,       g_btnVAY1,       g_btnVAX2,       g_btnVAY2);
-   bool hoveredTxt      = HitTest(g_mouseX, g_mouseY, g_btnTxtX1,      g_btnTxtY1,      g_btnTxtX2,      g_btnTxtY2);
-   bool hoveredMode     = HitTest(g_mouseX, g_mouseY, g_btnModeX1,     g_btnModeY1,     g_btnModeX2,     g_btnModeY2);
-   bool hoveredProf     = HitTest(g_mouseX, g_mouseY, g_btnProfX1,     g_btnProfY1,     g_btnProfX2,     g_btnProfY2);
+   bool hoveredOpa      = HitTest(g_mouseX, g_mouseY, g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2);
+   bool hoveredShow     = HitTest(g_mouseX, g_mouseY, g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2);
+   bool hoveredRefresh  = HitTest(g_mouseX, g_mouseY, g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2);
+   bool hoveredVA       = HitTest(g_mouseX, g_mouseY, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2);
+   bool hoveredTxt      = HitTest(g_mouseX, g_mouseY, g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2);
+   bool hoveredMode     = HitTest(g_mouseX, g_mouseY, g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2);
 
    uint baseFill    = FpARGB(C'35,35,45', 230);
    uint hoverFill   = FpARGB(C'55,55,70', 250);
@@ -1739,31 +1701,120 @@ void DrawPanel()
    uint hoverBorder = FpARGB(C'140,140,160', 255);
 
    bool scaleFixOn = (bool)ChartGetInteger(g_chart, CHART_SCALEFIX, 0);
+
    canvas.FontSet("Consolas", 9, FW_NORMAL);
 
-   // --- Group 1: Data ---
+   // 1. Zoom Out
+   canvas.FillRectangle(g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2,
+                        hoveredZoomOut ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2,
+                    hoveredZoomOut ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnZoomOutX1 + btnCenterX, btnCenterY,
+                  "-", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // History OBJ_EDIT — draw a thin accent border so it looks panel-native
-   // The native edit box is rendered by the terminal on top; we just mark the slot
-   canvas.FillRectangle(g_histEditX, g_histEditY, g_histEditX + g_histEditW, g_histEditY + g_histEditH,
-                        FpARGB(C'25,25,35', 230));
-   canvas.Rectangle(g_histEditX, g_histEditY, g_histEditX + g_histEditW, g_histEditY + g_histEditH,
-                    FpARGB(C'80,80,100', 200));
+   // 2. Zoom In
+   canvas.FillRectangle(g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2,
+                        hoveredZoomIn ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2,
+                    hoveredZoomIn ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnZoomInX1 + btnCenterX, btnCenterY,
+                  "+", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // Sync — reload tick data
+   // 3. Scale fix
+   uint fixFill   = scaleFixOn ? FpARGB(C'20,90,50', 230)   : baseFill;
+   uint fixBorder = scaleFixOn ? FpARGB(C'80,200,120', 230) : baseBorder;
+   if(hoveredScaleFix)
+     {
+      fixFill   = hoverFill;
+      fixBorder = hoverBorder;
+     }
+   canvas.FillRectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, fixFill);
+   canvas.Rectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, fixBorder);
+   canvas.TextOut(g_btnScaleFixX1 + btnCenterX, btnCenterY,
+                  "Fix", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 3b. Base Cell Size button
+   canvas.FillRectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
+                        hoveredSize ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
+                    hoveredSize ? hoverBorder : baseBorder);
+   string sizeLabel = IntegerToString(g_basePts) + "p";
+   canvas.TextOut(g_btnSizeX1 + btnCenterX, btnCenterY,
+                  sizeLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 4. Tick multiplier button (displays x1/x2/x5/x10/x20)
+   canvas.FillRectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
+                        hoveredTick ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
+                    hoveredTick ? hoverBorder : baseBorder);
+   string tickLabel = "x" + IntegerToString(g_tickMult);
+   canvas.TextOut(g_btnTickX1 + btnCenterX, btnCenterY,
+                  tickLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 5. Imbalance threshold button — shows current value e.g. "I:300"
+   canvas.FillRectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
+                        hoveredImb ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
+                    hoveredImb ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnImbX1 + btnCenterX, btnCenterY,
+                  "I:" + IntegerToString((int)g_imbRatio), FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 6. Opacity control — shows current % e.g. "75%"
+   canvas.FillRectangle(g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2,
+                        hoveredOpa ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2,
+                    hoveredOpa ? hoverBorder : baseBorder);
+   canvas.TextOut(g_btnOpaX1 + btnCenterX, btnCenterY,
+                  IntegerToString((g_opacity * 100) / 255) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 7. Text (Txt) toggle — hide/show cell numbers
+   uint txtFill   = g_userHideText ? FpARGB(C'90,30,30', 230)   : FpARGB(C'20,90,50', 230);
+   uint txtBorder = g_userHideText ? FpARGB(C'200,80,80', 230) : FpARGB(C'80,200,120', 230);
+   if(hoveredTxt)
+     {
+      txtFill   = hoverFill;
+      txtBorder = hoverBorder;
+     }
+   canvas.FillRectangle(g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2, txtFill);
+   canvas.Rectangle(g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2, txtBorder);
+   canvas.TextOut(g_btnTxtX1 + btnCenterX, btnCenterY,
+                  "Txt", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 8. Show/Hide toggle
+   uint showFill   = g_visible ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
+   uint showBorder = g_visible ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
+   if(hoveredShow)
+     {
+      showFill   = hoverFill;
+      showBorder = hoverBorder;
+     }
+   canvas.FillRectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, showFill);
+   canvas.Rectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, showBorder);
+   canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
+                  g_visible ? "ON" : "OFF", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 9. Refresh (reload tick data)
    canvas.FillRectangle(g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2,
                         hoveredRefresh ? hoverFill : baseFill);
    canvas.Rectangle(g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2,
                     hoveredRefresh ? hoverBorder : baseBorder);
    canvas.TextOut(g_btnRefreshX1 + btnCenterX, btnCenterY,
-                  "Sync", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+                  "Rld", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // --- Group 2: Mode ---
+   // 10. VA% (Value Area: 70% -> 80% -> 90% -> 70%)
+   canvas.FillRectangle(g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2,
+                        hoveredVA ? hoverFill : baseFill);
+   canvas.Rectangle(g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2,
+                    hoveredVA ? hoverBorder : baseBorder);
+   double vaPct = GetEffectiveVAPercent();
+   canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
+                  IntegerToString((int)vaPct) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
+   // 11. Mode cycle button (BidAsk / Volume / Delta) — highlighted by active mode
    string modeLabel;
    uint   modeFill, modeBorder;
    if(g_mode == FOOT_CHART_BIDASK)
-     { modeLabel = "BxA"; modeFill = FpARGB(C'20,55,90', 230); modeBorder = FpARGB(C'60,150,230', 230); }
+     { modeLabel = "B*A"; modeFill = FpARGB(C'20,55,90', 230); modeBorder = FpARGB(C'60,150,230', 230); }
    else if(g_mode == FOOT_CHART_VOLUME)
      { modeLabel = "Vol"; modeFill = FpARGB(C'55,30,75', 230); modeBorder = FpARGB(C'160,80,220', 230); }
    else
@@ -1773,116 +1824,13 @@ void DrawPanel()
    canvas.Rectangle(g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2, modeBorder);
    canvas.TextOut(g_btnModeX1 + btnCenterX, btnCenterY,
                   modeLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // --- Group 3: Analysis ---
-
-   // Imbalance threshold (e.g. "300%")
-   canvas.FillRectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
-                        hoveredImb ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2,
-                    hoveredImb ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnImbX1 + btnCenterX, btnCenterY,
-                  IntegerToString((int)g_imbRatio) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Value Area % (e.g. "VA70")
-   canvas.FillRectangle(g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2,
-                        hoveredVA ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2,
-                    hoveredVA ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
-                  "VA" + IntegerToString((int)GetEffectiveVAPercent()), FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // --- Group 4: Display ---
-
-   // Fade — opacity (e.g. "75%")
-   canvas.FillRectangle(g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2,
-                        hoveredOpa ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2,
-                    hoveredOpa ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnOpaX1 + btnCenterX, btnCenterY,
-                  IntegerToString((g_opacity * 100) / 255) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Lbl — cell text labels toggle (green = on, red = off)
-   uint lblFill   = g_userHideText ? FpARGB(C'90,30,30', 230)   : FpARGB(C'20,90,50', 230);
-   uint lblBorder = g_userHideText ? FpARGB(C'200,80,80', 230)  : FpARGB(C'80,200,120', 230);
-   if(hoveredTxt) { lblFill = hoverFill; lblBorder = hoverBorder; }
-   canvas.FillRectangle(g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2, lblFill);
-   canvas.Rectangle(g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2, lblBorder);
-   canvas.TextOut(g_btnTxtX1 + btnCenterX, btnCenterY,
-                  "Lbl", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // --- Group 5: Zoom ---
-
-   // Z- (zoom out)
-   canvas.FillRectangle(g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2,
-                        hoveredZoomOut ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnZoomOutX1, g_btnZoomOutY1, g_btnZoomOutX2, g_btnZoomOutY2,
-                    hoveredZoomOut ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnZoomOutX1 + btnCenterX, btnCenterY,
-                  "Z-", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Z+ (zoom in)
-   canvas.FillRectangle(g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2,
-                        hoveredZoomIn ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2,
-                    hoveredZoomIn ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnZoomInX1 + btnCenterX, btnCenterY,
-                  "Z+", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Lock — scale fix (green when active)
-   uint lockFill   = scaleFixOn ? FpARGB(C'20,90,50', 230)   : baseFill;
-   uint lockBorder = scaleFixOn ? FpARGB(C'80,200,120', 230) : baseBorder;
-   if(hoveredScaleFix) { lockFill = hoverFill; lockBorder = hoverBorder; }
-   canvas.FillRectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, lockFill);
-   canvas.Rectangle(g_btnScaleFixX1, g_btnScaleFixY1, g_btnScaleFixX2, g_btnScaleFixY2, lockBorder);
-   canvas.TextOut(g_btnScaleFixX1 + btnCenterX, btnCenterY,
-                  "Lock", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // --- Group 6: Granularity + Visibility ---
-
-   // Cell size (e.g. "10p")
-   canvas.FillRectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
-                        hoveredSize ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
-                    hoveredSize ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnSizeX1 + btnCenterX, btnCenterY,
-                  IntegerToString(g_basePts) + "p", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Tick multiplier (e.g. "x5")
-   canvas.FillRectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
-                        hoveredTick ? hoverFill : baseFill);
-   canvas.Rectangle(g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2,
-                    hoveredTick ? hoverBorder : baseBorder);
-   canvas.TextOut(g_btnTickX1 + btnCenterX, btnCenterY,
-                  "x" + IntegerToString(g_tickMult), FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Viz (visible) / Hid (hidden) — show/hide footprint
-   uint vizFill   = g_visible ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
-   uint vizBorder = g_visible ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
-   if(hoveredShow) { vizFill = hoverFill; vizBorder = hoverBorder; }
-   canvas.FillRectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, vizFill);
-   canvas.Rectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, vizBorder);
-   canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
-                  g_visible ? "Viz" : "Hid", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Prof — profile-only mode (teal when active)
-   uint profFill, profBorder;
-   if(g_profileOnly)
-     { profFill = FpARGB(C'10,70,85', 230); profBorder = FpARGB(C'30,190,210', 230); }
-   else
-     { profFill = baseFill; profBorder = baseBorder; }
-   if(hoveredProf) { profFill = hoverFill; profBorder = hoverBorder; }
-   canvas.FillRectangle(g_btnProfX1, g_btnProfY1, g_btnProfX2, g_btnProfY2, profFill);
-   canvas.Rectangle(g_btnProfX1, g_btnProfY1, g_btnProfX2, g_btnProfY2, profBorder);
-   canvas.TextOut(g_btnProfX1 + btnCenterX, btnCenterY,
-                  "Prof", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
   }
 
 //+------------------------------------------------------------------+
-//| Session Cumulative Delta Profile  (Enhanced v5.3)               |
-//| Bars grow from LEFT edge (original position, unchanged).        |
-//| Gradient · intensity alpha · POC frame                          |
-//| Volume-Profile style: VAH / VAL zone fill + POC/VAH/VAL labels  |
+//| Session Cumulative Delta Profile                                 |
+//| Draws a mini horizontal bar chart on the right of the canvas.  |
+//| Each row = one price level; bar width ∝ cumulative delta across |
+//| all loaded bars. Green = net buying, Red = net selling.         |
 //+------------------------------------------------------------------+
 void DrawCumDeltaProfile(int cw, int ch, int profX, int profW)
   {
@@ -1890,7 +1838,7 @@ void DrawCumDeltaProfile(int cw, int ch, int profX, int profW)
    if(nBars == 0)
       return;
 
-   //--- 1. Global price range ----------------------------------------
+   // --- 1. Find global price range ---
    double minP = g_bars[0].high, maxP = g_bars[0].low;
    for(int i = 0; i < nBars; i++)
      {
@@ -1901,9 +1849,10 @@ void DrawCumDeltaProfile(int cw, int ch, int profX, int profW)
    minP = NormP(minP);
 
    int buckets = (int)MathRound((maxP - minP) / g_step) + 1;
-   if(buckets <= 0 || buckets > 2000) return;
+   if(buckets <= 0 || buckets > 2000)
+      return; // Sanity cap — avoid enormous arrays on huge ranges
 
-   //--- 2. Accumulate delta per bucket --------------------------------
+   // --- 2. Accumulate delta per price bucket ---
    ArrayResize(g_profPrices,   buckets, 0);
    ArrayResize(g_profCumDelta, buckets, 0);
    for(int k = 0; k < buckets; k++)
@@ -1912,200 +1861,73 @@ void DrawCumDeltaProfile(int cw, int ch, int profX, int profW)
       g_profCumDelta[k] = 0;
      }
    g_profCount = buckets;
+
    for(int i = 0; i < nBars; i++)
+     {
       for(int j = 0; j < g_bars[i].level_count; j++)
         {
-         int k = (int)MathRound((g_bars[i].levels[j].price - minP) / g_step);
+         double price = g_bars[i].levels[j].price;
+         int    k     = (int)MathRound((price - minP) / g_step);
          if(k >= 0 && k < buckets)
             g_profCumDelta[k] += g_bars[i].levels[j].delta;
         }
+     }
 
-   //--- 3. Stats: maxAbs, POC, total |delta| for VA calc -------------
-   long maxAbsCum   = 1;
-   int  pocBucket   = 0;
-   long totalAbsCum = 0;
-   long netCumDelta = 0;
+   // --- 3. Find max absolute value for scaling ---
+   long maxAbsCum = 1;
    for(int k = 0; k < buckets; k++)
      {
       long av = MathAbs(g_profCumDelta[k]);
-      totalAbsCum += av;
-      if(av > maxAbsCum) { maxAbsCum = av; pocBucket = k; }
-      netCumDelta += g_profCumDelta[k];
+      if(av > maxAbsCum) maxAbsCum = av;
      }
 
-   //--- 4. Value Area (standard VP logic on |cumDelta|) ---------------
-   // Starting from POC, expand up/down greedily adding the larger
-   // neighbour until accumulated |delta| >= VA% of total.
-   double vaTarget  = totalAbsCum * (GetEffectiveVAPercent() / 100.0);
-   long   vaAccum   = MathAbs(g_profCumDelta[pocBucket]);
-   int    vaLo      = pocBucket;
-   int    vaHi      = pocBucket;
-   while(vaAccum < (long)vaTarget)
-     {
-      long aboveVol = (vaHi + 1 < buckets) ? MathAbs(g_profCumDelta[vaHi + 1]) : 0;
-      long belowVol = (vaLo - 1 >= 0)      ? MathAbs(g_profCumDelta[vaLo - 1]) : 0;
-      if(aboveVol == 0 && belowVol == 0) break;
-      if(aboveVol >= belowVol)
-        { vaHi++; vaAccum += aboveVol; }
-      else
-        { vaLo--; vaAccum += belowVol; }
-     }
-   // vaHi = VAH bucket index, vaLo = VAL bucket index
+   // --- 4. Panel background ---
+   int panelA = (int)InpCumDeltaProfAlpha;
+   canvas.FillRectangle(profX, 0, profX + profW, ch - FP_PANEL_H - FP_PANEL_MARGIN - 2,
+                        FpARGB(C'12,12,18', (int)(panelA * 0.7)));
+   canvas.LineVertical(profX, 0, ch, FpARGB(C'55,55,70', 180));
 
-   //--- 5. Layout constants ------------------------------------------
-   int  panelA      = (int)InpCumDeltaProfAlpha;
-   int  panelBottom = ch - FP_PANEL_H - FP_PANEL_MARGIN - 2;
-   int  headerH     = 22;
-   int  drawW       = profW - 4;   // usable bar width (2px padding each side)
-   int  barOriginX  = profX + 2;   // bars always start from left edge of panel
-
-   //--- 6. Panel background ------------------------------------------
-   canvas.FillRectangle(profX, 0, profX + profW, panelBottom,
-                        FpARGB(C'10,10,16', (int)(panelA * 0.70)));
-   canvas.LineVertical(profX, 0, panelBottom, FpARGB(C'60,60,78', 200));
-
-   //--- 7. Header: "CumΔ" + net delta --------------------------------
+   // --- 5. Header label ---
    canvas.FontSet("Consolas", 8, FW_NORMAL);
-   canvas.TextOut(profX + profW / 2, 2,
-                  "CumΔ", FpARGB(C'160,160,190', 200), TA_CENTER | TA_TOP);
-   color  netCol = (netCumDelta >= 0) ? InpCumDeltaPosColor : InpCumDeltaNegColor;
-   string netStr = (netCumDelta >= 0 ? "+" : "") + IntegerToString(netCumDelta);
-   canvas.TextOut(profX + profW / 2, 12,
-                  netStr, FpARGB(netCol, 210), TA_CENTER | TA_TOP);
+   canvas.TextOut(profX + profW / 2, 6, "CumΔ", FpARGB(C'160,160,180', 180), TA_CENTER | TA_TOP);
 
-   //--- 8. Reference time for coordinate mapping --------------------
+   // --- 6. Draw bars for each visible price bucket ---
+   //    We use ChartTimePriceToXY to find the Y coordinate for each price
    datetime refTime = iTime(_Symbol, PERIOD_CURRENT, 0);
    if(refTime <= 0) refTime = TimeCurrent();
 
-   //--- 9. Compute screen Y positions for VAH / VAL / POC ----------
-   //    (needed to draw the VA zone fill BEFORE bars so bars render on top)
-   int pocY = -1, vahY = -1, valY = -1;
-   int dummyX = 0;
-   if(pocBucket >= 0)
-      ChartTimePriceToXY(g_chart, g_sub, refTime, g_profPrices[pocBucket], dummyX, pocY);
-   if(vaHi >= 0 && vaHi < buckets)
-      ChartTimePriceToXY(g_chart, g_sub, refTime, g_profPrices[vaHi], dummyX, vahY);
-   if(vaLo >= 0 && vaLo < buckets)
-      ChartTimePriceToXY(g_chart, g_sub, refTime, g_profPrices[vaLo], dummyX, valY);
-
-   //--- 10. VA zone fill (behind bars) --------------------------------
-   if(InpCumDeltaVPLabels && vahY >= 0 && valY >= 0)
-     {
-      int vaTop = MathMin(vahY, valY);
-      int vaBot = MathMax(vahY, valY);
-      vaTop     = MathMax(vaTop, headerH);
-      vaBot     = MathMin(vaBot, panelBottom);
-      if(vaBot > vaTop)
-         canvas.FillRectangle(profX + 2, vaTop, profX + profW - 2, vaBot,
-                              FpARGB(C'30,50,35', 55));
-     }
-
-   //--- 11. Draw all bars -------------------------------------------
    for(int k = buckets - 1; k >= 0; k--)
      {
       if(g_profCumDelta[k] == 0) continue;
 
       double price = g_profPrices[k];
-      int    tmpX = 0, yMid = 0;
-      if(!ChartTimePriceToXY(g_chart, g_sub, refTime, price, tmpX, yMid)) continue;
-      if(yMid < headerH || yMid > panelBottom) continue;
+      int    tmpX  = 0, yMid = 0;
+      if(!ChartTimePriceToXY(g_chart, g_sub, refTime, price, tmpX, yMid))
+         continue;
+      if(yMid < 0 || yMid > ch) continue;
 
-      int tmpY2 = 0;
+      int cellH2 = 0, tmpY2 = 0;
       ChartTimePriceToXY(g_chart, g_sub, refTime, price - g_step, tmpX, tmpY2);
-      int cellH = MathAbs(tmpY2 - yMid);
-      if(cellH < 1) cellH = 1;
-      int barH = MathMax(1, cellH - 1);
+      cellH2 = MathAbs(tmpY2 - yMid);
+      if(cellH2 < 1) cellH2 = 1;
+      int barH = MathMax(1, cellH2 - 1);
 
       double ratio    = (double)MathAbs(g_profCumDelta[k]) / (double)maxAbsCum;
-      int    barWidth = MathMax(1, (int)(ratio * drawW));
+      int    barWidth = (int)(ratio * (profW - 4));
+      if(barWidth < 1) barWidth = 1;
 
-      bool  bullish  = (g_profCumDelta[k] > 0);
-      color baseCol  = bullish ? InpCumDeltaPosColor : InpCumDeltaNegColor;
-      bool  isPOC    = (k == pocBucket);
-      bool  inVA     = (k >= vaLo && k <= vaHi);
+      bool   bullish = (g_profCumDelta[k] > 0);
+      color  barCol  = bullish ? InpCumDeltaPosColor : InpCumDeltaNegColor;
+      int    barX    = bullish ? profX + 2 : profX + profW - 2 - barWidth;
+      int    yTop    = yMid - barH / 2;
 
-      // Intensity alpha
-      int barAlpha = (int)(48 + ratio * (double)(panelA - 48));
-      barAlpha     = MathMin(barAlpha, 255);
-      // Slightly boost VA bars so zone stands out
-      if(inVA && !isPOC) barAlpha = MathMin(barAlpha + 18, 255);
-
-      int barX = barOriginX;   // all bars start from LEFT edge — original position
-      int yTop = yMid - barH / 2;
-
-      // ---- POC glow ----
-      if(isPOC)
-         canvas.FillRectangle(barX - 1, yTop - 1, barX + barWidth + 2, yTop + barH + 1,
-                              FpARGB(baseCol, (int)(barAlpha * 0.30)));
-
-      // ---- Gradient fill (dim at origin/left → bright at tip/right) ----
-      if(InpCumDeltaGradient && barWidth >= 4)
-        {
-         int w1 = barWidth / 3;
-         int w2 = barWidth - w1 * 2;
-         int w3 = w1;
-         canvas.FillRectangle(barX,          yTop, barX + w1,          yTop + barH, FpARGB(baseCol, (int)(barAlpha * 0.40)));
-         canvas.FillRectangle(barX + w1,     yTop, barX + w1 + w2,     yTop + barH, FpARGB(baseCol, (int)(barAlpha * 0.74)));
-         canvas.FillRectangle(barX + w1 + w2, yTop, barX + barWidth,   yTop + barH, FpARGB(baseCol, barAlpha));
-         // bright 1-px tip cap
-         canvas.FillRectangle(barX + barWidth - 1, yTop + 1, barX + barWidth, yTop + barH - 1,
-                              FpARGB(bullish ? C'130,255,180' : C'255,130,150', (int)(barAlpha * 0.45)));
-        }
-      else
-        {
-         canvas.FillRectangle(barX, yTop, barX + barWidth, yTop + barH,
-                              FpARGB(baseCol, barAlpha));
-        }
-
-      // ---- POC double frame ----
-      if(isPOC)
-        {
-         color pocFrame = bullish ? C'55,255,135' : C'255,65,95';
-         canvas.Rectangle(barX, yTop, barX + barWidth, yTop + barH,    FpARGB(pocFrame, 245));
-         if(barH > 3 && barWidth > 3)
-            canvas.Rectangle(barX+1, yTop+1, barX+barWidth-1, yTop+barH-1, FpARGB(pocFrame, 70));
-        }
+      canvas.FillRectangle(barX, yTop, barX + barWidth, yTop + barH,
+                           FpARGB(barCol, panelA));
      }
 
-   //--- 12. VP-style overlay lines + labels -------------------------
-   if(InpCumDeltaVPLabels)
-     {
-      canvas.FontSet("Consolas", 7, FW_BOLD);
-      int lblX = profX + 3;   // labels hug the left edge of the panel
-
-      // --- POC line + label ---
-      if(pocY >= headerH && pocY <= panelBottom)
-        {
-         bool  pocBull = (g_profCumDelta[pocBucket] > 0);
-         color pocLine = pocBull ? C'60,255,140' : C'255,70,100';
-         // Solid full-width line
-         canvas.LineHorizontal(profX + 1, profX + profW - 1, pocY,     FpARGB(pocLine, 230));
-         canvas.LineHorizontal(profX + 1, profX + profW - 1, pocY + 1, FpARGB(pocLine, 80));
-         // "POC" label on left
-         canvas.TextOut(lblX, pocY - 8, "POC", FpARGB(pocLine, 245), TA_LEFT | TA_TOP);
-        }
-
-      // --- VAH line + label ---
-      if(vahY >= headerH && vahY <= panelBottom && vaHi != pocBucket)
-        {
-         // Dashed line (alternating segments)
-         int segOn = 4, segOff = 3;
-         for(int px = profX + 1; px < profX + profW - 1; px += segOn + segOff)
-            canvas.LineHorizontal(px, MathMin(px + segOn - 1, profX + profW - 1),
-                                  vahY, FpARGB(C'80,200,130', 200));
-         canvas.TextOut(lblX, vahY - 8, "VAH", FpARGB(C'80,200,130', 230), TA_LEFT | TA_TOP);
-        }
-
-      // --- VAL line + label ---
-      if(valY >= headerH && valY <= panelBottom && vaLo != pocBucket)
-        {
-         int segOn = 4, segOff = 3;
-         for(int px = profX + 1; px < profX + profW - 1; px += segOn + segOff)
-            canvas.LineHorizontal(px, MathMin(px + segOn - 1, profX + profW - 1),
-                                  valY, FpARGB(C'80,200,130', 200));
-         canvas.TextOut(lblX, valY + 2, "VAL", FpARGB(C'80,200,130', 230), TA_LEFT | TA_TOP);
-        }
-     }
+   // --- 7. Zero reference line ---
+   canvas.LineVertical(profX + profW / 2, 16, ch - FP_PANEL_H - FP_PANEL_MARGIN - 2,
+                       FpARGB(C'90,90,110', 100));
   }
 
 //+------------------------------------------------------------------+
@@ -2208,7 +2030,8 @@ void Render()
       "  VA: " + DoubleToString(GetEffectiveVAPercent(), 0) + "%" +
       "  Opa: " + IntegerToString((g_opacity * 100) / 255) + "%" +
       "  Bars: " + IntegerToString(nBars) +
-      "  Div: " + IntegerToString(divCount);
+      "  Div: " + IntegerToString(divCount) +
+      "  Keys: [M]ode [D]elta [B]idAsk [V]ol [R]ld [T]xt +/-zoom";
 
    canvas.TextOut(5, 5, header, FpARGB(C'160,160,170', 180), TA_LEFT | TA_TOP);
 
@@ -2222,9 +2045,7 @@ void Render()
       return;
      }
 
-   // In profile-only mode skip the footprint cells; the CumΔ profile still draws below
-   if(!g_profileOnly)
-      DrawVisibleBars(visBars, firstVis, barW);
+   DrawVisibleBars(visBars, firstVis, barW);
 
    // Cumulative Delta Profile — drawn over bars, right of canvas
    if(InpShowCumDeltaProf)
@@ -2263,8 +2084,8 @@ int OnInit()
      }
    if(InpHistoryBars <= 0)
      {
-      Alert("Footprint: InpHistoryBars must be >= 1. Defaulting to 100.");
-      // Don't block load — g_histBars will be clamped to FP_HIST_MIN in init below
+      Alert("Footprint: InpHistoryBars must be >= 1. Cannot load.");
+      return INIT_PARAMETERS_INCORRECT;
      }
    if(InpImbalanceRatio < 100.0)
      {
@@ -2300,9 +2121,9 @@ int OnInit()
    g_hideText     = false;
    g_userHideText = !InpShowText;
    g_imbRatio     = InpImbalanceRatio;
-   g_profileOnly  = InpProfileOnly;
-   g_histBars     = MathMax(FP_HIST_MIN, MathMin(FP_HIST_MAX, InpHistoryBars));
-   // Seed runtime VA% so the button shows the correct value on load
+   // Seed runtime VA% from input so the button label is correct on load.
+   // GetEffectiveVAPercent() returns InpVAPercent when g_vaPercent==0,
+   // but the VA cycle button checks g_vaPercent directly, so seed it.
    g_vaPercent    = (double)InpVAPercent;
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
@@ -2312,51 +2133,21 @@ int OnInit()
 
    int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
    int h = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
-   if(w < 1) w = 800;
-   if(h < 1) h = 600;
+   if(w < 1)
+      w = 800;
+   if(h < 1)
+      h = 600;
 
-   // Canvas bitmap must be created BEFORE the OBJ_EDIT so the edit box
-   // sits on top in the z-order and can receive mouse focus/clicks.
    if(!canvas.CreateBitmapLabel(g_name, 0, 0, w, h,
                                 COLOR_FORMAT_ARGB_NORMALIZE))
      {
       Alert("Footprint: Canvas creation failed. Chart may be too small.");
       return INIT_FAILED;
      }
-   ObjectSetInteger(g_chart, g_name, OBJPROP_CORNER,  CORNER_LEFT_UPPER);
-   ObjectSetInteger(g_chart, g_name, OBJPROP_BACK,    false);
-   ObjectSetInteger(g_chart, g_name, OBJPROP_ZORDER,  0);   // canvas is click layer 0
+   ObjectSetInteger(g_chart, g_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(g_chart, g_name, OBJPROP_BACK, false);
    canvas.Erase(0x00000000);
    canvas.Update();
-
-   // Create history-bars OBJ_EDIT AFTER canvas so it is drawn and
-   // receives clicks on top of the canvas overlay.
-   ObjectDelete(g_chart, FP_HIST_EDIT);  // clean up any stale instance
-   if(ObjectCreate(g_chart, FP_HIST_EDIT, OBJ_EDIT, 0, 0, 0))
-     {
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BACK,         false);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_ZORDER,       10);  // above canvas — receives clicks
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_SELECTABLE,   false);  // prevent drag-to-move
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_SELECTED,     false);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_READONLY,     false);  // allow typing
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_COLOR,        C'220,220,230');
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BORDER_COLOR, C'80,80,108');
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_FONTSIZE,     9);
-      ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_FONT,         "Consolas");
-      ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_TEXT,         IntegerToString(g_histBars));
-      ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_TOOLTIP,      "History bars to load — press Enter to apply");
-     }
-   else
-     {
-      Print("Footprint: Warning — could not create history input box (", GetLastError(), ").");
-     }
 
    ReloadHistory();
 
@@ -2368,7 +2159,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   ObjectDelete(g_chart, FP_HIST_EDIT);
    canvas.Destroy();
    ObjectDelete(g_chart, g_name);
    
@@ -2452,29 +2242,62 @@ int OnCalculate(const int rates_total,
 void OnChartEvent(const int id, const long &lparam,
                   const double &dparam, const string &sparam)
   {
-   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_HIST_EDIT)
+   if(id == CHARTEVENT_KEYDOWN)
      {
-      // User finished editing the history-bars input — parse, clamp, reload
-      string raw   = ObjectGetString(g_chart, FP_HIST_EDIT, OBJPROP_TEXT);
-      int    value = (int)StringToInteger(raw);
-      value        = MathMax(FP_HIST_MIN, MathMin(FP_HIST_MAX, value));
-      g_histBars   = value;
-      // Write the validated value back so the field shows the clamped number
-      ObjectSetString(g_chart, FP_HIST_EDIT, OBJPROP_TEXT, IntegerToString(g_histBars));
-      g_needs_reload = true;
-      g_dirty        = true;
-      Render();
+      // Keyboard shortcuts:
+      //  M  = cycle chart mode (BidAsk -> Volume -> Delta -> BidAsk)
+      //  R  = reload tick data
+      //  T  = toggle cell text
+      //  +  = zoom in
+      //  M  = cycle chart mode (Delta -> BidAsk -> Volume -> Delta)
+      //  D  = jump directly to Delta mode
+      //  B  = jump directly to Bid x Ask mode
+      //  V  = jump directly to Volume mode
+      //  R  = reload tick data
+      //  T  = toggle cell text
+      //  +  = zoom in
+      //  -  = zoom out
+      int key = (int)lparam;
+      if(key == 'M' || key == 'm')
+        {
+         // Cycle: Delta -> BidAsk -> Volume -> Delta (Delta is the default, so start there)
+         if(g_mode == FOOT_CHART_DELTA)        g_mode = FOOT_CHART_BIDASK;
+         else if(g_mode == FOOT_CHART_BIDASK)  g_mode = FOOT_CHART_VOLUME;
+         else                                   g_mode = FOOT_CHART_DELTA;
+         g_dirty = true;
+         Render();
+        }
+      else if(key == 'D' || key == 'd')
+        { g_mode = FOOT_CHART_DELTA;  g_dirty = true; Render(); }
+      else if(key == 'B' || key == 'b')
+        { g_mode = FOOT_CHART_BIDASK; g_dirty = true; Render(); }
+      else if(key == 'V' || key == 'v')
+        { g_mode = FOOT_CHART_VOLUME; g_dirty = true; Render(); }
+      else if(key == 'R' || key == 'r')
+        { g_needs_reload = true; g_dirty = true; Render(); }
+      else if(key == 'T' || key == 't')
+        { g_userHideText = !g_userHideText; g_dirty = true; Render(); }
+      else if(key == 107 || key == 0xBB)   // numpad '+' / OEM '+'
+        {
+         int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
+         if(scale < 5) ChartSetInteger(g_chart, CHART_SCALE, 0, scale + 1);
+        }
+      else if(key == 109 || key == 0xBD)  // numpad '-' / OEM '-'
+        {
+         int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
+         if(scale > 0) ChartSetInteger(g_chart, CHART_SCALE, 0, scale - 1);
+        }
       return;
      }
 
-   if(id == CHARTEVENT_CHART_CHANGE)
+   else if(id == CHARTEVENT_CHART_CHANGE)
      {
       // If timeframe was changed, history needs full reload
       if(ArraySize(g_bars) > 0)
         {
          datetime expectedLastBar  = iTime(_Symbol, PERIOD_CURRENT, 0);
          int      bars_total       = iBars(_Symbol, PERIOD_CURRENT);
-         int      span             = MathMin(g_histBars, bars_total - 1);
+         int      span             = MathMin(InpHistoryBars, bars_total - 1);
          datetime expectedFirstBar = iTime(_Symbol, PERIOD_CURRENT, span);
 
          if(g_bars[0].bar_time != expectedFirstBar ||
@@ -2647,13 +2470,6 @@ void OnChartEvent(const int id, const long &lparam,
          else if(g_mode == FOOT_CHART_BIDASK) g_mode = FOOT_CHART_VOLUME;
          else                                  g_mode = FOOT_CHART_DELTA;
          g_dirty = true;
-         Render();
-        }
-      // Profile-Only toggle: hide footprint bars, keep CumΔ profile visible
-      else if(HitTest(mx, my, g_btnProfX1, g_btnProfY1, g_btnProfX2, g_btnProfY2))
-        {
-         g_profileOnly = !g_profileOnly;
-         g_dirty       = true;
          Render();
         }
      }
