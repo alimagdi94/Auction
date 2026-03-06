@@ -46,47 +46,45 @@ input uchar  InpBgAlpha        = 210;          // Cell Background Alpha (0-255)
 input uchar  InpVAOffAlpha     = 80;           // Alpha outside Value Area (0-255)
 
 input group "Colors - Heatmap"
-input color  InpBidBaseColor   = C'28,6,38';    // Bid (Sell) Base — deep violet (visible floor)
-input color  InpBidHighColor   = C'160,0,90';   // Bid (Sell) High — vivid magenta-crimson
-input color  InpAskBaseColor   = C'4,28,28';    // Ask (Buy) Base — deep teal (visible floor)
-input color  InpAskHighColor   = C'0,140,120';  // Ask (Buy) High — vivid teal-green
-input color  InpOutOfVAColor   = C'14,14,18';   // Out of Value Area — near-black, minimal distraction
+input color  InpBidBaseColor   = C'15,0,20';   // Bid (Sell) Volume Base (Muted)
+input color  InpBidHighColor   = C'74,0,105';  // Bid (Sell) Volume High
+input color  InpAskBaseColor   = C'0,15,15';   // Ask (Buy) Volume Base (Muted)
+input color  InpAskHighColor   = C'0,64,64';   // Ask (Buy) Volume High
+input color  InpOutOfVAColor   = C'10,10,12';  // Out of Value Area Color
 
 input group "Colors - Highlights & UI"
-input color  InpImbSellColor    = C'180,30,50';   // Sell Imbalance — warm red, readable at all alphas
-input color  InpImbBuyColor     = C'20,160,80';   // Buy Imbalance — vivid green, perceptually distinct
-input color  InpStackedSellColor= C'200,40,60';   // Stacked Sell Zone — brighter than plain imbalance
-input color  InpStackedBuyColor = C'30,190,100';  // Stacked Buy Zone — brighter than plain imbalance
-input color  InpUnfinishedColor = C'80,160,255';  // Unfinished Auction — sky blue, not confused with POC
-input color  InpAbsorptionColor = C'200,80,220';  // Absorption — violet-magenta, distinct from all others
-input color  InpPOCColor        = C'255,220,0';   // POC Frame — amber-gold (high contrast on dark bg)
-input color  InpBullishFrame    = C'40,200,100';  // Bullish Session Frame
-input color  InpBearishFrame    = C'200,40,60';   // Bearish Session Frame
-input color  InpWickColor       = C'130,130,145'; // Candle Wick — slightly blue-grey, stays subtle
-input color  InpGridColor       = C'45,45,58';    // Grid — darkened so it never dominates
-input color  InpHVNColor        = C'255,210,50';  // HVN outline — amber, matches POC family
-input color  InpLVNColor        = C'80,80,105';   // LVN outline — muted indigo-grey
-input color  InpDivergenceColor = C'255,140,0';   // Delta Divergence marker — pure orange
+input color  InpImbSellColor    = clrCrimson;     // Sell Imbalance (Red cell fill)
+input color  InpImbBuyColor     = clrForestGreen; // Buy Imbalance (Green cell fill)
+input color  InpStackedSellColor= clrCrimson;     // Stacked Sell Zone (Red)
+input color  InpStackedBuyColor = clrForestGreen;// Stacked Buy Zone (Green)
+input color  InpUnfinishedColor = clrDodgerBlue;  // Unfinished Auction Marker
+input color  InpAbsorptionColor = clrMagenta;     // Absorption Marker Color
+input color  InpPOCColor        = clrDodgerBlue;  // POC Frame Color (blue per reference)
+input color  InpBullishFrame    = clrLime;        // Bullish Session Frame (Green)
+input color  InpBearishFrame    = clrCrimson;     // Bearish Session Frame (Red)
+input color  InpWickColor       = C'140,140,150'; // Candle Structure Color
+input color  InpGridColor       = C'50,50,60';    // Grid Separation Color
+input color  InpHVNColor        = C'255,200,0';   // High Volume Node outline (Gold)
+input color  InpLVNColor        = C'90,90,110';   // Low Volume Node outline (Muted)
+input color  InpDivergenceColor = clrOrange;      // Delta Divergence bar marker
 
 input group "Colors - Text"
-input color  InpTextBaseColor   = C'150,150,165'; // Default Cell Text — slightly cool grey
-input color  InpTextDarkBg      = C'230,230,235'; // Text on Dark Backgrounds — off-white (less harsh than pure white)
-input color  InpTextLightBg     = C'20,20,25';    // Text on Light Backgrounds
-input color  InpTextBottomVol   = C'180,180,195'; // Bottom Label: Volume — subdued, volume is context not signal
-input color  InpTextBottomPos   = C'60,220,110';  // Bottom Label: Positive Delta — green
-input color  InpTextBottomNeg   = C'220,60,80';   // Bottom Label: Negative Delta — red (correct BGR)
+input color  InpTextBaseColor   = C'160,160,170'; // Default Cell Text
+input color  InpTextDarkBg      = clrWhite;       // Text on Dark Backgrounds
+input color  InpTextLightBg     = clrBlack;       // Text on Light Backgrounds
+input color  InpTextBottomVol   = clrWhite;       // Bottom Label: Volume
+input color  InpTextBottomPos   = clrLime;        // Bottom Label: Positive Delta
+input color  InpTextBottomNeg   = clrRed;         // Bottom Label: Negative Delta
 
 input group "Delta Gradient Background"
-input bool   InpDeltaGradient     = true;           // Enable delta-magnitude gradient on bars
-input uchar  InpDeltaGradMaxAlpha = 55;             // Max gradient overlay alpha — keep subtle
-input color  InpDeltaGradBull     = C'20,120,60';   // Gradient tint: bullish delta (soft green)
-input color  InpDeltaGradBear     = C'120,20,40';   // Gradient tint: bearish delta (soft red)
+input bool   InpDeltaGradient     = true;          // Enable delta-magnitude gradient on bars
+input uchar  InpDeltaGradMaxAlpha = 70;            // Max gradient overlay alpha (0-255)
 
 input group "Bid/Ask Exhaustion Signal"
-input bool   InpExhaustionEnable  = true;           // Enable bid/ask exhaustion marker
-input int    InpExhaustionCells   = 3;              // Consecutive near-zero cells required
-input double InpExhaustionZeroRat = 0.05;           // Near-zero threshold (fraction of avg vol)
-input color  InpExhaustionColor   = C'255,180,0';   // Exhaustion line — amber, distinct from orange divergence
+input bool   InpExhaustionEnable  = true;          // Enable bid/ask exhaustion marker
+input int    InpExhaustionCells   = 3;             // Consecutive near-zero cells required
+input double InpExhaustionZeroRat = 0.05;          // Near-zero threshold (fraction of avg vol)
+input color  InpExhaustionColor   = clrOrangeRed;  // Exhaustion line color
 
 input group "Order Flow Strength Score"
 input bool   InpShowOFScore       = true;          // Show OFS score (0-100) below bar label
@@ -96,10 +94,10 @@ input double InpOFWtStacked       = 20.0;          // OFS weight: stacked imbala
 input double InpOFWtAbsorb        = 15.0;          // OFS weight: absorption (%)
 
 input group "Delta Mode Cell Coloring"
-input bool   InpDeltaCellColor    = true;           // Enable per-cell green/red in Delta mode
-input color  InpDeltaCellBull     = C'5,70,40';     // Delta mode: ask>bid base (dark green floor)
-input color  InpDeltaCellBear     = C'70,5,20';     // Delta mode: bid>ask base (dark red floor)
-input color  InpDeltaZeroLine     = C'160,100,255'; // Delta zero-line — violet, unique, clearly a reference
+input bool   InpDeltaCellColor    = true;          // Enable per-cell green/red in Delta mode
+input color  InpDeltaCellBull     = C'0,90,0';     // Delta mode: ask>bid cell color (bullish)
+input color  InpDeltaCellBear     = C'90,0,0';     // Delta mode: bid>ask cell color (bearish)
+input color  InpDeltaZeroLine     = clrOrangeRed;  // Delta mode: zero-delta reference line
 
 //--- Data structures
 struct PriceLevel
@@ -1049,16 +1047,18 @@ void DrawBar(int bi, int shift, int barW)
    bool  isBullish    = g_bars[bi].is_bullish;
    color sentimentCol = isBullish ? InpBullishFrame : InpBearishFrame;
 
-   // Delta Gradient — full-bar tint proportional to delta magnitude
+   // Feature 1: Delta Gradient — full-bar tint proportional to delta magnitude
    if(InpDeltaGradient && g_bars[bi].total_vol > 0)
      {
-      double dRat   = (double)MathAbs(g_bars[bi].total_delta) / (double)g_bars[bi].total_vol;
-      int    gAlpha = (int)(InpDeltaGradMaxAlpha * MathMin(1.0, dRat * 2.5));
-      gAlpha        = (gAlpha * opaScale) / 255;
-      color  gCol   = (g_bars[bi].total_delta >= 0) ? InpDeltaGradBull : InpDeltaGradBear;
-      int    barTop = g_scratchY1[0];
-      int    barBot = g_scratchY2[len - 1];
-      int    bandH  = MathMax(1, (barBot - barTop) / 4);
+      double dRat = (double)MathAbs(g_bars[bi].total_delta) / (double)g_bars[bi].total_vol;
+      // dRat typically 0..0.5; scale to fill alpha range meaningfully
+      int gAlpha = (int)(InpDeltaGradMaxAlpha * MathMin(1.0, dRat * 2.5));
+      gAlpha     = (gAlpha * opaScale) / 255;
+      color gCol = (g_bars[bi].total_delta >= 0) ? InpBullishFrame : InpBearishFrame;
+      int barTop = g_scratchY1[0];
+      int barBot = g_scratchY2[len - 1];
+      // Draw two vertical gradient bands (top bright → bottom fade) to simulate glow
+      int bandH  = MathMax(1, (barBot - barTop) / 4);
       for(int band = 0; band < 4; band++)
         {
          int bAlpha = gAlpha - (band * gAlpha / 5);
@@ -1179,11 +1179,11 @@ void DrawBar(int bi, int shift, int barW)
          canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpGridColor, 35));
         }
 
-      // POC frame — amber-gold double rectangle
+      // POC frame (blue box per reference)
       if(i == pocIdx)
         {
-         canvas.Rectangle(x1,     y_top,     x2,     y_bot,     FpARGB(InpPOCColor, 255));
-         canvas.Rectangle(x1 + 1, y_top + 1, x2 - 1, y_bot - 1, FpARGB(InpPOCColor, 140));
+         canvas.Rectangle(x1, y_top, x2, y_bot, FpARGB(InpPOCColor, 240));
+         canvas.Rectangle(x1 + 1, y_top + 1, x2 - 1, y_bot - 1, FpARGB(InpPOCColor, 120));
         }
 
       // Stacked Imbalances
@@ -1202,23 +1202,17 @@ void DrawBar(int bi, int shift, int barW)
          canvas.Rectangle(x1 + 1, y_top + 1, sX - 1, y_bot - 1, FpARGB(InpStackedSellColor, 150));
         }
 
-      // Unfinished auctions — 2px thick for visibility
+      // Unfinished auctions
       if(pl.is_unfinished_hi)
-        {
-         canvas.LineHorizontal(x1, x2, y_top,     FpARGB(InpUnfinishedColor, 210));
-         canvas.LineHorizontal(x1, x2, y_top + 1, FpARGB(InpUnfinishedColor, 100));
-        }
+         canvas.LineHorizontal(x1, x2, y_top, FpARGB(InpUnfinishedColor, 160));
       if(pl.is_unfinished_lo)
-        {
-         canvas.LineHorizontal(x1, x2, y_bot,     FpARGB(InpUnfinishedColor, 210));
-         canvas.LineHorizontal(x1, x2, y_bot - 1, FpARGB(InpUnfinishedColor, 100));
-        }
+         canvas.LineHorizontal(x1, x2, y_bot, FpARGB(InpUnfinishedColor, 160));
 
-      // Absorption marker — outer glow ring + softer inner ring
+      // Absorption marker
       if(pl.is_absorption)
         {
-         canvas.Rectangle(x1 - 1, y_top - 1, x2 + 1, y_bot + 1, FpARGB(InpAbsorptionColor, 220));
-         canvas.Rectangle(x1 - 2, y_top - 2, x2 + 2, y_bot + 2, FpARGB(InpAbsorptionColor, 90));
+         canvas.Rectangle(x1 - 1, y_top - 1, x2 + 1, y_bot + 1, FpARGB(InpAbsorptionColor, 255));
+         canvas.Rectangle(x1 - 2, y_top - 2, x2 + 2, y_bot + 2, FpARGB(InpAbsorptionColor, 255));
         }
 
       // HVN: gold inner border (two-pixel)
@@ -1301,18 +1295,9 @@ void DrawBar(int bi, int shift, int barW)
          else // DELTA
            {
             double dNorm2 = (double)MathAbs(pl.delta) / (double)maxAbsDelta;
-            color  dBase2, dHigh2;
-            if(InpDeltaCellColor)
-              {
-               dBase2 = (pl.delta >= 0) ? InpDeltaCellBull : InpDeltaCellBear;
-               dHigh2 = (pl.delta >= 0) ? InpImbBuyColor   : InpImbSellColor;
-              }
-            else
-              {
-               dBase2 = (pl.delta >= 0) ? InpAskBaseColor : InpBidBaseColor;
-               dHigh2 = (pl.delta >= 0) ? InpAskHighColor : InpBidHighColor;
-              }
-            color  dBgCol = LerpColor(dBase2, dHigh2, dNorm2);
+            color  dBase  = (pl.delta >= 0 ? InpAskBaseColor : InpBidBaseColor);
+            color  dHigh  = (pl.delta >= 0 ? InpAskHighColor : InpBidHighColor);
+            color  dBgCol = LerpColor(dBase, dHigh, dNorm2);
             if(!inVA) dBgCol = InpOutOfVAColor;
 
             uint tCD = IsColorDark(dBgCol) ? FpARGB(InpTextDarkBg, (250 * opaScale) / 255)
@@ -1398,11 +1383,14 @@ void DrawBar(int bi, int shift, int barW)
         }
      }
 
-   // Session framing (Value Area box)
+   // Session framing (VA box)
    if(vaLoIdx >= 0 && vaHiIdx >= 0)
      {
-      canvas.Rectangle(x1,     g_scratchY1[vaLoIdx],     x2,     g_scratchY2[vaHiIdx],     FpARGB(sentimentCol, 220));
-      canvas.Rectangle(x1 - 1, g_scratchY1[vaLoIdx] - 1, x2 + 1, g_scratchY2[vaHiIdx] + 1, FpARGB(sentimentCol, 80));
+      canvas.Rectangle(x1, g_scratchY1[vaLoIdx], x2, g_scratchY2[vaHiIdx],
+                       FpARGB(sentimentCol, 255));
+      canvas.Rectangle(x1 - 1, g_scratchY1[vaLoIdx] - 1,
+                       x2 + 1, g_scratchY2[vaHiIdx] + 1,
+                       FpARGB(sentimentCol, 120));
      }
 
    // Delta Divergence marker: orange triangle at the top of the wick
@@ -1433,10 +1421,10 @@ void DrawBar(int bi, int shift, int barW)
          int stripeH  = 3;
          double askRatio = (double)totalAskAll / (totalAskAll + totalBidAll);
          int    splitX   = x1 + (int)((x2 - x1) * askRatio);
-         canvas.FillRectangle(x1,          stripeY, splitX, stripeY + stripeH,
-                              FpARGB(InpAskHighColor, (200 * opaScale) / 255));
-         canvas.FillRectangle(splitX + 1, stripeY, x2,     stripeY + stripeH,
-                              FpARGB(InpBidHighColor, (200 * opaScale) / 255));
+         canvas.FillRectangle(x1,      stripeY, splitX, stripeY + stripeH,
+                              FpARGB(InpAskHighColor, (180 * opaScale) / 255));
+         canvas.FillRectangle(splitX + 1, stripeY, x2, stripeY + stripeH,
+                              FpARGB(InpBidHighColor, (180 * opaScale) / 255));
         }
      }
 
@@ -1488,11 +1476,11 @@ void DrawBar(int bi, int shift, int barW)
          int    score    = ComputeOFScore(bi);
          // "OFS:75" — prefix makes it instantly distinguishable from the delta number
          string scoreStr = "OFS:" + IntegerToString(score);
-         // >60 = bullish green | <40 = bearish red | 40-60 = muted neutral
+         // >60 = bullish green | <40 = bearish red | 40-60 = dim white (neutral)
          color scoreCol;
          if(score >= 60)      scoreCol = InpTextBottomPos;
          else if(score <= 40) scoreCol = InpTextBottomNeg;
-         else                 scoreCol = InpTextBaseColor;
+         else                 scoreCol = C'120,120,130'; // neutral grey
          int tw3 = 0, th3 = 0;
          canvas.TextSize(scoreStr, tw3, th3);
          int sLabelY = dLabelY + th2 + 2;
@@ -2017,12 +2005,11 @@ void OnChartEvent(const int id, const long &lparam,
          else if(g_mode == FOOT_CHART_VOLUME) g_mode = FOOT_CHART_DELTA;
          else                                 g_mode = FOOT_CHART_BIDASK;
          g_dirty = true;
-         Render();
         }
       else if(key == 'R' || key == 'r')
-        { g_needs_reload = true; g_dirty = true; Render(); }
+        { g_needs_reload = true; g_dirty = true; }
       else if(key == 'T' || key == 't')
-        { g_userHideText = !g_userHideText; g_dirty = true; Render(); }
+        { g_userHideText = !g_userHideText; g_dirty = true; }
       else if(key == 107 || key == 0xBB)   // numpad '+' / OEM '+'
         {
          int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
@@ -2095,12 +2082,11 @@ void OnChartEvent(const int id, const long &lparam,
          else
             nextPts = 1;
 
-         g_basePts      = nextPts;
-         g_baseStep     = g_basePts * _Point;
-         g_step         = g_baseStep * g_tickMult;
+         g_basePts  = nextPts;
+         g_baseStep = g_basePts * _Point;
+         g_step     = g_baseStep * g_tickMult;
          g_needs_reload = true;
          g_dirty        = true;
-         Render();
         }
       // Tick multiplier button: x1 -> x2 -> x5 -> x10 -> x20 -> x40 -> x1
       else if(HitTest(mx, my, g_btnTickX1, g_btnTickY1, g_btnTickX2, g_btnTickY2))
@@ -2119,11 +2105,10 @@ void OnChartEvent(const int id, const long &lparam,
          else
             nextMult = 1;
 
-         g_tickMult     = nextMult;
-         g_step         = g_baseStep * g_tickMult;
+         g_tickMult = nextMult;
+         g_step     = g_baseStep * g_tickMult;
          g_needs_reload = true;
          g_dirty        = true;
-         Render();
         }
       // Imbalance button: cycle imbalance ratio
       else if(HitTest(mx, my, g_btnImbX1, g_btnImbY1, g_btnImbX2, g_btnImbY2))
@@ -2134,12 +2119,7 @@ void OnChartEvent(const int id, const long &lparam,
             g_imbRatio = FP_IMB_HI;
          else
             g_imbRatio = FP_IMB_LO;
-         // Mark all bars stale so imbalances are recomputed with the new ratio
-         int n = ArraySize(g_bars);
-         for(int k = 0; k < n; k++)
-            g_bars[k].sorted = false;
          g_dirty = true;
-         Render();
         }
       // Zoom-in
       else if(HitTest(mx, my, g_btnZoomInX1, g_btnZoomInY1, g_btnZoomInX2, g_btnZoomInY2))
@@ -2160,7 +2140,7 @@ void OnChartEvent(const int id, const long &lparam,
         {
          bool on = (bool)ChartGetInteger(g_chart, CHART_SCALEFIX, 0);
          ChartSetInteger(g_chart, CHART_SCALEFIX, 0, !on);
-         // ChartSetInteger fires CHARTEVENT_CHART_CHANGE → ThrottledRender automatically
+         g_dirty = true;
         }
       // Opacity button: cycle 100% -> 75% -> 50% -> 25% -> 100%
       else if(HitTest(mx, my, g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2))
@@ -2174,28 +2154,24 @@ void OnChartEvent(const int id, const long &lparam,
          else
             g_opacity = FP_OPA_FULL;
          g_dirty = true;
-         Render();
         }
       // Text toggle: hide/show cell numbers
       else if(HitTest(mx, my, g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2))
         {
          g_userHideText = !g_userHideText;
          g_dirty        = true;
-         Render();
         }
       // Show/Hide toggle
       else if(HitTest(mx, my, g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2))
         {
          g_visible = !g_visible;
          g_dirty   = true;
-         Render();
         }
       // Refresh: reload tick data
       else if(HitTest(mx, my, g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2))
         {
          g_needs_reload = true;
          g_dirty        = true;
-         Render();
         }
       // VA%: cycle Value Area 70% -> 80% -> 90% -> 70%
       else if(HitTest(mx, my, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2))
@@ -2207,7 +2183,6 @@ void OnChartEvent(const int id, const long &lparam,
          else
             g_vaPercent = 70.0;
          g_dirty = true;
-         Render();
         }
       // Mode cycle: BidAsk -> Volume -> Delta -> BidAsk
       else if(HitTest(mx, my, g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2))
@@ -2216,7 +2191,6 @@ void OnChartEvent(const int id, const long &lparam,
          else if(g_mode == FOOT_CHART_VOLUME)  g_mode = FOOT_CHART_DELTA;
          else                                   g_mode = FOOT_CHART_BIDASK;
          g_dirty = true;
-         Render();
         }
      }
   }
