@@ -4,9 +4,9 @@
 //|    Market/Pending execution, Risk/Manual lot, SL/TP visual lines |
 //|    Drag-and-dock panel, Scale-out, Assign SL/TP, Hotkeys         |
 //+------------------------------------------------------------------+
-#property version   "1.15"
+#property version   "1.16"
 #property copyright "Ali Magdy"
-#property description "Chart Trader: Industry-standard preview lines (red SL / green TP / yellow Entry), color-coded PnL, clean badge labels."
+#property description "Chart Trader v1.16: Industry-standard preview lines (red SL / green TP / yellow Entry), color-coded PnL, clean badge labels. Production-ready with input validation, SL/TP side-guards, and synchronous order execution."
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -278,8 +278,7 @@ void AddUIElement(string name) {
 }
 
 void DeleteAllPrefixObjs() {
-   ObjectsDeleteAll(0, "W_PRO_"); // Fallback cleanup
-   ObjectsDeleteAll(0, PREFIX);
+   ObjectsDeleteAll(0, PREFIX); // PREFIX == "W_PRO_"
    g_line_sl_exists = false;
    g_line_tp_exists = false;
    g_line_entry_exists = false;
@@ -373,8 +372,35 @@ bool g_ChartScrollSaved = true;  // Saved chart scroll state before drag
 int OnInit()
 {
    trade.SetExpertMagicNumber(InpMagic);
-   trade.SetAsyncMode(true);
+   trade.SetAsyncMode(false);  // Synchronous: wait for server confirmation before continuing
    trade.SetDeviationInPoints(10);
+
+   // --- Input Validation ---
+   if(InpMagic < 0) {
+      Alert("ChartTrader: InpMagic must be >= 0. EA not loaded.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpDefRiskUnits <= 0) {
+      Alert("ChartTrader: InpDefRiskUnits must be > 0. EA not loaded.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpRiskStep <= 0) {
+      Alert("ChartTrader: InpRiskStep must be > 0. EA not loaded.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpDefSL < 0 || InpDefTP < 0) {
+      Alert("ChartTrader: Default SL/TP cannot be negative. EA not loaded.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(InpScalePct < SCALE_PCT_MIN || InpScalePct > SCALE_PCT_MAX) {
+      Alert(StringFormat("ChartTrader: InpScalePct must be between %.0f and %.0f. EA not loaded.",
+            SCALE_PCT_MIN, SCALE_PCT_MAX));
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(_Point <= 0) {
+      Alert("ChartTrader: Symbol point size is invalid. EA not loaded.");
+      return(INIT_FAILED);
+   }
    
    PanelX = InpPanelX;
    PanelY = InpPanelY;
@@ -402,7 +428,7 @@ int OnInit()
    EventSetMillisecondTimer(20); 
    
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) {
-      Alert("Warning: Enable 'Algo Trading' button!");
+      Alert("ChartTrader: AutoTrading is disabled. Enable the 'Algo Trading' button to place orders.");
    }
    return(INIT_SUCCEEDED);
 }
@@ -999,7 +1025,7 @@ void UpdateCalculatedLot() {
                
                if(InpIncLotStep && TradeSequence > 0) {
                   lot += (TradeSequence * step);
-                  if(lot > max) lot = max;
+                  if(lot > max) lot = max;  // Hard cap enforced
                }
                g_LotSize = lot;
             }
@@ -1059,6 +1085,12 @@ void ScaleOut() {
          double vol = PositionGetDouble(POSITION_VOLUME);
          double closeVol = vol * (g_ScalePct / 100.0);
          closeVol = MathFloor(closeVol / stepVol) * stepVol;
+         // Guard: do not close the entire position via scale-out
+         double remaining = vol - closeVol;
+         if(remaining < minVol) {
+            // Trim closeVol so at least minVol remains
+            closeVol = MathFloor((vol - minVol) / stepVol) * stepVol;
+         }
          if(closeVol >= minVol) {
             if(!trade.PositionClosePartial(ticket, closeVol))
                PrintFormat("ScaleOut Error ticket %I64u: %d", ticket, GetLastError());
@@ -1118,13 +1150,23 @@ void AssignSLToAll() {
       if(ticket == 0) continue;
       if(!IsOwnPosition(ticket)) continue;
       
+      long posType = PositionGetInteger(POSITION_TYPE);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+
       double newSL = 0;
       if(useVisualSL) {
          newSL = visualSLPrice;
+         // Sanity: SL must be below open for BUY, above open for SELL
+         if(posType == POSITION_TYPE_BUY && newSL >= openPrice) {
+            PrintFormat("AssignSL skipped pos %I64u: visual SL %.5f is above/at buy open %.5f", ticket, newSL, openPrice);
+            continue;
+         }
+         if(posType == POSITION_TYPE_SELL && newSL <= openPrice) {
+            PrintFormat("AssignSL skipped pos %I64u: visual SL %.5f is below/at sell open %.5f", ticket, newSL, openPrice);
+            continue;
+         }
       } else {
-         long type = PositionGetInteger(POSITION_TYPE);
-         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-         newSL = (type == POSITION_TYPE_BUY) ? openPrice - g_SL_Points * _Point : openPrice + g_SL_Points * _Point;
+         newSL = (posType == POSITION_TYPE_BUY) ? openPrice - g_SL_Points * _Point : openPrice + g_SL_Points * _Point;
       }
       newSL = NormalizeDouble(newSL, digits);
       if(newSL > 0 && !trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP)))
@@ -1142,6 +1184,16 @@ void AssignSLToAll() {
       double newSL = 0;
       if(useVisualSL) {
          newSL = visualSLPrice;
+         // Sanity: SL must be on the losing side of the pending order price
+         bool isBuyOrder = (type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT);
+         if(isBuyOrder && newSL >= openPrice) {
+            PrintFormat("AssignSL skipped pend %I64u: visual SL %.5f >= buy pending price %.5f", ticket, newSL, openPrice);
+            continue;
+         }
+         if(!isBuyOrder && newSL <= openPrice) {
+            PrintFormat("AssignSL skipped pend %I64u: visual SL %.5f <= sell pending price %.5f", ticket, newSL, openPrice);
+            continue;
+         }
       } else {
          if(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT)
             newSL = openPrice - g_SL_Points * _Point;
@@ -1170,13 +1222,23 @@ void AssignTPToAll() {
       if(ticket == 0) continue;
       if(!IsOwnPosition(ticket)) continue;
       
+      long posType = PositionGetInteger(POSITION_TYPE);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+
       double newTP = 0;
       if(useVisualTP) {
          newTP = visualTPPrice;
+         // Sanity: TP must be above open for BUY, below open for SELL
+         if(posType == POSITION_TYPE_BUY && newTP <= openPrice) {
+            PrintFormat("AssignTP skipped pos %I64u: visual TP %.5f is below/at buy open %.5f", ticket, newTP, openPrice);
+            continue;
+         }
+         if(posType == POSITION_TYPE_SELL && newTP >= openPrice) {
+            PrintFormat("AssignTP skipped pos %I64u: visual TP %.5f is above/at sell open %.5f", ticket, newTP, openPrice);
+            continue;
+         }
       } else {
-         long type = PositionGetInteger(POSITION_TYPE);
-         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-         newTP = (type == POSITION_TYPE_BUY) ? openPrice + g_TP_Points * _Point : openPrice - g_TP_Points * _Point;
+         newTP = (posType == POSITION_TYPE_BUY) ? openPrice + g_TP_Points * _Point : openPrice - g_TP_Points * _Point;
       }
       newTP = NormalizeDouble(newTP, digits);
       if(newTP > 0 && !trade.PositionModify(ticket, PositionGetDouble(POSITION_SL), newTP))
@@ -1194,6 +1256,16 @@ void AssignTPToAll() {
       double newTP = 0;
       if(useVisualTP) {
          newTP = visualTPPrice;
+         // Sanity: TP must be on the winning side of the pending order price
+         bool isBuyOrder = (type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT);
+         if(isBuyOrder && newTP <= openPrice) {
+            PrintFormat("AssignTP skipped pend %I64u: visual TP %.5f <= buy pending price %.5f", ticket, newTP, openPrice);
+            continue;
+         }
+         if(!isBuyOrder && newTP >= openPrice) {
+            PrintFormat("AssignTP skipped pend %I64u: visual TP %.5f >= sell pending price %.5f", ticket, newTP, openPrice);
+            continue;
+         }
       } else {
          if(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT)
             newTP = openPrice + g_TP_Points * _Point;
@@ -1210,7 +1282,7 @@ void AssignTPToAll() {
 }
 
 void ExecuteOrder(ENUM_ORDER_TYPE type) {
-   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) { Alert("AutoTrading OFF!"); return; }
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) { Alert("ChartTrader: AutoTrading is disabled. Enable the 'Algo Trading' button in the toolbar."); return; }
    
    UpdateCalculatedLot();
    
@@ -1367,7 +1439,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
    
    if(g_ExecMode == MODE_MARKET) {
       entryPrice = IsLongMode ? ask : bid;
-      TryDeleteObj(LINE_ENTRY);
+      if(TryDeleteObj(LINE_ENTRY)) changed = true;
    } else {
        // PENDING - Absolute Price
         if(g_PendingPrice == 0) g_PendingPrice = ask + (DEFAULT_PEND_OFFSET * _Point);
@@ -1400,7 +1472,7 @@ bool DrawVisualLines(bool forceUpdate = false) {
 
    // Optimization Check (using MathAbs for float safety)
    if(MathAbs(entryPrice - last_Mid) < 0.000001 && g_SL_Points == last_SL && g_TP_Points == last_TP && MathAbs(g_LotSize - last_Lot) < 0.000001 && IsLongMode == last_Mode && g_ExecMode == last_ExecMode && g_ShowPreview == last_ShowPreview && g_ShowZoneLabels == last_ShowZoneLabels && !forceUpdate) {
-      return false;
+      return changed; // Preserve entry-line create/delete changes made above
    }
    
    last_Mid  = entryPrice; 
@@ -1783,6 +1855,7 @@ void FireRepeatAction() {
       case REPEAT_SCALE_DN: AdjustScale(-5); break;
       case REPEAT_ENTRY_UP: AdjustEntryLine(InpEntryStep); break;
       case REPEAT_ENTRY_DN: AdjustEntryLine(-InpEntryStep); break;
+      default: break;
    }
 }
 //+------------------------------------------------------------------+
