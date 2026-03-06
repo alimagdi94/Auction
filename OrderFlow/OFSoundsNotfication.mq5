@@ -1,6 +1,6 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                                    Footprint.mq5  |
-//|   Footprint (Order Flow) — Production Ready v5.20                |
+//|   Footprint (Order Flow) — Production Ready v5.30                |
 //|   Volume / Delta / Bid x Ask per price level                     |
 //|   POC · VA% · Imbalance · Absorption · Stacked Imbalances        |
 //|   HVN/LVN · Delta Divergence · Buy/Sell Ratio Stripe             |
@@ -9,8 +9,8 @@
 //|   Compact canvas overlay + control panel                         |
 //+------------------------------------------------------------------+
 #property copyright "Ali Magdy"
-#property version   "5.20"
-#property description "Footprint Chart v5 — Decoupled HFT signals · Signals fire regardless of Prof/Viz state · Prof+Viz rightmost"
+#property version   "5.30"
+#property description "Footprint Chart v5 — Production-hardened · HFT score cache · Iterative sort · Signal gate unified"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -103,6 +103,9 @@ input int    InpSignalThreshold   = 60;            // Score Threshold (Buy >= th
 input color  InpSignalBuyColor    = C'0,220,100';  // Buy Signal Color
 input color  InpSignalSellColor   = C'220,40,60';  // Sell Signal Color
 input int    InpSignalFreqBars    = 3;             // Min bars between repeated signals (1=every bar)
+input bool   InpSignalSound       = false;         // Play sound on signal
+input string InpSignalBuySound    = "alert.wav";   // Buy signal sound file
+input string InpSignalSellSound   = "alert2.wav";  // Sell signal sound file
 
 input group "Delta Mode Cell Coloring"           // Enable per-cell green/red in Delta mode
 input bool   InpDeltaCellColor    = true;           // Enable per-cell green/red in Delta mode
@@ -159,6 +162,7 @@ struct FPBar
    int        level_count;
    bool       is_delta_divergence; // price moved up but delta fell (or vice versa)
    bool       is_naked_poc;        // POC level not yet retested by any subsequent bar
+   double     cached_hft_score;   // cached result of ComputeHFTSignal; DBL_MAX = stale
    PriceLevel levels[];
   };
 
@@ -414,6 +418,7 @@ int InsertBar(datetime bt)
       g_bars[n].va_hi_idx   = -1;
       g_bars[n].is_delta_divergence = false;
       g_bars[n].is_naked_poc        = false;
+      g_bars[n].cached_hft_score    = DBL_MAX;  // stale sentinel
       ArrayResize(g_bars[n].levels, 64, 64);
       return n;
      }
@@ -454,25 +459,28 @@ int InsertBar(datetime bt)
    g_bars[n].va_lo_idx   = -1;
    g_bars[n].va_hi_idx   = -1;
    g_bars[n].is_delta_divergence = false;
-      g_bars[n].is_naked_poc        = false;
+   g_bars[n].is_naked_poc        = false;
+   g_bars[n].cached_hft_score    = DBL_MAX;
    ArrayResize(g_bars[n].levels, 0);
 
    // Shift scalar fields and swap dynamic arrays from n..pos+1 downward
    for(int i = n; i > pos; i--)
      {
       // Copy scalars from i-1 to i
-      g_bars[i].bar_time    = g_bars[i - 1].bar_time;
-      g_bars[i].total_vol   = g_bars[i - 1].total_vol;
-      g_bars[i].total_delta = g_bars[i - 1].total_delta;
-      g_bars[i].high        = g_bars[i - 1].high;
-      g_bars[i].low         = g_bars[i - 1].low;
-      g_bars[i].sorted      = g_bars[i - 1].sorted;
-      g_bars[i].is_bullish  = g_bars[i - 1].is_bullish;
-      g_bars[i].level_count = g_bars[i - 1].level_count;
-      g_bars[i].poc_idx     = g_bars[i - 1].poc_idx;
-      g_bars[i].va_lo_idx   = g_bars[i - 1].va_lo_idx;
-      g_bars[i].va_hi_idx   = g_bars[i - 1].va_hi_idx;
+      g_bars[i].bar_time         = g_bars[i - 1].bar_time;
+      g_bars[i].total_vol        = g_bars[i - 1].total_vol;
+      g_bars[i].total_delta      = g_bars[i - 1].total_delta;
+      g_bars[i].high             = g_bars[i - 1].high;
+      g_bars[i].low              = g_bars[i - 1].low;
+      g_bars[i].sorted           = g_bars[i - 1].sorted;
+      g_bars[i].is_bullish       = g_bars[i - 1].is_bullish;
+      g_bars[i].level_count      = g_bars[i - 1].level_count;
+      g_bars[i].poc_idx          = g_bars[i - 1].poc_idx;
+      g_bars[i].va_lo_idx        = g_bars[i - 1].va_lo_idx;
+      g_bars[i].va_hi_idx        = g_bars[i - 1].va_hi_idx;
       g_bars[i].is_delta_divergence = g_bars[i - 1].is_delta_divergence;
+      g_bars[i].is_naked_poc        = g_bars[i - 1].is_naked_poc;
+      g_bars[i].cached_hft_score    = g_bars[i - 1].cached_hft_score;
       // Move the dynamic levels array: copy contents then clear source
       int lc = g_bars[i - 1].level_count;
       ArrayResize(g_bars[i].levels, lc, 64);
@@ -481,19 +489,20 @@ int InsertBar(datetime bt)
      }
 
    // Place new bar at pos
-   g_bars[pos].bar_time    = bt;
-   g_bars[pos].total_vol   = 0;
-   g_bars[pos].total_delta = 0;
-   g_bars[pos].high        = 0.0;
-   g_bars[pos].low         = 0.0;
-   g_bars[pos].sorted      = true;
-   g_bars[pos].is_bullish  = true;
-   g_bars[pos].level_count = 0;
-   g_bars[pos].poc_idx     = -1;
-   g_bars[pos].va_lo_idx   = -1;
-   g_bars[pos].va_hi_idx   = -1;
+   g_bars[pos].bar_time         = bt;
+   g_bars[pos].total_vol        = 0;
+   g_bars[pos].total_delta      = 0;
+   g_bars[pos].high             = 0.0;
+   g_bars[pos].low              = 0.0;
+   g_bars[pos].sorted           = true;
+   g_bars[pos].is_bullish       = true;
+   g_bars[pos].level_count      = 0;
+   g_bars[pos].poc_idx          = -1;
+   g_bars[pos].va_lo_idx        = -1;
+   g_bars[pos].va_hi_idx        = -1;
    g_bars[pos].is_delta_divergence = false;
    g_bars[pos].is_naked_poc        = false;
+   g_bars[pos].cached_hft_score    = DBL_MAX;
    ArrayResize(g_bars[pos].levels, 64, 64);
    return pos;
   }
@@ -527,7 +536,8 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
       // Search for existing level (optimized for recent levels)
       for(int i = used - 1; i >= 0; i--)
         {
-         if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.4)
+         // Match tolerance is half a step: levels within 0.5×g_step are on the same cell.
+         if(MathAbs(g_bars[bi].levels[i].price - price) < g_step * 0.5)
            {
             idx = i;
             break;
@@ -574,7 +584,8 @@ void AccumulateTick(int bi, double price, long vol, bool isBuy, bool isSell)
    g_bars[bi].total_vol   += vol;
    g_bars[bi].total_delta += (isBuy ? vol : (isSell ? -vol : 0));
    // Mark signals as stale so DrawBar will recompute on next render
-   g_bars[bi].sorted = false;
+   g_bars[bi].sorted           = false;
+   g_bars[bi].cached_hft_score = DBL_MAX;  // invalidate HFT cache
    g_dirty = true;
   }
 
@@ -590,18 +601,27 @@ void ComputeBarSignals(int bi)
    if(!g_bars[bi].sorted)
      {
       SortLevels(g_bars[bi].levels, len);
-      g_bars[bi].sorted = true;
+      g_bars[bi].sorted           = true;
+      g_bars[bi].cached_hft_score = DBL_MAX;  // sort changed level order — invalidate cache
      }
 
    // 1. POC
    g_bars[bi].poc_idx = FindPOC(g_bars[bi].levels, len);
 
    // 2. Value Area
+   // NOTE on index naming: levels[] is sorted descending by price (index 0 = highest price).
+   // FindVA returns lo/hi as array *index* bounds, where:
+   //   va_lo_idx = the lower array index = the HIGHER-priced VA boundary (VAH)
+   //   va_hi_idx = the higher array index = the LOWER-priced VA boundary (VAL)
+   // This naming is index-centric, not price-centric. The in-VA test is:
+   //   inVA = (i >= va_lo_idx && i <= va_hi_idx)  ← correct for descending array
    FindVA(g_bars[bi].levels, len, g_bars[bi].total_vol, g_bars[bi].poc_idx,
           g_bars[bi].va_lo_idx, g_bars[bi].va_hi_idx);
 
    // 3. Loop for Imbalance & Absorption
-   long avgVol = (len > 0) ? (g_bars[bi].total_vol / len) : 1;
+   // Use MathMax(1,…) to prevent absorption/HVN/LVN thresholds collapsing to zero
+   // when a bar has accumulated zero volume (e.g. first tick, synthetic bar).
+   long avgVol = (len > 0) ? MathMax(1L, g_bars[bi].total_vol / len) : 1L;
    for(int i = 0; i < len; i++)
      {
       g_bars[bi].levels[i].is_imb_buy          = false;
@@ -862,31 +882,76 @@ int LoadHistory(datetime t0, datetime t1)
   }
 
 //+------------------------------------------------------------------+
-//| Quicksort partition (descending by price)                        |
+//| Insertion sort for small partitions (avoids recursion overhead)  |
+//+------------------------------------------------------------------+
+void InsertionSortLevels(PriceLevel &lv[], int lo, int hi)
+  {
+   for(int i = lo + 1; i <= hi; i++)
+     {
+      PriceLevel key = lv[i];
+      int j = i - 1;
+      while(j >= lo && lv[j].price < key.price)
+        {
+         lv[j + 1] = lv[j];
+         j--;
+        }
+      lv[j + 1] = key;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Quicksort partition (descending by price) — iterative via stack  |
+//| to avoid call-stack overflow on bars with many price levels.     |
 //+------------------------------------------------------------------+
 void SortLevelsPartition(PriceLevel &lv[], int lo, int hi)
   {
-   if(lo >= hi)
-      return;
-   double pivot = lv[hi].price;
-   int    i     = lo - 1;
-   for(int j = lo; j < hi; j++)
-     {
-      if(lv[j].price >= pivot)
-        {
-         i++;
-         PriceLevel tmp = lv[i];
-         lv[i]          = lv[j];
-         lv[j]          = tmp;
-        }
-     }
-   i++;
-   PriceLevel tmp = lv[i];
-   lv[i]          = lv[hi];
-   lv[hi]         = tmp;
+   // Iterative quicksort using an explicit stack
+   int stack[];
+   int top = -1;
+   ArrayResize(stack, (hi - lo + 1) * 2);
 
-   SortLevelsPartition(lv, lo, i - 1);
-   SortLevelsPartition(lv, i + 1, hi);
+   stack[++top] = lo;
+   stack[++top] = hi;
+
+   while(top >= 0)
+     {
+      int h = stack[top--];
+      int l = stack[top--];
+
+      // Use insertion sort for small partitions
+      if(h - l < 16)
+        {
+         InsertionSortLevels(lv, l, h);
+         continue;
+        }
+
+      // Median-of-three pivot selection to improve worst-case behaviour
+      int    mid   = l + (h - l) / 2;
+      double pL = lv[l].price, pM = lv[mid].price, pH = lv[h].price;
+      int    pivIdx;
+      if((pL >= pM && pL <= pH) || (pL <= pM && pL >= pH)) pivIdx = l;
+      else if((pM >= pL && pM <= pH) || (pM <= pL && pM >= pH))    pivIdx = mid;
+      else                                                            pivIdx = h;
+
+      // Swap pivot to end
+      PriceLevel tmp = lv[pivIdx]; lv[pivIdx] = lv[h]; lv[h] = tmp;
+      double pivot = lv[h].price;
+
+      int i = l - 1;
+      for(int j = l; j < h; j++)
+        {
+         if(lv[j].price >= pivot)
+           {
+            i++;
+            PriceLevel t = lv[i]; lv[i] = lv[j]; lv[j] = t;
+           }
+        }
+      i++;
+      tmp  = lv[i]; lv[i] = lv[h]; lv[h] = tmp;
+
+      if(i - 1 > l) { stack[++top] = l;     stack[++top] = i - 1; }
+      if(i + 1 < h) { stack[++top] = i + 1; stack[++top] = h;     }
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -894,7 +959,10 @@ void SortLevels(PriceLevel &lv[], int n)
   {
    if(n <= 1)
       return;
-   SortLevelsPartition(lv, 0, n - 1);
+   if(n <= 16)
+      InsertionSortLevels(lv, 0, n - 1);  // pure insertion sort for tiny arrays
+   else
+      SortLevelsPartition(lv, 0, n - 1);
   }
 
 //+------------------------------------------------------------------+
@@ -1080,10 +1148,17 @@ int ComputeOFScore(int bi)
 //+------------------------------------------------------------------+
 double ComputeHFTSignal(int bi)
   {
+   // Return cached value if still valid (not invalidated by a new tick)
+   if(g_bars[bi].cached_hft_score != DBL_MAX)
+      return g_bars[bi].cached_hft_score;
+
    int  len  = g_bars[bi].level_count;
    long tvol = g_bars[bi].total_vol;
    if(len == 0 || tvol == 0)
+     {
+      g_bars[bi].cached_hft_score = 0.0;
       return 0.0;
+     }
 
    // ── Component 1: OFS Score (normalised -1 → +1) ───────────────
    int    ofs = ComputeOFScore(bi);
@@ -1168,7 +1243,9 @@ double ComputeHFTSignal(int bi)
    const double w4 = 0.15, w5 = 0.10, w6 = 0.10;
    double raw = c1 * w1 + c2 * w2 + c3 * w3
               + c4 * w4 + c5 * w5 + c6 * w6;
-   return MathMax(-1.0, MathMin(1.0, raw)) * 100.0;
+   double result = MathMax(-1.0, MathMin(1.0, raw)) * 100.0;
+   g_bars[bi].cached_hft_score = result;  // store in cache
+   return result;
   }
 
 //+------------------------------------------------------------------+
@@ -1751,7 +1828,8 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 1 SigThresh OBJ_EDIT = 17 items
+   // Layout: 1 HistEdit + 1 Rld + 1 Mode + 2 (Imb,VA) + 2 (Opa,Lbl) + 3 (Z-,Z+,Lock)
+   //       + 2 (Cell,Tick) + 3 (Sig,Freq,Thresh) + 2 (Prof,Viz) = 17 items, 14 buttons
    int panelW = pad + (btnW * 17 + btnGap * 16) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
@@ -1866,20 +1944,18 @@ void DrawPanel()
                     FpARGB(C'70,70,80', 200));
 
    // Subtle group-separator lines
-   // After Sync | after Mode | after VA | after Lbl | after Lock | after Tick | after Thresh
+   // After: Rld | Mode | VA | Lbl | Lock | Tick | SigThresh (end of signals group)
    int sepY1 = g_panelY1 + 4;
    int sepY2 = g_panelY2 - 4;
-   int sepAlpha = 55;
-   uint sepCol = FpARGB(C'100,100,120', sepAlpha);
-   int sepPositions[7];
+   uint sepCol = FpARGB(C'100,100,120', 55);
+   int sepPositions[6];
    sepPositions[0] = g_btnRefreshX2  + FP_PANEL_BTN_GAP / 2;
    sepPositions[1] = g_btnModeX2     + FP_PANEL_BTN_GAP / 2;
    sepPositions[2] = g_btnVAX2       + FP_PANEL_BTN_GAP / 2;
    sepPositions[3] = g_btnTxtX2      + FP_PANEL_BTN_GAP / 2;
    sepPositions[4] = g_btnScaleFixX2 + FP_PANEL_BTN_GAP / 2;
    sepPositions[5] = g_btnTickX2     + FP_PANEL_BTN_GAP / 2;
-   sepPositions[6] = g_btnSigX2      + (FP_PANEL_BTN_W * 2 + FP_PANEL_BTN_GAP * 2);  // after SigThresh
-   for(int s = 0; s < 7; s++)
+   for(int s = 0; s < 6; s++)
       canvas.LineVertical(sepPositions[s], sepY1, sepY2, sepCol);
 
    // Hover detection
@@ -2350,7 +2426,8 @@ void EvalAndFireSignal()
    g_lastSignalBar = bi;   // arm the frequency gate
 
    // ── Silent chart arrow — no popup, no sound ──────────────────────
-   // Name is unique per bar_time so duplicate ticks don't stack objects.
+   // Arrow is placed just outside the bar's high/low using a fraction of
+   // the bar range so it scales correctly at any zoom level and tick size.
    int    displayScore = (int)MathRound(isBuySignal ? hftScore : -hftScore);
    string objName = StringFormat("FP_Sig_%s_%I64d",
                                  isBuySignal ? "B" : "S",
@@ -2358,9 +2435,11 @@ void EvalAndFireSignal()
 
    if(ObjectFind(g_chart, objName) < 0)
      {
-      double arrowPrice = isBuySignal ? g_bars[bi].low  - g_step * 2.0
-                                      : g_bars[bi].high + g_step * 2.0;
-      int    arrowCode  = isBuySignal ? 233 : 234;  // Wingdings up/down arrow
+      double barRange   = MathMax(g_step, g_bars[bi].high - g_bars[bi].low);
+      double arrowOffset = barRange * 0.15;  // 15% of bar range — visible but not intrusive
+      double arrowPrice = isBuySignal ? g_bars[bi].low  - arrowOffset
+                                      : g_bars[bi].high + arrowOffset;
+      int    arrowCode  = isBuySignal ? 233 : 234;  // Wingdings ▲ / ▼
       color  arrowCol   = isBuySignal ? InpSignalBuyColor : InpSignalSellColor;
 
       if(ObjectCreate(g_chart, objName, OBJ_ARROW, 0,
@@ -2377,6 +2456,14 @@ void EvalAndFireSignal()
                           StringFormat("%s HFT:%d OFS:%d",
                                        isBuySignal ? "BUY" : "SELL",
                                        displayScore, currentScore));
+
+         // Play distinct sound for buy vs sell (only on live bar, only when enabled)
+         if(InpSignalSound)
+           {
+            string sndFile = isBuySignal ? InpSignalBuySound : InpSignalSellSound;
+            if(StringLen(sndFile) > 0)
+               PlaySound(sndFile);
+           }
         }
      }
   }
@@ -2392,16 +2479,20 @@ void EvalAndFireSignal()
 //|                                                                  |
 //| Bar geometry derived directly from high/low prices via          |
 //| ChartTimePriceToXY — no cell-scratch buffers required.         |
+//|                                                                  |
+//| Frequency gate is seeded from g_lastSignalBar so the visual    |
+//| markers are always consistent with the chart arrow objects      |
+//| placed by EvalAndFireSignal.                                    |
 //+------------------------------------------------------------------+
 void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
   {
    if(!g_signalsEnabled)
       return;
 
-   // Local frequency gate — tracks the last bar for which a marker was drawn
-   // so that the visual spacing matches g_signalFreqBars regardless of whether
-   // EvalAndAlertSignals already updated g_lastSignalBar.
-   int lastDrawnBar = -9999;
+   // Seed the local gate from the global tracker so visual markers match
+   // the chart arrows placed by EvalAndFireSignal.  Iterating newest→oldest
+   // means we carry the gate state backward through history correctly.
+   int lastDrawnBar = g_lastSignalBar;
 
    for(int v = 0; v < visBars; v++)
      {
@@ -2426,8 +2517,7 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       if(!freqGatePass)
          continue;
 
-      double hftScore     = ComputeHFTSignal(bi);
-      int    currentScore = ComputeOFScore(bi);
+      double hftScore    = ComputeHFTSignal(bi);  // fast: hits cache on most bars
       bool   isBuySignal  = (hftScore >=  (double)g_signalThreshold);
       bool   isSellSignal = (hftScore <= -(double)g_signalThreshold);
       if(!isBuySignal && !isSellSignal)
@@ -2443,13 +2533,13 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       int halfW = (int)(barW * 0.45);
       if(halfW < 14) halfW = 14;
 
-      // x1/x2: align to bar centre obtained via high price lookup
+      // x1/x2: align to bar centre obtained via the top-most level price
       ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price, tmpX, tmpY);
       int x1   = tmpX - halfW;
       int x2   = tmpX + halfW;
 
-      int barTop  = wy_h;                    // screen Y for bar high (smaller number = top)
-      int barBot  = wy_l;                    // screen Y for bar low
+      int barTop  = wy_h;
+      int barBot  = wy_l;
       if(barTop > barBot) { int t = barTop; barTop = barBot; barBot = t; }
       int barH    = MathMax(barBot - barTop, 1);
       int midBarY = barTop + barH / 2;
@@ -2482,14 +2572,15 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       canvas.Rectangle(   x1 + 1, bY1, x2 - 1, bY2, cBdr);
 
       // ── Step 3: Arrow chevron on the left of the banner ───────────
-      int aH  = MathMin(7, bH / 3);
+      // Guard: need at least 2 rows for the chevron to be visible.
+      int aH  = MathMax(2, MathMin(7, bH / 3));
       int aMX = x1 + aH + 5;
       int aMY = midBarY;
       for(int r = 0; r < aH; r++)
         {
          int hw = isBuySignal
-                  ? (int)MathRound((double)aH * r        / MathMax(aH - 1, 1))
-                  : (int)MathRound((double)aH * (aH-1-r) / MathMax(aH - 1, 1));
+                  ? (int)MathRound((double)aH * r        / (double)(aH - 1))
+                  : (int)MathRound((double)aH * (aH-1-r) / (double)(aH - 1));
          canvas.LineHorizontal(aMX - hw, aMX + hw, aMY - aH / 2 + r, cBright);
         }
 
@@ -2504,24 +2595,18 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       if(isBuySignal)
         {
          int tipY  = barBot + 3;
-         int baseY = tipY + mSize + 2;
          for(int r2 = 0; r2 <= mSize; r2++)
-           {
-            int hw2 = mSize - r2;
-            canvas.LineHorizontal(wx - hw2, wx + hw2, tipY + r2, cBright);
-           }
+            canvas.LineHorizontal(wx - (mSize - r2), wx + (mSize - r2), tipY + r2, cBright);
+         int baseY = tipY + mSize + 2;
          canvas.LineHorizontal(wx - mSize, wx + mSize, baseY,     cBright);
          canvas.LineHorizontal(wx - mSize, wx + mSize, baseY + 1, cBright);
         }
       else
         {
          int tipY  = barTop - 3;
-         int baseY = tipY - mSize - 2;
          for(int r2 = 0; r2 <= mSize; r2++)
-           {
-            int hw2 = mSize - r2;
-            canvas.LineHorizontal(wx - hw2, wx + hw2, tipY - r2, cBright);
-           }
+            canvas.LineHorizontal(wx - (mSize - r2), wx + (mSize - r2), tipY - r2, cBright);
+         int baseY = tipY - mSize - 2;
          canvas.LineHorizontal(wx - mSize, wx + mSize, baseY,     cBright);
          canvas.LineHorizontal(wx - mSize, wx + mSize, baseY - 1, cBright);
         }
@@ -2737,7 +2822,12 @@ int OnInit()
    g_signalThreshold = MathMax(1, MathMin(99, InpSignalThreshold));
    g_lastSignalBar   = -9999;
 
-   g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
+   // Determine whether this symbol publishes real trade ticks (exchange) or
+   // only bid/ask quotes (OTC/forex).  SYMBOL_LAST > 0 is the primary check;
+   // fall back to SYMBOL_TRADE_CALC_MODE: MODE_FOREX (0) means OTC quotes only.
+   double lastPrice = SymbolInfoDouble(_Symbol, SYMBOL_LAST);
+   int    calcMode  = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_CALC_MODE);
+   g_hasTrades = (lastPrice > 0.0) || (calcMode != SYMBOL_CALC_MODE_FOREX);
 
    // Enable mouse-move events for panel hover states
    ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
@@ -2869,19 +2959,19 @@ void OnDeinit(const int reason)
          ObjectDelete(g_chart, nm);
      }
 
+   // canvas.Destroy() removes the bitmap-label object (g_name) from the chart;
+   // the subsequent ObjectDelete is a safety no-op in case Destroy was skipped.
    canvas.Destroy();
    ObjectDelete(g_chart, g_name);
-   
+
    int n = ArraySize(g_bars);
    for(int i = 0; i < n; i++)
-     {
       ArrayFree(g_bars[i].levels);
-     }
-     
+
    ArrayFree(g_bars);
    ArrayFree(g_scratchY1);
    ArrayFree(g_scratchY2);
-   g_scratchCap  = 0;
+   g_scratchCap = 0;
    ArrayFree(g_profPrices);
    ArrayFree(g_profCumDelta);
    g_profCount = 0;
