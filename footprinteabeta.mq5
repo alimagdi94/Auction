@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                                 FootprintEA.mq5  |
 //|   Footprint (Order Flow) — Expert Advisor v6.0                   |
 //|   Volume / Delta / Bid x Ask per price level                     |
@@ -15,6 +15,9 @@
 #property description "Footprint EA v6 — Full order-flow chart + advanced signal filters"
 
 #include <Canvas\Canvas.mqh>
+#include <Trade\Trade.mqh>
+
+CTrade trade;   // MQL5 trade execution object (used by PlaceMarketOrder + ManagePositions)
 
 //--- Chart mode (based on ClusterDelta #Footprint docs)
 enum ENUM_FOOT_CHART_MODE
@@ -129,6 +132,46 @@ input group "Signal Filter — Timing"
 input int    InpSigCooldownMins   = 0;             // Min minutes between alerts  [0 = bar-count only]
 input bool   InpSigBarCloseOnly   = false;         // Only signal on a fully closed bar
 
+input group "═══ AUTOMATED TRADING ═══"
+input bool   InpAutoTrade         = true;          // Master switch — enable live order placement
+
+input group "Strategy Context"
+input int    InpATRPeriod         = 14;            // ATR lookback for volatility normalisation
+input double InpBufferPips        = 2.0;           // Entry buffer beyond signal bar high/low (pips)
+input bool   InpAllowBuy          = true;          // Allow long (buy) orders
+input bool   InpAllowSell         = true;          // Allow short (sell) orders
+input int    InpMaxOpenTrades     = 1;             // Max concurrent positions this EA may hold
+
+input group "Spread Guard"
+input bool   InpSpreadFilter      = true;          // Block new orders during wide spreads
+input double InpMaxSpread         = 30.0;          // Max allowable spread in pips [XAUUSD≈3 | NAS100≈10]
+
+input group "Money Management"
+input bool   InpUseRiskPercent    = true;          // true = dynamic risk%, false = fixed lots
+input double InpRiskPercent       = 1.0;           // Risk per trade as % of account balance
+input double InpFixedLot          = 0.10;          // Fixed lot size (used when UseRiskPercent=false)
+
+input group "Stop Loss & Take Profit"
+input bool   InpUseStopLoss       = true;          // Hard stop loss (required for risk math)
+input double InpSLMultiplier      = 1.5;           // SL = ATR × multiplier  (e.g. 1.5 × ATR)
+input bool   InpUseTakeProfit     = true;          // Hard take profit target
+input double InpRiskRewardRatio   = 2.0;           // TP = SL × RRR  (e.g. 2.0 = 2R target)
+
+input group "Break-Even Guardian"
+input bool   InpUseBreakEven      = true;          // Auto-move SL to entry after trigger
+input double InpBETriggerPips     = 20.0;          // Profit in pips required to activate BE
+input double InpBEBufferPips      = 2.0;           // Pips above/below entry locked in (covers spread)
+
+input group "Trailing Stop Guardian"
+input bool   InpUseTrailing       = true;          // Dynamic trailing stop
+input double InpTrailStartPips    = 30.0;          // Pips profit required before trail begins
+input double InpTrailStepPips     = 10.0;          // Trail heartbeat — stop only moves by this step
+
+input group "Hard Equity Stops"
+input double InpMaxEquityProfit   = 0.0;           // Halt trading when account equity gains X% [0=off]
+input double InpMaxEquityLoss     = 5.0;           // Kill EA when account equity drops X% from start [0=off]
+input bool   InpCleanOldOrders    = true;          // Delete stale pending orders on new signal (OCO logic)
+
 input group "Delta Mode Cell Coloring"           // Enable per-cell green/red in Delta mode
 input bool   InpDeltaCellColor    = true;           // Enable per-cell green/red in Delta mode
 input color  InpDeltaCellBull     = C'5,70,40';     // Delta mode: ask>bid base (dark green floor)
@@ -140,7 +183,7 @@ input bool   InpShowNakedPOC      = true;            // Highlight POC levels not
 input color  InpNakedPOCColor     = C'255,80,30';    // Naked POC frame — orange-red (urgent, distinct from gold)
 
 input group "Cumulative Delta Profile"
-input bool   InpShowCumDeltaProf  = true;            // Show session cumulative delta profile (right side)
+input bool   InpShowCumDeltaProf  = false;           // Show session cumulative delta profile (right side)
 input int    InpCumDeltaProfW     = 55;              // Profile panel width (px)
 input uchar  InpCumDeltaProfAlpha = 170;             // Profile bar alpha (0-255)
 input color  InpCumDeltaPosColor  = C'20,160,80';    // Profile: positive cumulative delta (green)
@@ -266,8 +309,27 @@ int    g_lastSignalBar    = -9999;  // bar index (within g_bars) at which the la
 int    g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2;  // "Sig" button hit-test coords
 
 // --- Signal filter runtime state ---
-datetime g_lastSignalTime = 0;      // wall-clock time of last alert (for minute-cooldown gate)
-datetime g_lastClosedBarTime = 0;   // tracks bar-close guard (last bar time seen as "closed")
+datetime g_lastSignalTime    = 0;      // wall-clock time of last alert (for minute-cooldown gate)
+datetime g_lastClosedBarTime = 0;      // tracks bar-close guard (last bar time seen as "closed")
+
+//+------------------------------------------------------------------+
+//|  ══════════════  AUTOMATED TRADING LAYER  ══════════════         |
+//+------------------------------------------------------------------+
+
+// ── Broker / Symbol Cache (filled by RefreshSymbolInfo) ──────────
+static const ulong EA_MAGIC   = 20260226;   // Unique EA fingerprint
+double g_Pip         = 0.0001; // Standardised pip (auto-detected: forex=0.0001 / JPY/XAU/IDX=adjusted)
+double g_VolMin      = 0.01;   // Minimum lot size
+double g_VolMax      = 100.0;  // Maximum lot size
+double g_VolStep     = 0.01;   // Lot granularity
+double g_TickVal     = 1.0;    // Tick value in deposit currency (for risk math)
+double g_TickSz      = 0.0001; // Tick size in price
+
+// ── Runtime Trading State ─────────────────────────────────────────
+int      g_handleATR      = INVALID_HANDLE; // ATR indicator handle
+datetime g_lastBarTime    = 0;              // New-bar clock
+bool     g_tradingEnabled = true;           // Set false when equity guard fires
+double   g_startBalance   = 0.0;           // Account balance at EA start (for equity guard %)
 
 // Persistent scratch buffers
 int  g_scratchY1[];
@@ -1084,8 +1146,384 @@ int ComputeOFScore(int bi)
    return MathMax(0, MathMin(100, score));
   }
 
+//+==================================================================+
+//||              AUTOMATED TRADING ENGINE — FUNCTIONS              ||
+//+==================================================================+
+
 //+------------------------------------------------------------------+
-//| Signal filter — returns true when bar bi qualifies for a signal  |
+//| Auto-detect the broker-supported order filling mode              |
+//| Tries FOK → IOC → RETURN. Works live, in tester, and on all     |
+//| broker types (netting / hedging, ECN / market maker).            |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillMode()
+  {
+   long fillFlags = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((fillFlags & SYMBOL_FILLING_FOK)    != 0) return ORDER_FILLING_FOK;
+   if((fillFlags & SYMBOL_FILLING_IOC)    != 0) return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;   // always supported as final fallback
+  }
+void RefreshSymbolInfo()
+  {
+   // ── Pip standardisation ──────────────────────────────────────────
+   // Brokers differ: 5-digit forex = 0.00001/pip, but we want 0.0001.
+   // Gold / indices already have their own point size.
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   if(digits == 3 || digits == 5)
+      g_Pip = _Point * 10.0;   // 5-digit forex or 3-digit JPY
+   else
+      g_Pip = _Point;           // indices, metals — use raw point
+
+   // ── Volume constraints ────────────────────────────────────────────
+   g_VolMin  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   g_VolMax  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   g_VolStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(g_VolMin  <= 0.0) g_VolMin  = 0.01;
+   if(g_VolMax  <= 0.0) g_VolMax  = 100.0;
+   if(g_VolStep <= 0.0) g_VolStep = 0.01;
+
+   // ── Tick value (for lot-size risk calculation) ────────────────────
+   g_TickVal = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   g_TickSz  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(g_TickVal <= 0.0) g_TickVal = 1.0;
+   if(g_TickSz  <= 0.0) g_TickSz  = _Point;
+  }
+
+//+------------------------------------------------------------------+
+//| True once per new bar (New-Bar clock)                            |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+  {
+   datetime curBar = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(curBar == 0) return false;
+   if(curBar != g_lastBarTime)
+     {
+      g_lastBarTime = curBar;
+      return true;
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Current spread in pips                                           |
+//+------------------------------------------------------------------+
+double GetSpreadPips()
+  {
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(g_Pip <= 0.0) return 0.0;
+   return (ask - bid) / g_Pip;
+  }
+
+//+------------------------------------------------------------------+
+//| Read ATR value at given shift (0 = current bar)                  |
+//+------------------------------------------------------------------+
+double GetATR(int shift = 1)
+  {
+   if(g_handleATR == INVALID_HANDLE) return 0.0;
+   double buf[];
+   if(CopyBuffer(g_handleATR, 0, shift, 1, buf) <= 0) return 0.0;
+   return buf[0];
+  }
+
+//+------------------------------------------------------------------+
+//| Lot size from risk % or fixed fallback                           |
+//| slPoints = stop-loss distance in raw points (_Point units)       |
+//+------------------------------------------------------------------+
+double CalcLot(double slPoints)
+  {
+   double lot = InpFixedLot;
+
+   if(InpUseRiskPercent && slPoints > 0.0 && g_TickSz > 0.0 && g_TickVal > 0.0)
+     {
+      double balance  = AccountInfoDouble(ACCOUNT_BALANCE);
+      double riskMoney= balance * InpRiskPercent / 100.0;
+      double slTicks  = slPoints / g_TickSz;          // SL distance in tick units
+      double lotRaw   = riskMoney / (slTicks * g_TickVal);
+      lot = lotRaw;
+     }
+
+   // ── Sanitise: round to step, clamp to broker limits ──────────────
+   lot = MathFloor(lot / g_VolStep) * g_VolStep;
+   lot = MathMax(g_VolMin, MathMin(g_VolMax, lot));
+   lot = NormalizeDouble(lot, 2);
+   return lot;
+  }
+
+//+------------------------------------------------------------------+
+//| Count EA's own open positions on this symbol                     |
+//+------------------------------------------------------------------+
+int CountMyTrades()
+  {
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         (ulong)PositionGetInteger(POSITION_MAGIC) == EA_MAGIC)
+         count++;
+     }
+   return count;
+  }
+
+//+------------------------------------------------------------------+
+//| Delete all pending orders belonging to this EA on this symbol    |
+//+------------------------------------------------------------------+
+void DeleteAllPending()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         (ulong)OrderGetInteger(ORDER_MAGIC) == EA_MAGIC)
+         trade.OrderDelete(ticket);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Hard equity guard — returns false if trading must stop           |
+//+------------------------------------------------------------------+
+bool CheckEquityGuard()
+  {
+   if(!g_tradingEnabled) return false;
+
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   // ── Profit ceiling ────────────────────────────────────────────────
+   if(InpMaxEquityProfit > 0.0)
+     {
+      double gainPct = ((equity - g_startBalance) / g_startBalance) * 100.0;
+      if(gainPct >= InpMaxEquityProfit)
+        {
+         g_tradingEnabled = false;
+         Alert(StringFormat("FootprintEA [%s]: Equity profit target %.1f%% reached. Trading halted.",
+                            _Symbol, InpMaxEquityProfit));
+         Print("EQUITY GUARD: profit target hit. EA stopped.");
+         return false;
+        }
+     }
+
+   // ── Loss floor ────────────────────────────────────────────────────
+   if(InpMaxEquityLoss > 0.0)
+     {
+      double lossPct = ((g_startBalance - equity) / g_startBalance) * 100.0;
+      if(lossPct >= InpMaxEquityLoss)
+        {
+         g_tradingEnabled = false;
+         Alert(StringFormat("FootprintEA [%s]: Equity drawdown %.1f%% hit. EA killed.",
+                            _Symbol, InpMaxEquityLoss));
+         Print("EQUITY GUARD: loss limit hit. EA stopped.");
+         return false;
+        }
+     }
+
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| The Muscle — build and send one market order                     |
+//| direction: +1 = buy, -1 = sell                                   |
+//+------------------------------------------------------------------+
+void PlaceMarketOrder(int direction)
+  {
+   if(!g_tradingEnabled)         return;
+   if(!InpAutoTrade)             return;
+   if(CountMyTrades() >= InpMaxOpenTrades) return;
+
+   // Re-apply fill mode each order — tester optimisation passes can change broker context
+   trade.SetTypeFilling(GetFillMode());
+
+   // ── Directional permission gates ─────────────────────────────────
+   if(direction == +1 && !InpAllowBuy)  return;
+   if(direction == -1 && !InpAllowSell) return;
+
+   // ── Spread gate ───────────────────────────────────────────────────
+   if(InpSpreadFilter && GetSpreadPips() > InpMaxSpread)
+     {
+      Print(StringFormat("FootprintEA: Spread %.1f pips > limit %.1f — order skipped.",
+                         GetSpreadPips(), InpMaxSpread));
+      return;
+     }
+
+   // ── ATR-based SL distance ─────────────────────────────────────────
+   double atr = GetATR(1);
+   if(atr <= 0.0)
+     {
+      Print("FootprintEA: ATR = 0, cannot size order. Skipping.");
+      return;
+     }
+
+   double slDist  = atr * InpSLMultiplier;          // raw price distance for SL
+   double bufDist = InpBufferPips * g_Pip;           // entry buffer
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   double entryPrice, slPrice, tpPrice;
+
+   if(direction == +1)   // BUY
+     {
+      entryPrice = ask + bufDist;
+      slPrice    = InpUseStopLoss  ? entryPrice - slDist : 0.0;
+      tpPrice    = InpUseTakeProfit? entryPrice + slDist * InpRiskRewardRatio : 0.0;
+     }
+   else                  // SELL
+     {
+      entryPrice = bid - bufDist;
+      slPrice    = InpUseStopLoss  ? entryPrice + slDist : 0.0;
+      tpPrice    = InpUseTakeProfit? entryPrice - slDist * InpRiskRewardRatio : 0.0;
+     }
+
+   // ── Broker stop-level constraint ──────────────────────────────────
+   long   stopLvlPts = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double stopLvl    = stopLvlPts * _Point;
+
+   if(InpUseStopLoss && slPrice > 0.0)
+     {
+      double minSL = (direction == +1)
+                     ? entryPrice - stopLvl
+                     : entryPrice + stopLvl;
+      if(direction == +1 && slPrice > minSL) slPrice = minSL - _Point;
+      if(direction == -1 && slPrice < minSL) slPrice = minSL + _Point;
+     }
+
+   // ── Lot calculation ───────────────────────────────────────────────
+   double slPoints = (slPrice > 0.0) ? MathAbs(entryPrice - slPrice) / _Point : atr / _Point;
+   double lot = CalcLot(slPoints);
+
+   // ── Normalise prices ──────────────────────────────────────────────
+   entryPrice = NormalizeDouble(entryPrice, _Digits);
+   slPrice    = (slPrice > 0.0)    ? NormalizeDouble(slPrice, _Digits) : 0.0;
+   tpPrice    = (tpPrice > 0.0)    ? NormalizeDouble(tpPrice, _Digits) : 0.0;
+
+   // ── Submit market order ───────────────────────────────────────────
+   bool sent;
+   string comment = StringFormat("FP-EA OFS %s", (direction == +1 ? "BUY" : "SELL"));
+
+   if(direction == +1)
+      sent = trade.Buy(lot, _Symbol, entryPrice, slPrice, tpPrice, comment);
+   else
+      sent = trade.Sell(lot, _Symbol, entryPrice, slPrice, tpPrice, comment);
+
+   if(sent)
+      Print(StringFormat("FootprintEA ORDER [%s] %s  Lot=%.2f  Entry=%.5f  SL=%.5f  TP=%.5f",
+                         _Symbol, (direction==+1?"BUY":"SELL"), lot, entryPrice, slPrice, tpPrice));
+   else
+      Print(StringFormat("FootprintEA ORDER FAILED [%s] error=%d", _Symbol, GetLastError()));
+  }
+
+//+------------------------------------------------------------------+
+//| PlaceOrders — called once per new bar                            |
+//| Reads the latest CLOSED bar signal and fires if valid            |
+//+------------------------------------------------------------------+
+void PlaceOrders()
+  {
+   if(!InpAutoTrade || !g_tradingEnabled) return;
+
+   int nBars = ArraySize(g_bars);
+   if(nBars < 2) return;            // need at least one closed bar
+
+   // Use the last CLOSED bar (index nBars-2 in g_bars which is shift 1)
+   int closedIdx = nBars - 2;
+
+   // Ensure signals are computed for that bar
+   if(!g_bars[closedIdx].sorted)
+      ComputeBarSignals(closedIdx);
+
+   int   score     = ComputeOFScore(closedIdx);
+   int   sellThr   = 100 - InpSignalThreshold;
+   bool  buySetup  = (score >= InpSignalThreshold) && EvaluateSignal(closedIdx, true);
+   bool  sellSetup = !buySetup && (score <= sellThr) && EvaluateSignal(closedIdx, false);
+
+   if(InpCleanOldOrders && (buySetup || sellSetup))
+      DeleteAllPending();
+
+   if(buySetup)
+      PlaceMarketOrder(+1);
+   else if(sellSetup)
+      PlaceMarketOrder(-1);
+  }
+
+//+------------------------------------------------------------------+
+//| The Shield — Break-Even + Trailing Stop (runs every tick)        |
+//+------------------------------------------------------------------+
+void ManagePositions()
+  {
+   if(!InpUseBreakEven && !InpUseTrailing) return;
+
+   long stopLvlPts = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minStopDist = MathMax((double)stopLvlPts, 1.0) * _Point;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != EA_MAGIC) continue;
+
+      int    posType  = (int)PositionGetInteger(POSITION_TYPE);
+      double openPx   = PositionGetDouble(POSITION_PRICE_OPEN);
+      double curSL    = PositionGetDouble(POSITION_SL);
+      double curTP    = PositionGetDouble(POSITION_TP);
+      double curPrice = (posType == POSITION_TYPE_BUY)
+                        ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                        : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double profitPips = (posType == POSITION_TYPE_BUY)
+                          ? (curPrice - openPx) / g_Pip
+                          : (openPx - curPrice) / g_Pip;
+
+      double newSL = curSL;
+
+      // ── Break-Even ─────────────────────────────────────────────────
+      if(InpUseBreakEven && InpBETriggerPips > 0.0 && profitPips >= InpBETriggerPips)
+        {
+         double bePx = (posType == POSITION_TYPE_BUY)
+                       ? openPx + InpBEBufferPips * g_Pip
+                       : openPx - InpBEBufferPips * g_Pip;
+         bePx = NormalizeDouble(bePx, _Digits);
+
+         // Only move SL to BE if it improves the stop (and respects stop level)
+         bool isBetter = (posType == POSITION_TYPE_BUY)
+                         ? (bePx > curSL)
+                         : (bePx < curSL || curSL == 0.0);
+         bool isValid  = (posType == POSITION_TYPE_BUY)
+                         ? (curPrice - bePx >= minStopDist)
+                         : (bePx - curPrice >= minStopDist);
+         if(isBetter && isValid)
+            newSL = bePx;
+        }
+
+      // ── Trailing Stop ──────────────────────────────────────────────
+      if(InpUseTrailing && InpTrailStartPips > 0.0 && profitPips >= InpTrailStartPips)
+        {
+         double step     = InpTrailStepPips * g_Pip;
+         double trailSL  = (posType == POSITION_TYPE_BUY)
+                           ? NormalizeDouble(curPrice - step, _Digits)
+                           : NormalizeDouble(curPrice + step, _Digits);
+
+         bool isBetter = (posType == POSITION_TYPE_BUY)
+                         ? (trailSL > newSL)
+                         : (trailSL < newSL || newSL == 0.0);
+         bool isValid  = (posType == POSITION_TYPE_BUY)
+                         ? (curPrice - trailSL >= minStopDist)
+                         : (trailSL - curPrice >= minStopDist);
+         if(isBetter && isValid)
+            newSL = trailSL;
+        }
+
+      // ── Modify only if SL actually changed ─────────────────────────
+      if(MathAbs(newSL - curSL) > _Point * 0.5)
+        {
+         if(!trade.PositionModify(ticket, newSL, curTP))
+            Print(StringFormat("FootprintEA: Modify ticket %d failed — error %d",
+                               (int)ticket, GetLastError()));
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| isBuy = true for buy candidate, false for sell candidate         |
 //+------------------------------------------------------------------+
 bool EvaluateSignal(int bi, bool isBuy)
@@ -2637,14 +3075,19 @@ int OnInit()
    g_lastClosedBarTime= 0;
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
+   // Strategy Tester synthetic ticks never carry trade-flag data — force INFO mode
+   if(MQLInfoInteger(MQL_TESTER))
+      g_hasTrades = false;
 
-   // Enable mouse-move events for panel hover states
-   ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
+   // Mouse-move events only make sense on a live chart
+   if(!MQLInfoInteger(MQL_TESTER))
+      ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
 
+   // Canvas: tester window may report 0×0 — use generous safe fallback
    int w = (int)ChartGetInteger(g_chart, CHART_WIDTH_IN_PIXELS);
    int h = (int)ChartGetInteger(g_chart, CHART_HEIGHT_IN_PIXELS);
-   if(w < 1) w = 800;
-   if(h < 1) h = 600;
+   if(w < 10) w = 1280;
+   if(h < 10) h = 720;
 
    // Canvas bitmap must be created BEFORE the OBJ_EDIT so the edit box
    // sits on top in the z-order and can receive mouse focus/clicks.
@@ -2660,64 +3103,93 @@ int OnInit()
    canvas.Erase(0x00000000);
    canvas.Update();
 
-   // Create history-bars OBJ_EDIT AFTER canvas so it is drawn and
-   // receives clicks on top of the canvas overlay.
-   ObjectDelete(g_chart, FP_HIST_EDIT);  // clean up any stale instance
-   if(ObjectCreate(g_chart, FP_HIST_EDIT, OBJ_EDIT, 0, 0, 0))
+   // OBJ_EDIT input boxes only function on a live chart.
+   // In the Strategy Tester there is no keyboard/mouse input pipeline,
+   // so we skip creation entirely to avoid spurious error logs.
+   if(!MQLInfoInteger(MQL_TESTER))
      {
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BACK,         false);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_ZORDER,       10);  // above canvas — receives clicks
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_SELECTABLE,   false);  // prevent drag-to-move
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_SELECTED,     false);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_READONLY,     false);  // allow typing
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_COLOR,        C'220,220,230');
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BORDER_COLOR, C'80,80,108');
-      ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_FONTSIZE,     9);
-      ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_FONT,         "Consolas");
-      ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_TEXT,         IntegerToString(g_histBars));
-      ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_TOOLTIP,      "History bars to load — press Enter to apply");
-     }
-   else
-     {
-      Print("Footprint: Warning — could not create history input box (", GetLastError(), ").");
-     }
+      // History-bars OBJ_EDIT ─────────────────────────────────────────
+      ObjectDelete(g_chart, FP_HIST_EDIT);
+      if(ObjectCreate(g_chart, FP_HIST_EDIT, OBJ_EDIT, 0, 0, 0))
+        {
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XDISTANCE,    0);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YDISTANCE,    0);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BACK,         false);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_ZORDER,       10);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_SELECTABLE,   false);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_SELECTED,     false);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_READONLY,     false);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_COLOR,        C'220,220,230');
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_BORDER_COLOR, C'80,80,108');
+         ObjectSetInteger(g_chart, FP_HIST_EDIT, OBJPROP_FONTSIZE,     9);
+         ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_FONT,         "Consolas");
+         ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_TEXT,         IntegerToString(g_histBars));
+         ObjectSetString( g_chart, FP_HIST_EDIT, OBJPROP_TOOLTIP,      "History bars to load — press Enter to apply");
+        }
+      else
+         Print("Footprint: Warning — could not create history input box (", GetLastError(), ").");
 
-   // Create signal-frequency OBJ_EDIT — inline numeric input (min bars between alerts)
-   ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
-   if(ObjectCreate(g_chart, FP_SIG_FREQ_EDIT, OBJ_EDIT, 0, 0, 0))
-     {
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BACK,         false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_ZORDER,       10);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_SELECTABLE,   false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_SELECTED,     false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_READONLY,     false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_COLOR,        C'220,220,230');
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BORDER_COLOR, C'60,160,100');
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_FONTSIZE,     9);
-      ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_FONT,         "Consolas");
-      ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalFreqBars));
-      ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TOOLTIP,      "Min bars between signal alerts — press Enter to apply");
-     }
-   else
-     {
-      Print("Footprint: Warning — could not create signal-frequency input box (", GetLastError(), ").");
-     }
+      // Signal-frequency OBJ_EDIT ────────────────────────────────────
+      ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
+      if(ObjectCreate(g_chart, FP_SIG_FREQ_EDIT, OBJ_EDIT, 0, 0, 0))
+        {
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XDISTANCE,    0);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YDISTANCE,    0);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BACK,         false);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_ZORDER,       10);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_SELECTABLE,   false);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_SELECTED,     false);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_READONLY,     false);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_COLOR,        C'220,220,230');
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BORDER_COLOR, C'60,160,100');
+         ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_FONTSIZE,     9);
+         ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_FONT,         "Consolas");
+         ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalFreqBars));
+         ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TOOLTIP,      "Min bars between signal alerts — press Enter to apply");
+        }
+      else
+         Print("Footprint: Warning — could not create signal-frequency input box (", GetLastError(), ").");
+     } // end !MQL_TESTER
 
    ReloadHistory();
+
+   // ══════════════ TRADING LAYER INIT ══════════════════════════════
+   RefreshSymbolInfo();
+
+   // Configure CTrade — filling mode auto-detected per broker/tester
+   trade.SetExpertMagicNumber(EA_MAGIC);
+   trade.SetDeviationInPoints(20);
+   trade.SetTypeFilling(GetFillMode());
+
+   // ATR indicator handle
+   g_handleATR = iATR(_Symbol, PERIOD_CURRENT, InpATRPeriod);
+   if(g_handleATR == INVALID_HANDLE)
+     {
+      Alert("FootprintEA: Failed to create ATR handle. Check ATR period.");
+      return INIT_FAILED;
+     }
+
+   // Equity guard baseline
+   g_startBalance   = AccountInfoDouble(ACCOUNT_BALANCE);
+   g_tradingEnabled = true;
+   g_lastBarTime    = 0;
+
+   Print(StringFormat(
+      "FootprintEA v6 READY — Symbol:%s  Magic:%d  Pip:%.5f  VolStep:%.2f  TickVal:%.4f  "
+      "Mode:%s  Fill:%s  Profile:OFF (default)",
+      _Symbol, (int)EA_MAGIC, g_Pip, g_VolStep, g_TickVal,
+      MQLInfoInteger(MQL_TESTER) ? "TESTER" : "LIVE",
+      EnumToString(GetFillMode())));
 
    return INIT_SUCCEEDED;
   }
@@ -2727,6 +3199,13 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   // ── Release trading layer resources ─────────────────────────────
+   if(g_handleATR != INVALID_HANDLE)
+     {
+      IndicatorRelease(g_handleATR);
+      g_handleATR = INVALID_HANDLE;
+     }
+
    ObjectDelete(g_chart, FP_HIST_EDIT);
    ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
    canvas.Destroy();
@@ -2748,7 +3227,7 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
-//| OnTick — EA entry point (replaces OnCalculate from indicator)    |
+//| OnTick — EA entry point                                          |
 //+------------------------------------------------------------------+
 void OnTick()
   {
@@ -2758,7 +3237,7 @@ void OnTick()
    if(rates_total == 0)
       return;
 
-   // Handle first call, bar count decrease (symbol change), or empty data
+   // ── Handle first call, bar count drop, or empty data ─────────────
    if(s_prev == 0 || rates_total < s_prev || ArraySize(g_bars) == 0)
      {
       ReloadHistory();
@@ -2769,23 +3248,22 @@ void OnTick()
 
    s_prev = rates_total;
 
-   // Deferred reload: buttons set flag, heavy work executes here
+   // ── Deferred reload: panel buttons set flag ───────────────────────
    if(g_needs_reload)
      {
       g_needs_reload = false;
       ReloadHistory();
      }
 
+   // ── Live tick accumulation for footprint canvas ───────────────────
+   // Strategy Tester synthetic ticks use INFO mode only (no trade-flag data)
    MqlTick ticks[];
-   uint    flag    = g_hasTrades ? COPY_TICKS_ALL : COPY_TICKS_INFO;
+   uint    flag    = (g_hasTrades && !MQLInfoInteger(MQL_TESTER))
+                     ? COPY_TICKS_ALL : COPY_TICKS_INFO;
    long    now_msc = (long)TimeCurrent() * 1000;
    long    from_msc= g_last_tick_time_ms;
-
    if(from_msc == 0)
-     {
-      long lookback = 60000;
-      from_msc = (now_msc > lookback) ? now_msc - lookback : now_msc;
-     }
+      from_msc = (now_msc > 60000) ? now_msc - 60000 : now_msc;
 
    int copied = CopyTicksRange(_Symbol, ticks, flag, from_msc, now_msc);
    if(copied > 0)
@@ -2797,6 +3275,44 @@ void OnTick()
 
    if(g_dirty)
       ThrottledRender();
+
+   // ══════════════ TRADING ENGINE ═══════════════════════════════════
+
+   // ── 1. Shield: manage open positions every tick ───────────────────
+   ManagePositions();
+
+   // ── 2. New-Bar clock: heavy logic only on bar open ────────────────
+   if(!IsNewBar()) return;
+
+   // ── 3. Refresh broker cache (spreads/swaps can change session) ────
+   RefreshSymbolInfo();
+
+   // ── 4. Hard equity guard ──────────────────────────────────────────
+   if(!CheckEquityGuard()) return;
+
+   // ── 5. Brain + Muscle: detect signal and place order ─────────────
+   PlaceOrders();
+  }
+
+//+------------------------------------------------------------------+
+//| OnTester — called at end of each Strategy Tester pass            |
+//| Returns the custom optimisation criterion shown in the results   |
+//| grid. We use Profit Factor weighted by drawdown as a balanced    |
+//| criterion that rewards both return and capital preservation.     |
+//+------------------------------------------------------------------+
+double OnTester()
+  {
+   double pf  = TesterStatistics(STAT_PROFIT_FACTOR);
+   double dd  = TesterStatistics(STAT_EQUITY_DD_RELATIVE); // 0–100 %
+   double trades = TesterStatistics(STAT_TRADES);
+
+   // Penalise runs with < 10 trades (avoids over-fitted flukes)
+   if(trades < 10) return 0.0;
+
+   // Score = PF × (1 - normalised_DD)  — ranges 0 .. ∞, higher is better
+   double ddNorm = MathMin(dd / 100.0, 1.0);
+   double score  = pf * (1.0 - ddNorm);
+   return score;
   }
 
 //+------------------------------------------------------------------+
