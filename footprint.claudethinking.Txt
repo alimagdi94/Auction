@@ -3,12 +3,13 @@
 //|   Footprint (Order Flow) - Production Ready                       |
 //|   Volume / Delta / Bid x Ask per price level                     |
 //|   POC, VA%, Imbalance, Absorption, Stacked Imbalances            |
+//|   HVN/LVN, Delta Divergence, Buy/Sell Ratio Stripe               |
 //|   Tick-size aggregation + Tick Multiplier (x1..x40)              |
-//|   Compact canvas overlay + control panel                         |
+//|   Compact canvas overlay + control panel + keyboard shortcuts    |
 //+------------------------------------------------------------------+
 #property copyright "Ali Magdy"
-#property version   "2.00"
-#property description "Footprint Chart — Volume / Delta / Bid x Ask with Tick Multiplier"
+#property version   "3.00"
+#property description "Footprint Chart — Volume / Delta / Bid x Ask with HVN/LVN, Divergence & Ratio Stripe"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -31,6 +32,8 @@ input int    InpStackedImbCount = 3;            // Stacked Imbalance Min Count
 input double InpAbsorptionRatio = 4.0;          // Absorption Threshold (x Avg Vol)
 input int    InpHistoryBars     = 100;          // History bars to load
 input double InpVAPercent       = 70.0;         // Value Area % (industry default 70)
+input double InpHVNRatio        = 2.0;          // HVN Threshold (x Avg Vol) — High Volume Node
+input double InpLVNRatio        = 0.35;         // LVN Threshold (ratio of Avg Vol) — Low Volume Node
 
 input group "Aggregation"
 input ENUM_FOOT_CHART_MODE InpChartMode      = FOOT_CHART_BIDASK; // Chart mode
@@ -60,6 +63,9 @@ input color  InpBullishFrame    = clrLime;        // Bullish Session Frame (Gree
 input color  InpBearishFrame    = clrCrimson;     // Bearish Session Frame (Red)
 input color  InpWickColor       = C'140,140,150'; // Candle Structure Color
 input color  InpGridColor       = C'50,50,60';    // Grid Separation Color
+input color  InpHVNColor        = C'255,200,0';   // High Volume Node outline (Gold)
+input color  InpLVNColor        = C'90,90,110';   // Low Volume Node outline (Muted)
+input color  InpDivergenceColor = clrOrange;      // Delta Divergence bar marker
 
 input group "Colors - Text"
 input color  InpTextBaseColor   = C'160,160,170'; // Default Cell Text
@@ -84,6 +90,8 @@ struct PriceLevel
    bool   is_stacked_imb_sell;
    bool   is_unfinished_hi;
    bool   is_unfinished_lo;
+   bool   is_hvn;            // High Volume Node (>= HVN ratio x avg)
+   bool   is_lvn;            // Low Volume Node  (<= LVN ratio x avg)
   };
 
 struct FPBar
@@ -99,6 +107,7 @@ struct FPBar
    bool       sorted;
    bool       is_bullish;
    int        level_count;
+   bool       is_delta_divergence; // price moved up but delta fell (or vice versa)
    PriceLevel levels[];
   };
 
@@ -157,6 +166,7 @@ int   g_btnOpaX1, g_btnOpaY1, g_btnOpaX2, g_btnOpaY2;
 int   g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2;
 int   g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2;
 int   g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2;
+int   g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2;  // Mode cycle button
 int   g_mouseX = -1, g_mouseY = -1;
 double g_vaPercent = 0;   // 0 = use InpVAPercent; else runtime VA%
 bool   g_visible   = true;
@@ -276,6 +286,7 @@ int InsertBar(datetime bt)
       g_bars[n].poc_idx     = -1;
       g_bars[n].va_lo_idx   = -1;
       g_bars[n].va_hi_idx   = -1;
+      g_bars[n].is_delta_divergence = false;
       ArrayResize(g_bars[n].levels, 64, 64);
       return n;
      }
@@ -315,6 +326,7 @@ int InsertBar(datetime bt)
    g_bars[n].poc_idx     = -1;
    g_bars[n].va_lo_idx   = -1;
    g_bars[n].va_hi_idx   = -1;
+   g_bars[n].is_delta_divergence = false;
    ArrayResize(g_bars[n].levels, 0);
 
    // Shift scalar fields and swap dynamic arrays from n..pos+1 downward
@@ -351,6 +363,7 @@ int InsertBar(datetime bt)
    g_bars[pos].poc_idx     = -1;
    g_bars[pos].va_lo_idx   = -1;
    g_bars[pos].va_hi_idx   = -1;
+   g_bars[pos].is_delta_divergence = false;
    ArrayResize(g_bars[pos].levels, 64, 64);
    return pos;
   }
@@ -460,7 +473,14 @@ void ComputeBarSignals(int bi)
       g_bars[bi].levels[i].is_stacked_imb_sell = false;
       g_bars[bi].levels[i].is_unfinished_hi    = false;
       g_bars[bi].levels[i].is_unfinished_lo    = false;
+      g_bars[bi].levels[i].is_hvn              = false;
+      g_bars[bi].levels[i].is_lvn              = false;
       g_bars[bi].levels[i].is_absorption       = (g_bars[bi].levels[i].total_vol > avgVol * InpAbsorptionRatio);
+      // HVN: significantly above average; LVN: significantly below
+      g_bars[bi].levels[i].is_hvn = (!g_bars[bi].levels[i].is_absorption &&
+                                      g_bars[bi].levels[i].total_vol >= (long)(avgVol * InpHVNRatio));
+      g_bars[bi].levels[i].is_lvn = (g_bars[bi].levels[i].total_vol > 0 &&
+                                      g_bars[bi].levels[i].total_vol <= (long)(avgVol * InpLVNRatio));
 
       // Diagonal Imbalance
       if(i < len - 1)
@@ -531,6 +551,12 @@ void ComputeBarSignals(int bi)
       g_bars[bi].levels[len - 1].is_unfinished_lo =
          (g_bars[bi].levels[len - 1].bid_vol > 0 && g_bars[bi].levels[len - 1].ask_vol > 0);
      }
+
+   // 6. Delta Divergence: bullish bar with negative delta, or bearish with positive delta
+   //    This flags a potential exhaustion / hidden strength signal.
+   g_bars[bi].is_delta_divergence =
+      (g_bars[bi].is_bullish  && g_bars[bi].total_delta < 0) ||
+      (!g_bars[bi].is_bullish && g_bars[bi].total_delta > 0);
   }
 
 //+------------------------------------------------------------------+
@@ -996,6 +1022,22 @@ void DrawBar(int bi, int shift, int barW)
          canvas.Rectangle(x1 - 2, y_top - 2, x2 + 2, y_bot + 2, FpARGB(InpAbsorptionColor, 255));
         }
 
+      // HVN: gold inner border (two-pixel)
+      if(pl.is_hvn)
+        {
+         canvas.Rectangle(x1 + 1, y_top + 1, x2 - 1, y_bot - 1, FpARGB(InpHVNColor, 200));
+        }
+
+      // LVN: muted dashed-style border (draw corners only)
+      if(pl.is_lvn)
+        {
+         int cSz = MathMin(4, (x2 - x1) / 4);
+         canvas.LineHorizontal(x1,        x1 + cSz, y_top, FpARGB(InpLVNColor, 180));
+         canvas.LineHorizontal(x2 - cSz, x2,        y_top, FpARGB(InpLVNColor, 180));
+         canvas.LineHorizontal(x1,        x1 + cSz, y_bot, FpARGB(InpLVNColor, 180));
+         canvas.LineHorizontal(x2 - cSz, x2,        y_bot, FpARGB(InpLVNColor, 180));
+        }
+
       // Text (luminance-based contrast)
       if(!skipText)
         {
@@ -1071,6 +1113,41 @@ void DrawBar(int bi, int shift, int barW)
                        FpARGB(sentimentCol, 120));
      }
 
+   // Delta Divergence marker: orange triangle at the top of the wick
+   if(g_bars[bi].is_delta_divergence)
+     {
+      int tipY = wy_h - 5;
+      int triH = 5;
+      int triW = 4;
+      for(int row = 0; row < triH; row++)
+        {
+         int hw = (triW * (triH - row)) / triH;
+         canvas.LineHorizontal(wx - hw, wx + hw, tipY + row,
+                               FpARGB(InpDivergenceColor, 210));
+        }
+     }
+
+   // Buy/Sell ratio stripe: thin bar at the bottom edge of the bar
+   //  Left portion = Ask(buy) volume, right = Bid(sell) volume
+   long totalBidAsk = g_bars[bi].total_vol;
+   if(totalBidAsk > 0 && len > 0)
+     {
+      long totalAskAll = 0, totalBidAll = 0;
+      for(int i2 = 0; i2 < len; i2++)
+        { totalAskAll += g_bars[bi].levels[i2].ask_vol; totalBidAll += g_bars[bi].levels[i2].bid_vol; }
+      if(totalAskAll + totalBidAll > 0)
+        {
+         int stripeY  = g_scratchY2[len - 1] - 3;
+         int stripeH  = 3;
+         double askRatio = (double)totalAskAll / (totalAskAll + totalBidAll);
+         int    splitX   = x1 + (int)((x2 - x1) * askRatio);
+         canvas.FillRectangle(x1,      stripeY, splitX, stripeY + stripeH,
+                              FpARGB(InpAskHighColor, (180 * opaScale) / 255));
+         canvas.FillRectangle(splitX + 1, stripeY, x2, stripeY + stripeH,
+                              FpARGB(InpBidHighColor, (180 * opaScale) / 255));
+        }
+     }
+
    // Candle wick on top
    uint wickCol = FpARGB(InpWickColor, (210 * g_opacity) / 255);
    canvas.LineVertical(wx, wy_h, wy_l, wickCol);
@@ -1124,7 +1201,7 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   int panelW = pad + (btnW * 11 + btnGap * 10) + pad;
+   int panelW = pad + (btnW * 12 + btnGap * 11) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
@@ -1185,6 +1262,11 @@ void LayoutPanel(int cw, int ch)
    g_btnVAY1 = g_btnZoomOutY1;
    g_btnVAX2 = g_btnVAX1 + btnW;
    g_btnVAY2 = g_btnZoomOutY2;
+
+   g_btnModeX1 = g_btnVAX2 + btnGap;
+   g_btnModeY1 = g_btnZoomOutY1;
+   g_btnModeX2 = g_btnModeX1 + btnW;
+   g_btnModeY2 = g_btnZoomOutY2;
   }
 
 //+------------------------------------------------------------------+
@@ -1214,6 +1296,7 @@ void DrawPanel()
    bool hoveredRefresh  = HitTest(g_mouseX, g_mouseY, g_btnRefreshX1, g_btnRefreshY1, g_btnRefreshX2, g_btnRefreshY2);
    bool hoveredVA       = HitTest(g_mouseX, g_mouseY, g_btnVAX1, g_btnVAY1, g_btnVAX2, g_btnVAY2);
    bool hoveredTxt      = HitTest(g_mouseX, g_mouseY, g_btnTxtX1, g_btnTxtY1, g_btnTxtX2, g_btnTxtY2);
+   bool hoveredMode     = HitTest(g_mouseX, g_mouseY, g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2);
 
    uint baseFill    = FpARGB(C'35,35,45', 230);
    uint hoverFill   = FpARGB(C'55,55,70', 250);
@@ -1329,6 +1412,21 @@ void DrawPanel()
    double vaPct = GetEffectiveVAPercent();
    canvas.TextOut(g_btnVAX1 + btnCenterX, btnCenterY,
                   IntegerToString((int)vaPct) + "%", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // 11. Mode cycle button (BidAsk / Volume / Delta) — highlighted by active mode
+   string modeLabel;
+   uint   modeFill, modeBorder;
+   if(g_mode == FOOT_CHART_BIDASK)
+     { modeLabel = "B*A"; modeFill = FpARGB(C'20,55,90', 230); modeBorder = FpARGB(C'60,150,230', 230); }
+   else if(g_mode == FOOT_CHART_VOLUME)
+     { modeLabel = "Vol"; modeFill = FpARGB(C'55,30,75', 230); modeBorder = FpARGB(C'160,80,220', 230); }
+   else
+     { modeLabel = "Dlt"; modeFill = FpARGB(C'60,45,10', 230); modeBorder = FpARGB(C'220,160,30', 230); }
+   if(hoveredMode) { modeFill = hoverFill; modeBorder = hoverBorder; }
+   canvas.FillRectangle(g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2, modeFill);
+   canvas.Rectangle(g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2, modeBorder);
+   canvas.TextOut(g_btnModeX1 + btnCenterX, btnCenterY,
+                  modeLabel, FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
   }
 
 //+------------------------------------------------------------------+
@@ -1412,6 +1510,11 @@ void Render()
    else if(g_mode == FOOT_CHART_DELTA)
       modeStr = "Delta";
 
+   // Count divergence bars in visible window
+   int divCount = 0;
+   for(int i = 0; i < nBars; i++)
+      if(g_bars[i].is_delta_divergence) divCount++;
+
    canvas.FontSet("Consolas", 9, FW_NORMAL);
    int opaPct = (g_opacity * 100) / 255;
    string header =
@@ -1423,7 +1526,10 @@ void Render()
       " x" + IntegerToString(g_tickMult) +
       "  Imb: " + DoubleToString(g_imbRatio, 0) + "%" +
       "  VA: " + DoubleToString(GetEffectiveVAPercent(), 0) + "%" +
-      "  Opa: " + IntegerToString(opaPct) + "%";
+      "  Opa: " + IntegerToString(opaPct) + "%" +
+      "  Bars: " + IntegerToString(nBars) +
+      "  Div: " + IntegerToString(divCount) +
+      "  [M]ode [R]ld [T]xt +/-zoom";
 
    canvas.TextOut(5, 5, header, FpARGB(C'160,160,170', 180), TA_LEFT | TA_TOP);
 
@@ -1585,7 +1691,37 @@ void OnChartEvent(const int id, const long &lparam,
                   const double &dparam, const string &sparam)
   {
    if(id == CHARTEVENT_KEYDOWN)
+     {
+      // Keyboard shortcuts:
+      //  M  = cycle chart mode (BidAsk -> Volume -> Delta -> BidAsk)
+      //  R  = reload tick data
+      //  T  = toggle cell text
+      //  +  = zoom in
+      //  -  = zoom out
+      int key = (int)lparam;
+      if(key == 'M' || key == 'm')
+        {
+         if(g_mode == FOOT_CHART_BIDASK) g_mode = FOOT_CHART_VOLUME;
+         else if(g_mode == FOOT_CHART_VOLUME) g_mode = FOOT_CHART_DELTA;
+         else                                 g_mode = FOOT_CHART_BIDASK;
+         g_dirty = true;
+        }
+      else if(key == 'R' || key == 'r')
+        { g_needs_reload = true; g_dirty = true; }
+      else if(key == 'T' || key == 't')
+        { g_userHideText = !g_userHideText; g_dirty = true; }
+      else if(key == 107 || key == 0xBB)   // numpad '+' / OEM '+'
+        {
+         int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
+         if(scale < 5) ChartSetInteger(g_chart, CHART_SCALE, 0, scale + 1);
+        }
+      else if(key == 109 || key == 0xBD)  // numpad '-' / OEM '-'
+        {
+         int scale = (int)ChartGetInteger(g_chart, CHART_SCALE, 0);
+         if(scale > 0) ChartSetInteger(g_chart, CHART_SCALE, 0, scale - 1);
+        }
       return;
+     }
 
    else if(id == CHARTEVENT_CHART_CHANGE)
      {
@@ -1746,6 +1882,14 @@ void OnChartEvent(const int id, const long &lparam,
             g_vaPercent = 90.0;
          else
             g_vaPercent = 70.0;
+         g_dirty = true;
+        }
+      // Mode cycle: BidAsk -> Volume -> Delta -> BidAsk
+      else if(HitTest(mx, my, g_btnModeX1, g_btnModeY1, g_btnModeX2, g_btnModeY2))
+        {
+         if(g_mode == FOOT_CHART_BIDASK)       g_mode = FOOT_CHART_VOLUME;
+         else if(g_mode == FOOT_CHART_VOLUME)  g_mode = FOOT_CHART_DELTA;
+         else                                   g_mode = FOOT_CHART_BIDASK;
          g_dirty = true;
         }
      }
