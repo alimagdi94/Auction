@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                                    Footprint.mq5  |
 //|   Footprint (Order Flow) — Production Ready v5.20                |
 //|   Volume / Delta / Bid x Ask per price level                     |
@@ -8,12 +8,10 @@
 //|   Tick-size aggregation · Tick Multiplier (x1..x40)              |
 //|   Compact canvas overlay + control panel                         |
 //+------------------------------------------------------------------+
-#property copyright "Ali Magdy"
-#property version   "5.20"
-#property description "Footprint Chart v5 — Decoupled HFT signals · Signals fire regardless of Prof/Viz state · Prof+Viz rightmost"
-#property indicator_chart_window
-#property indicator_buffers 0
-#property indicator_plots   0
+#property copyright   "Ali Magdy"
+#property version     "5.20"
+#property description "Footprint Chart EA v5.20 — Full footprint + Discord webhook alerts"
+#property strict
 
 #include <Canvas\Canvas.mqh>
 
@@ -106,6 +104,17 @@ input int    InpSignalFreqBars    = 3;             // Min bars between repeated 
 input string InpSignalBuySound   = "alert.wav";   // Buy signal sound file (WAV, in MT5 Sounds folder)
 input string InpSignalSellSound  = "alert2.wav";  // Sell signal sound file (WAV, in MT5 Sounds folder)
 
+input group "Signal Ball Style"
+input int    InpSigBallRadius    = 14;   // Signal ball max radius (px)
+input int    InpSigBallMinRadius = 5;    // Signal ball min radius (px)
+input int    InpSigRingCount     = 5;    // Concentric rings per ball
+input int    InpSigRingThickness = 2;    // Ring line thickness
+
+input group "Discord Notifications"
+input bool   InpDiscordEnable    = true;          // Enable Discord webhook notifications
+input string InpDiscordWebhook   = "https://discord.com/api/webhooks/1479510739520852094/1Cpxwva9TOTW4hDd6VqXr7LDe4gL-JLvagfE5bU-ULh2lm_XqsO-w3G3cxZDTLHygIJd"; // Webhook URL
+input bool   InpDiscordBuyOnly   = false;         // Only send BUY signals (false = both directions)
+
 input group "Delta Mode Cell Coloring"           // Enable per-cell green/red in Delta mode
 input bool   InpDeltaCellColor    = true;           // Enable per-cell green/red in Delta mode
 input color  InpDeltaCellBull     = C'5,70,40';     // Delta mode: ask>bid base (dark green floor)
@@ -166,7 +175,7 @@ struct FPBar
 
 //--- Globals
 CCanvas              canvas;
-string               g_name     = "FP_Canvas";
+string               g_name     = "FP_Canvas";   // will be suffixed with ChartID in OnInit
 FPBar                g_bars[];
 double               g_step;         // aggregated step = g_baseStep * g_tickMult
 double               g_baseStep;     // base step from InpTickSize
@@ -2313,6 +2322,109 @@ void DrawCumDeltaProfile(int cw, int ch, int profX, int profW)
   }
 
 //+------------------------------------------------------------------+
+//| SendDiscordAlert                                                |
+//| Fires an HTTP POST to the configured Discord webhook.           |
+//| WebRequest works in EAs (NOT in indicators — that was the bug). |
+//| IMPORTANT: https://discord.com must be whitelisted in:          |
+//|   Tools → Options → Expert Advisors → Allow WebRequest URLs     |
+//+------------------------------------------------------------------+
+void SendDiscordAlert(bool isBuy, double hftScore, int ofsScore)
+  {
+   if(!InpDiscordEnable)
+      return;
+   if(InpDiscordBuyOnly && !isBuy)
+      return;
+   if(StringLen(InpDiscordWebhook) < 10)
+      return;
+
+   string direction = isBuy ? "BUY  :chart_with_upwards_trend:" : "SELL  :chart_with_downwards_trend:";
+   string emoji     = isBuy ? ":green_circle:" : ":red_circle:";
+   string timeStr   = TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES);
+   string bid       = DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits);
+   string tf        = EnumToString(Period());
+   int    score     = (int)MathRound(isBuy ? hftScore : -hftScore);
+
+   // Build the Discord message content
+   string content = StringFormat(
+      "%s  **%s Signal** on **%s** (%s)\\n"
+      "HFT Score: **%d** | OFS Score: **%d**\\n"
+      "Price: **%s** | Time: %s (server)",
+      emoji, direction, _Symbol, tf,
+      score, ofsScore, bid, timeStr
+   );
+
+   // Wrap in JSON — escape internal double-quotes
+   string jsonBody = "{\"content\":\"" + content + "\"}";
+
+   char   postData[];
+   char   result[];
+   string responseHeaders;
+   StringToCharArray(jsonBody, postData, 0, StringLen(jsonBody));
+
+   int httpCode = WebRequest(
+      "POST",
+      InpDiscordWebhook,
+      "Content-Type: application/json\r\n",
+      5000,
+      postData,
+      result,
+      responseHeaders
+   );
+
+   // httpCode 204 = Discord success (No Content). Anything else is a problem.
+   if(httpCode == -1)
+     {
+      int err = GetLastError();
+      if(err == 4014)  // URL not in whitelist
+         Alert("Footprint EA — Discord blocked!\n"
+               "Go to: Tools → Options → Expert Advisors\n"
+               "→ Allow WebRequest for listed URLs\n"
+               "→ Add:  https://discord.com\n"
+               "Then reload the EA.");
+      else
+         Print("Footprint EA — Discord WebRequest failed, error: ", err);
+     }
+   else if(httpCode != 204 && httpCode != 200)
+      Print("Footprint EA — Discord returned HTTP ", httpCode);
+  }
+
+//+------------------------------------------------------------------+
+//| DrawRings — Concentric ring ball (from Bookmap shape reference)  |
+//| Draws a set of concentric circles at (xc, yc) with a bright     |
+//| core dot, matching the Bookmap trade bubble visual style.        |
+//+------------------------------------------------------------------+
+void DrawRings(int xc, int yc, int maxR, color col, int alpha)
+  {
+   int rings = InpSigRingCount;
+   if(rings < 1) rings = 1;
+   int thick = InpSigRingThickness;
+   if(thick < 1) thick = 1;
+
+   for(int r = 0; r < rings; r++)
+     {
+      double frac = (double)(r + 1) / (double)rings;
+      int rad = (int)(maxR * frac);
+      if(rad < 2) rad = 2;
+
+      // Alpha fades outward
+      int ringAlpha = (int)(alpha * (1.0 - frac * 0.5));
+      if(ringAlpha < 10) ringAlpha = 10;
+
+      // Draw thick ring using multiple outline circles
+      for(int t = 0; t < thick; t++)
+        {
+         int rr = rad + t;
+         if(rr > 0)
+            canvas.Circle(xc, yc, rr, FpARGB(col, ringAlpha));
+        }
+     }
+
+   // Bright core dot
+   int coreR = MathMax(1, maxR / 8);
+   canvas.FillCircle(xc, yc, coreR, FpARGB(clrWhite, alpha / 2));
+  }
+
+//+------------------------------------------------------------------+
 //| EvalAndFireSignal                                               |
 //| Pure-logic pass: evaluates the live bar, arms the frequency     |
 //| gate, and places a silent chart arrow object on the chart.      |
@@ -2357,6 +2469,9 @@ void EvalAndFireSignal()
    else if(isSellSignal)
       PlaySound(InpSignalSellSound);
 
+   // ── Discord notification (EA-only — WebRequest not available in indicators) ──
+   SendDiscordAlert(isBuySignal, hftScore, currentScore);
+
    // ── Silent chart arrow ────────────────────────────────────────────
    // Name is unique per bar_time so duplicate ticks don't stack objects.
    int    displayScore = (int)MathRound(isBuySignal ? hftScore : -hftScore);
@@ -2368,7 +2483,7 @@ void EvalAndFireSignal()
      {
       double arrowPrice = isBuySignal ? g_bars[bi].low  - g_step * 2.0
                                       : g_bars[bi].high + g_step * 2.0;
-      int    arrowCode  = isBuySignal ? 233 : 234;  // Wingdings up/down arrow
+      int    arrowCode  = 108;  // Wingdings filled circle (ball)
       color  arrowCol   = isBuySignal ? InpSignalBuyColor : InpSignalSellColor;
 
       if(ObjectCreate(g_chart, objName, OBJ_ARROW, 0,
@@ -2382,17 +2497,21 @@ void EvalAndFireSignal()
          ObjectSetInteger(g_chart, objName, OBJPROP_SELECTED,   false);
          ObjectSetInteger(g_chart, objName, OBJPROP_HIDDEN,     false);
          ObjectSetString( g_chart, objName, OBJPROP_TOOLTIP,
-                          StringFormat("%s HFT:%d OFS:%d",
+                          StringFormat("%s SIGNAL | %s (%s)\nHFT: %d | OFS: %d\nPrice: %s | %s",
                                        isBuySignal ? "BUY" : "SELL",
-                                       displayScore, currentScore));
+                                       _Symbol,
+                                       EnumToString(Period()),
+                                       displayScore, currentScore,
+                                       DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits),
+                                       TimeToString(g_bars[bi].bar_time, TIME_DATE|TIME_MINUTES)));
         }
      }
   }
 
 //+------------------------------------------------------------------+
 //| DrawSignalMarkersPass                                           |
-//| Visual-only pass: draws signal frames, banners and triangles    |
-//| for every visible bar that has a qualifying HFT score.          |
+//| Visual-only pass: draws signal cards with full details matching |
+//| the Discord alert (direction, scores, price, symbol, TF, time). |
 //|                                                                  |
 //| Intentionally decoupled from DrawBar so it runs even when       |
 //| g_profileOnly=true (footprint cells not drawn) and when the     |
@@ -2406,6 +2525,9 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
    if(!g_signalsEnabled)
       return;
 
+   int cw = canvas.Width();
+   int ch = canvas.Height();
+
    // Local frequency gate — tracks the last bar for which a marker was drawn
    // so that the visual spacing matches g_signalFreqBars regardless of whether
    // EvalAndAlertSignals already updated g_lastSignalBar.
@@ -2417,7 +2539,7 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       if(shift < 0)
          continue;
 
-      datetime bt  = iTime(_Symbol, PERIOD_CURRENT, shift);
+      datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
       if(bt == 0)
          continue;
       int bi = FindBarIndex(bt);
@@ -2434,105 +2556,155 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       if(!freqGatePass)
          continue;
 
-      double hftScore     = ComputeHFTSignal(bi);
-      int    currentScore = ComputeOFScore(bi);
-      bool   isBuySignal  = (hftScore >=  (double)g_signalThreshold);
-      bool   isSellSignal = (hftScore <= -(double)g_signalThreshold);
+      double hftScore    = ComputeHFTSignal(bi);
+      int    ofsScore    = ComputeOFScore(bi);
+      bool   isBuySignal = (hftScore >=  (double)g_signalThreshold);
+      bool   isSellSignal= (hftScore <= -(double)g_signalThreshold);
       if(!isBuySignal && !isSellSignal)
          continue;
 
       lastDrawnBar = bi;
 
-      //--- Screen geometry — derived from bar high/low, no scratch needed ---
+      //--- Screen geometry — derived from bar high/low ---
       int wx, wy_h, wy_l, tmpX, tmpY;
       ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].high, wx, wy_h);
       ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].low,  tmpX, wy_l);
-
-      int halfW = (int)(barW * 0.45);
-      if(halfW < 14) halfW = 14;
-
-      // x1/x2: align to bar centre obtained via high price lookup
       ChartTimePriceToXY(g_chart, g_sub, bt, g_bars[bi].levels[0].price, tmpX, tmpY);
-      int x1   = tmpX - halfW;
-      int x2   = tmpX + halfW;
 
-      int barTop  = wy_h;                    // screen Y for bar high (smaller number = top)
-      int barBot  = wy_l;                    // screen Y for bar low
-      if(barTop > barBot) { int t = barTop; barTop = barBot; barBot = t; }
-      int barH    = MathMax(barBot - barTop, 1);
-      int midBarY = barTop + barH / 2;
+      int halfW  = (int)(barW * 0.45);
+      if(halfW < 14) halfW = 14;
+      int barCX  = tmpX;
+      int x1     = barCX - halfW;
+      int x2     = barCX + halfW;
+      int barTop = MathMin(wy_h, wy_l);
+      int barBot = MathMax(wy_h, wy_l);
+      int barH   = MathMax(barBot - barTop, 1);
 
       //--- Colours ---
-      color sigColor = isBuySignal ? InpSignalBuyColor : InpSignalSellColor;
-      color bgColor  = isBuySignal ? C'0,70,25'        : C'70,0,15';
-      uint  cBright  = FpARGB(sigColor, 255);
-      uint  cBg      = FpARGB(bgColor,  220);
-      uint  cBdr     = FpARGB(sigColor, 255);
-      uint  cGlow    = FpARGB(sigColor,  80);
-      uint  cWhite   = FpARGB(clrWhite, 255);
-      uint  cShadow  = FpARGB(clrBlack, 200);
+      color sigColor  = isBuySignal ? InpSignalBuyColor : InpSignalSellColor;
+      color bgDark    = isBuySignal ? C'3,22,12'        : C'22,3,8';
+      color bgHeader  = isBuySignal ? C'5,38,20'        : C'38,5,14';
+      uint  cBdr      = FpARGB(sigColor, 255);
+      uint  cGlow1    = FpARGB(sigColor,  90);
+      uint  cGlow2    = FpARGB(sigColor,  35);
+      uint  cBgDark   = FpARGB(bgDark,  240);
+      uint  cBgHdr    = FpARGB(bgHeader, 240);
+      uint  cWhite    = FpARGB(clrWhite, 255);
+      uint  cDim      = FpARGB(C'155,155,175', 220);
+      uint  cShadow   = FpARGB(clrBlack, 200);
+      uint  cSep      = FpARGB(sigColor, 130);
+      uint  cAccent   = FpARGB(sigColor, 200);
+      uint  cScoreVal = FpARGB(isBuySignal ? C'80,255,150' : C'255,100,110', 255);
 
-      string lbl = isBuySignal
-                   ? "^ BUY  " + IntegerToString((int)MathRound(hftScore))
-                   : "v SELL " + IntegerToString((int)MathRound(-hftScore));
+      //--- Build card text (mirrors Discord message exactly) ---
+      int    score    = (int)MathRound(isBuySignal ? hftScore : -hftScore);
+      string arrowStr = isBuySignal ? ShortToString(0x25B2) : ShortToString(0x25BC); // ▲ / ▼
+      string dirStr   = isBuySignal ? "BUY SIGNAL" : "SELL SIGNAL";
+      string tfStr    = EnumToString(Period());
+      StringReplace(tfStr, "PERIOD_", "");
+      double closePrice = iClose(_Symbol, PERIOD_CURRENT, shift);
+      string priceStr   = DoubleToString(closePrice, _Digits);
+      string timeStr    = TimeToString(g_bars[bi].bar_time, TIME_MINUTES);
 
-      // ── Step 1: Bold coloured frame around the whole bar ──────────
-      canvas.Rectangle(x1 - 2, barTop - 2, x2 + 2, barBot + 2, cGlow);
-      canvas.Rectangle(x1 - 1, barTop - 1, x2 + 1, barBot + 1, cGlow);
-      canvas.Rectangle(x1,     barTop,     x2,     barBot,     cBdr);
-      canvas.Rectangle(x1 + 1, barTop + 1, x2 - 1, barBot - 1, cBdr);
+      string rowHeader = arrowStr + " " + dirStr;
+      string rowScores = StringFormat("HFT: %d   |   OFS: %d", score, ofsScore);
+      string rowPrice  = "Price: " + priceStr;
+      string rowFooter = _Symbol + " · " + tfStr + " · " + timeStr;
 
-      // ── Step 2: Solid banner band at bar centre ────────────────────
-      int bH  = MathMax(20, MathMin(36, barH * 2 / 5));
-      int bY1 = midBarY - bH / 2;
-      int bY2 = bY1 + bH;
-      canvas.FillRectangle(x1 + 1, bY1, x2 - 1, bY2, cBg);
-      canvas.Rectangle(   x1 + 1, bY1, x2 - 1, bY2, cBdr);
+      //--- Card layout constants ---
+      int cardW   = MathMax(barW * 2 + 40, 192);
+      int padX    = 8;
+      int padY    = 5;
+      int hdrH    = 18;   // header row height
+      int rowH    = 14;   // data row height
+      int sepH    = 1;    // separator height
+      int cardH   = padY + hdrH + sepH + 3 + rowH + rowH + rowH + padY;  // ~73px
 
-      // ── Step 3: Arrow chevron on the left of the banner ───────────
-      int aH  = MathMin(7, bH / 3);
-      int aMX = x1 + aH + 5;
-      int aMY = midBarY;
-      for(int r = 0; r < aH; r++)
-        {
-         int hw = isBuySignal
-                  ? (int)MathRound((double)aH * r        / MathMax(aH - 1, 1))
-                  : (int)MathRound((double)aH * (aH-1-r) / MathMax(aH - 1, 1));
-         canvas.LineHorizontal(aMX - hw, aMX + hw, aMY - aH / 2 + r, cBright);
-        }
+      int ballR   = MathMax(InpSigBallMinRadius, InpSigBallRadius);
+      int stemGap = 4;
 
-      // ── Step 4: Label with shadow ──────────────────────────────────
-      canvas.FontSet("Consolas", 11, FW_BOLD);
-      int tX = x1 + aH * 2 + 12;
-      canvas.TextOut(tX + 1, midBarY + 1, lbl, cShadow, TA_LEFT | TA_VCENTER);
-      canvas.TextOut(tX,     midBarY,     lbl, cWhite,  TA_LEFT | TA_VCENTER);
+      //--- Position card above bar (SELL) or below bar (BUY) ---
+      int ballY, cardX1, cardY1, cardX2, cardY2;
 
-      // ── Step 5: External triangle marker outside the bar ──────────
-      int mSize = 8;
       if(isBuySignal)
         {
-         int tipY  = barBot + 3;
-         int baseY = tipY + mSize + 2;
-         for(int r2 = 0; r2 <= mSize; r2++)
-           {
-            int hw2 = mSize - r2;
-            canvas.LineHorizontal(wx - hw2, wx + hw2, tipY + r2, cBright);
-           }
-         canvas.LineHorizontal(wx - mSize, wx + mSize, baseY,     cBright);
-         canvas.LineHorizontal(wx - mSize, wx + mSize, baseY + 1, cBright);
+         ballY  = barBot + ballR + stemGap;
+         cardY1 = ballY  + ballR + stemGap + 2;
+         cardY2 = cardY1 + cardH;
         }
       else
         {
-         int tipY  = barTop - 3;
-         int baseY = tipY - mSize - 2;
-         for(int r2 = 0; r2 <= mSize; r2++)
-           {
-            int hw2 = mSize - r2;
-            canvas.LineHorizontal(wx - hw2, wx + hw2, tipY - r2, cBright);
-           }
-         canvas.LineHorizontal(wx - mSize, wx + mSize, baseY,     cBright);
-         canvas.LineHorizontal(wx - mSize, wx + mSize, baseY - 1, cBright);
+         ballY  = barTop - ballR - stemGap;
+         cardY2 = ballY  - ballR - stemGap - 2;
+         cardY1 = cardY2 - cardH;
         }
+
+      // Center card on bar, clamp to canvas edges
+      cardX1 = barCX - cardW / 2;
+      cardX2 = cardX1 + cardW;
+      if(cardX1 < 2)      { cardX1 = 2;      cardX2 = cardX1 + cardW; }
+      if(cardX2 > cw - 2) { cardX2 = cw - 2; cardX1 = cardX2 - cardW; }
+      if(cardY1 < 2)      { cardY1 = 2;       cardY2 = cardY1 + cardH; }
+      if(cardY2 > ch - 2) { cardY2 = ch - 2;  cardY1 = cardY2 - cardH; }
+
+      //--- 1. Bar frame (triple-layer glow for crisp halo effect) ---
+      canvas.Rectangle(x1 - 3, barTop - 3, x2 + 3, barBot + 3, cGlow2);
+      canvas.Rectangle(x1 - 2, barTop - 2, x2 + 2, barBot + 2, cGlow1);
+      canvas.Rectangle(x1 - 1, barTop - 1, x2 + 1, barBot + 1, cBdr);
+      canvas.Rectangle(x1,     barTop,     x2,     barBot,     cBdr);
+
+      //--- 2. Stem: vertical line from bar edge to ball ---
+      int stemY1 = isBuySignal ? barBot  : cardY2;
+      int stemY2 = isBuySignal ? cardY1  : barTop;
+      canvas.LineVertical(barCX, stemY1, stemY2, FpARGB(sigColor, 100));
+
+      //--- 3. Ring ball on the stem (Bookmap bubble style) ---
+      DrawRings(barCX, ballY, ballR, sigColor, 235);
+
+      //--- 4. Card outer glow ---
+      canvas.Rectangle(cardX1 - 2, cardY1 - 2, cardX2 + 2, cardY2 + 2, cGlow2);
+      canvas.Rectangle(cardX1 - 1, cardY1 - 1, cardX2 + 1, cardY2 + 1, cGlow1);
+
+      //--- 5. Card background ---
+      canvas.FillRectangle(cardX1, cardY1, cardX2, cardY2, cBgDark);
+
+      //--- 6. Header band (slightly lighter background) ---
+      int hdrY2 = cardY1 + padY + hdrH + padY / 2;
+      canvas.FillRectangle(cardX1, cardY1, cardX2, hdrY2, cBgHdr);
+
+      //--- 7. Left accent stripe (3px) ---
+      canvas.FillRectangle(cardX1, cardY1, cardX1 + 3, cardY2, cAccent);
+
+      //--- 8. Card border ---
+      canvas.Rectangle(cardX1, cardY1, cardX2, cardY2, cBdr);
+
+      //--- 9. Separator line below header ---
+      canvas.LineHorizontal(cardX1 + 4, cardX2 - 1, hdrY2, cSep);
+
+      //--- 10. Header text: ▲ BUY SIGNAL / ▼ SELL SIGNAL ---
+      canvas.FontSet("Consolas", 12, FW_BOLD);
+      int tX  = cardX1 + padX + 4;
+      int tY  = cardY1 + padY;
+      canvas.TextOut(tX + 1, tY + 1, rowHeader, cShadow, TA_LEFT | TA_TOP);
+      canvas.TextOut(tX,     tY,     rowHeader, FpARGB(sigColor, 255), TA_LEFT | TA_TOP);
+
+      //--- 11. Score row: HFT: xx  |  OFS: xx ---
+      canvas.FontSet("Consolas", 10, FW_BOLD);
+      int r2Y = hdrY2 + 4;
+      canvas.TextOut(tX + 1, r2Y + 1, rowScores, cShadow,   TA_LEFT | TA_TOP);
+      canvas.TextOut(tX,     r2Y,     rowScores, cScoreVal,  TA_LEFT | TA_TOP);
+
+      //--- 12. Price row ---
+      canvas.FontSet("Consolas", 10, FW_NORMAL);
+      int r3Y = r2Y + rowH;
+      canvas.TextOut(tX + 1, r3Y + 1, rowPrice, cShadow, TA_LEFT | TA_TOP);
+      canvas.TextOut(tX,     r3Y,     rowPrice, cWhite,  TA_LEFT | TA_TOP);
+
+      //--- 13. Footer: Symbol · TF · Time ---
+      canvas.FontSet("Consolas", 9, FW_NORMAL);
+      int r4Y = r3Y + rowH;
+      canvas.TextOut(tX + 1, r4Y + 1, rowFooter, cShadow, TA_LEFT | TA_TOP);
+      canvas.TextOut(tX,     r4Y,     rowFooter, cDim,    TA_LEFT | TA_TOP);
      }
   }
 
@@ -2747,6 +2919,10 @@ int OnInit()
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
 
+   // Make all object names unique per chart instance so multiple EA copies
+   // on different charts never share or overwrite each other's objects.
+   g_name = "FP_Canvas_" + IntegerToString(g_chart);
+
    // Enable mouse-move events for panel hover states
    ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
 
@@ -2896,31 +3072,20 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
-//| OnCalculate                                                      |
+//| OnTick — EA equivalent of OnCalculate                           |
+//| Fires on every new price tick from the broker.                  |
 //+------------------------------------------------------------------+
-int OnCalculate(const int rates_total,
-                const int prev_calculated,
-                const datetime &time[],
-                const double   &open[],
-                const double   &high[],
-                const double   &low[],
-                const double   &close[],
-                const long     &tick_volume[],
-                const long     &volume[],
-                const int      &spread[])
+void OnTick()
   {
-   if(rates_total == 0)
-      return 0;
-
-   // Handle timeframe change or full reset
-   if(prev_calculated == 0 || rates_total < prev_calculated || ArraySize(g_bars) == 0)
+   // Full reload when bars array is empty (first run or after param change)
+   if(ArraySize(g_bars) == 0)
      {
       ReloadHistory();
-      if(!g_dirty) // History load failed, try again later
-         return 0;
+      if(!g_dirty)
+         return;
      }
 
-   // Deferred reload: buttons set flag, heavy work executes here
+   // Deferred reload: panel buttons set this flag, heavy work executes here
    if(g_needs_reload)
      {
       g_needs_reload = false;
@@ -2934,11 +3099,8 @@ int OnCalculate(const int rates_total,
 
    if(from_msc == 0)
      {
-      long lookback = 60000; // 1 minute safe window
-      if(now_msc > lookback)
-         from_msc = now_msc - lookback;
-      else
-         from_msc = now_msc;
+      long lookback = 60000; // 1-minute safe window on first live tick
+      from_msc = (now_msc > lookback) ? now_msc - lookback : now_msc;
      }
 
    int copied = CopyTicksRange(_Symbol, ticks, flag, from_msc, now_msc);
@@ -2951,7 +3113,6 @@ int OnCalculate(const int rates_total,
 
    if(g_dirty)
       ThrottledRender();
-   return rates_total;
   }
 
 //+------------------------------------------------------------------+
