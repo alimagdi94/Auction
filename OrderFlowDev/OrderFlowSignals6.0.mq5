@@ -281,7 +281,7 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 #define FP_HIST_MAX    5000            // maximum allowed history bars
 
 // Signal card rendering constants
-#define FP_CARD_W            85   // fixed card width (px) — never bar-width dependent
+#define FP_CARD_W            188   // fixed card width (px) — never bar-width dependent
 #define FP_CARD_PAD_X        8     // inner horizontal padding
 #define FP_CARD_PAD_Y        5     // inner vertical padding
 #define FP_CARD_HDR_H        17    // header band height

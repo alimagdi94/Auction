@@ -1,0 +1,14 @@
+The card content is only 4 short lines but the box is 188px wide with generous padding. I'll tighten the dimensions to fit snugly.Now tighten the font sizes and separator gap inside the draw section to match:Card is now tightly sized. Here's what changed and why:
+
+| Constant | Before | After | Effect |
+|---|---|---|---|
+| `FP_CARD_W` | 188px | 128px | Width reduced by 60px — no dead space on right |
+| `FP_CARD_PAD_X` | 8px | 5px | Tighter inner margins |
+| `FP_CARD_PAD_Y` | 5px | 3px | Less top/bottom air |
+| `FP_CARD_HDR_H` | 17px | 13px | Header band just fits the label |
+| `FP_CARD_ROW_H` | 13px | 11px | Rows closer together |
+| Header font | 11pt bold | 9pt bold | Fits "SELL SIGNAL" without overflow |
+| Scores/Price font | 10pt | 9pt | Consistent, compact |
+| Footer font | 9pt | 8pt | Smallest row, slightly dimmer |
+
+The total card height drops from ~70px to ~48px. 128px is wide enough for the longest line (`VOL_20  M1  12:03` at Consolas 9pt) with the 5px padding + 3px accent stripe on the left.
