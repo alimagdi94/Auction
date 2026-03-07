@@ -1,0 +1,12 @@
+1. InsertBar — is_naked_poc silently dropped on out-of-order inserts (data corruption)
+The shift loop that moves scalar fields down to make room for a new bar copies every FPBar field… except is_naked_poc. Any bar inserted out of chronological order would silently wipe all naked POC flags on every bar above it. Fixed by adding the missing copy on line 487.
+2. AccumulateTick — dead zone at cell boundaries (phantom level creation)
+The level search used < g_step * 0.4 as the match tolerance. This means tick prices in the outer 10% of each cell (between 0.4 and 0.5 × step from centre) would fail to match any level and silently spawn a phantom new cell, inflating level_count and corrupting volume/delta. Changed to 0.5 so every normalised price maps to exactly one cell.
+3. g_visible never seeded in OnInit — footprint starts permanently hidden
+g_visible defaults to false at file scope and nothing in OnInit set it to true. The EA would load with the footprint invisible every time; the user had to click "Viz" just to see anything. Added g_visible = true in OnInit so it's visible on load (user can still hide it at will).
+4. SendDiscordAlert — TF string sent as "PERIOD_H1" instead of "H1"
+DrawSignalMarkersPass correctly stripped the "PERIOD_" prefix before displaying the timeframe. SendDiscordAlert did not — it sent the raw EnumToString() output. Fixed with the same StringReplace call.
+5. SendDiscordAlert — direction string embeds a chart emoji inside the bold label
+The old direction variable was "BUY  :chart_with_upwards_trend:" which put :chart_with_upwards_trend: inside **…Signal**, producing garbled bold text. Refactored into two separate variables: dirLabel ("BUY" / "SELL") and emojis (the two emoji pair), so bold wraps only the clean label.
+6. SendDiscordAlert — raw string concatenation into JSON (no escaping)
+Any special character in _Symbol, bid, or timeStr (backslash, double-quote, control chars) would silently break the JSON body, causing Discord to reject the message with a 400. Added a JsonEscape() helper that escapes all six JSON special characters and applied it to every dynamic field.
