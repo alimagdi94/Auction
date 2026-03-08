@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//|  OrderFlowEa_v533_Pure.mq5                                       |
-//|  Order Flow EA — Pure Trading Engine v5.33                       |
+//|  OrderFlowEa_v534_Pure.mq5                                       |
+//|  Order Flow EA — Pure Trading Engine v5.34                       |
 //|  No canvas, no UI objects — Journal logging only                 |
 //|  All signal computation and trading logic unchanged from v5.32   |
 //+------------------------------------------------------------------+
 #property copyright   "Ali Magdy"
-#property version     "5.33"
-#property description "Order Flow EA v5.33 — Footprint signals + Automated Trading (pure)"
+#property version     "5.34"
+#property description "Order Flow EA v5.34 — Footprint signals + Automated Trading (pure)"
 #property strict
 
 //==========================================================================
@@ -107,6 +107,7 @@ input group "Automated Trading — Money Management"
 input bool   InpUseRiskPercent    = true;   // true = dynamic risk sizing, false = fixed lot
 input double InpRiskPercent       = 1.0;    // % of account balance to risk per trade
 input double InpFixedLot          = 0.01;   // Fixed lot size
+input double InpMaxSLPips         = 0.0;    // Max SL distance in pips (0 = no cap); caps oversized bar-mode SL on high-price instruments
 
 input group "Automated Trading — Exit"
 input bool          InpUseStopLoss      = true;         // Enable hard stop-loss
@@ -1211,51 +1212,85 @@ string JsonEscape(const string s)
    return out;
   }
 
+//++------------------------------------------------------------------+
+//| SendDiscordAlert — posts a signal alert to a Discord webhook.    |
+//|                                                                  |
+//| COMMON FAILURE MODES:                                            |
+//|  HTTP -1 / err 4014  URL not whitelisted in MT5 settings         |
+//|    Fix: Tools > Options > Expert Advisors > Allow WebRequest     |
+//|         add  https://discord.com                                 |
+//|  HTTP 400  malformed JSON (fixed: null-byte removed)             |
+//|  HTTP 401/403  webhook URL invalid or deleted, regenerate it     |
+//|  HTTP 429  rate-limited (max ~30 msg/min per webhook)            |
+//+------------------------------------------------------------------+
 void SendDiscordAlert(bool isBuy, double hftScore, int ofsScore)
   {
    if(!InpDiscordEnable)                  return;
    if(InpDiscordBuyOnly && !isBuy)        return;
-   if(StringLen(InpDiscordWebhook) < 10)  return;
+   if(StringLen(InpDiscordWebhook) < 20)  return;
 
    string dirLabel = isBuy ? "BUY"  : "SELL";
-   string emojis   = isBuy ? ":green_circle: :chart_with_upwards_trend:"
-                           : ":red_circle: :chart_with_downwards_trend:";
+   string emojis   = isBuy
+                     ? ":green_circle: :chart_with_upwards_trend:"
+                     : ":red_circle: :chart_with_downwards_trend:";
    string timeStr  = TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES);
-   string bid      = DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits);
+   string bidStr   = DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits);
    int    score    = (int)MathRound(isBuy ? hftScore : -hftScore);
    string tf       = EnumToString(Period());
    StringReplace(tf, "PERIOD_", "");
 
+   // Discord message content with markdown formatting.
+   // \n inside JSON string becomes a real newline in Discord chat.
    string content = StringFormat(
-      "%s  **%s Signal** on **%s** (%s)\\n"
-      "HFT Score: **%d** | OFS Score: **%d**\\n"
-      "Price: **%s** | Time: %s (server)",
+      "%s  **%s Signal** — **%s** (%s)\n"
+      "HFT Score: **%d** | OFS Score: **%d**\n"
+      "Price: **%s** | %s UTC",
       emojis, dirLabel,
       JsonEscape(_Symbol), JsonEscape(tf),
       score, ofsScore,
-      JsonEscape(bid), JsonEscape(timeStr));
+      JsonEscape(bidStr), JsonEscape(timeStr));
 
-   string jsonBody = "{\"content\":\"" + content + "\"}";
-   char   postData[], result[];
+   string jsonBody = "{"content":"" + content + ""}";
+
+   // FIX: StringToCharArray without an explicit length appends a trailing
+   // null byte (\0), making the JSON body malformed and causing HTTP 400.
+   // Passing bodyLen explicitly stops at the last real character.
+   char   postData[];
+   char   result[];
    string responseHeaders;
-   StringToCharArray(jsonBody, postData, 0, StringLen(jsonBody));
+   int    bodyLen = StringLen(jsonBody);
+   ArrayResize(postData, bodyLen);
+   StringToCharArray(jsonBody, postData, 0, bodyLen);
 
    int httpCode = WebRequest(
-      "POST", InpDiscordWebhook,
+      "POST",
+      InpDiscordWebhook,
       "Content-Type: application/json\r\n",
-      5000, postData, result, responseHeaders);
+      5000,
+      postData,
+      result,
+      responseHeaders);
 
    if(httpCode == -1)
      {
       int err = GetLastError();
       if(err == 4014)
-         Alert("OrderFlowEA — Discord blocked! Whitelist https://discord.com in "
-               "Tools → Options → Expert Advisors → Allow WebRequest.");
+         Alert("OrderFlowEA — Discord blocked!\n"
+               "Tools > Options > Expert Advisors > Allow WebRequest\n"
+               "Add URL:  https://discord.com");
       else
-         LogWarning(StringFormat("OrderFlowEA — Discord WebRequest failed, error: %d", err));
+         LogWarning(StringFormat(
+            "OrderFlowEA — Discord WebRequest failed (err %d). "
+            "Check internet / webhook URL.", err));
      }
-   else if(httpCode != 204 && httpCode != 200)
-      LogWarning(StringFormat("OrderFlowEA — Discord returned HTTP %d", httpCode));
+   else if(httpCode == 200 || httpCode == 204)
+      LogSystem(StringFormat(
+         "OrderFlowEA — Discord OK | %s %s (HTTP %d)",
+         dirLabel, _Symbol, httpCode));
+   else
+      LogWarning(StringFormat(
+         "OrderFlowEA — Discord HTTP %d | body: %s",
+         httpCode, CharArrayToString(result, 0, ArraySize(result))));
   }
 
 //--- Evaluate the live bar, gate by frequency, fire sound + Discord + journal
@@ -1406,60 +1441,88 @@ ENUM_ORDER_TYPE_FILLING GetBrokerFillingMode()
 
 double CalcLot(double slPoints)
   {
-   // ---------------------------------------------------------------
-   // Step 1: re-fetch tick value live so it is never stale.
-   // SYMBOL_TRADE_TICK_VALUE changes with exchange rates on cross pairs
-   // and some synthetic instruments. Using a cached value from the
-   // previous bar can skew lot size by several percent.
-   // ---------------------------------------------------------------
+   // =================================================================
+   // INDUSTRY-STANDARD RISK-BASED LOT SIZING
+   // Formula (used by every professional EA):
+   //   lot = RiskAmount($) / (SL_distance_in_price × pip_value_per_lot)
+   //
+   // Where:
+   //   RiskAmount   = Balance × RiskPercent%
+   //   SL_distance  = |entry − sl|  (in price units, e.g. 1.05230)
+   //   pip_value    = SYMBOL_TRADE_TICK_VALUE / SYMBOL_TRADE_TICK_SIZE
+   //                  ($ per 1 full price-unit move, per 1 lot)
+   //
+   // This formulation is symbol-agnostic: it works identically for
+   // standard FX (EURUSD price 1.1x), JPY pairs (110.x), Gold (2000.x),
+   // and high-price Deriv synthetics (VOL_20 at 700,000+) because the
+   // tick_value already encodes the contract's monetary scaling.
+   // =================================================================
+
+   // --- Step 1: live tick value (never use a cached global) ---
+   // SYMBOL_TRADE_TICK_VALUE is re-fetched here to get the rate-converted
+   // value at the exact moment of the trade, not from the previous bar.
    double tvBase = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tvSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   // Monetary value of 1 POINT move per 1 lot in account currency.
-   // Formula: (tick_value / tick_size) * _Point
-   //   tvBase / tvSize = value per price unit
-   //   × _Point        = value per 1 point
-   // Works for FX (tvSize == _Point), JPY, Gold, Deriv synthetics, CFDs.
-   double liveTickSize = (tvSize > 0.0) ? tvBase * (_Point / tvSize) : 0.0;
+
+   // pip_value_per_lot = $ value of a move equal to 1 full tick in price
+   // Dividing tvBase by tvSize gives $/price-unit/lot, which is then the
+   // multiplier used against the SL price distance.
+   double pipVal = (tvSize > 0.0) ? tvBase / tvSize : 0.0;
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double lot;
+   double usedSlPoints = slPoints;  // may be capped below
 
-   // ---------------------------------------------------------------
-   // Step 2: decide sizing mode.
-   // Dynamic sizing requires:
-   //   a) InpUseRiskPercent = true
-   //   b) A valid SL distance (slPoints > 0)  — cannot size risk without SL
-   //   c) A valid tick value for this symbol
-   // If any condition fails, fall back to fixed lot and log the reason.
-   // ---------------------------------------------------------------
-   bool canDynamic = InpUseRiskPercent && (slPoints > 0.0) && (liveTickSize > 0.0);
+   // --- Step 2: guard conditions ---
+   bool canDynamic = InpUseRiskPercent && (slPoints > 0.0) && (pipVal > 0.0);
 
    if(canDynamic)
      {
-      double riskAmt = balance * InpRiskPercent / 100.0;
-      // lot = riskAmount / (SL_distance_in_points × monetary_value_per_point_per_lot)
-      lot = riskAmt / (slPoints * liveTickSize);
+      double riskAmt   = balance * InpRiskPercent / 100.0;
+      // Convert slPoints (raw _Point multiples) to price distance
+      double slPrice   = slPoints * _Point;   // e.g. 11102 pts × 0.01 = 111.02 price units
+
+      // --- Step 3: SL cap (optional, prevents absurdly wide bar-mode SL) ---
+      // On high-price instruments (Deriv synthetics, indices) a single bar
+      // can span thousands of points.  Without a cap the raw lot calculation
+      // correctly produces a sub-minimum result because the dollar risk of
+      // that SL exceeds the entire account risk budget per trade.
+      // InpMaxSLPips > 0 clamps the effective SL so sizing stays reasonable.
+      if(InpMaxSLPips > 0.0)
+        {
+         double maxSlPrice = InpMaxSLPips * g_Pip;   // cap in price units
+         if(slPrice > maxSlPrice)
+           {
+            LogWarning(StringFormat(
+               "OrderFlowEA — SL cap applied on %s: bar SL %.5f > max %.5f"
+               " (%.0f pips). Lot sized to capped SL.",
+               _Symbol, slPrice, maxSlPrice, InpMaxSLPips));
+            slPrice      = maxSlPrice;
+            usedSlPoints = slPrice / _Point;
+           }
+        }
+
+      // --- Step 4: core lot formula ---
+      // lot = Risk($) / (SL_price_distance × pip_value_per_lot)
+      lot = riskAmt / (slPrice * pipVal);
 
       LogTradeExec(StringFormat(
-         "OrderFlowEA — DynLot | %s | Bal: %.2f | Risk: %.2f%% → $%.2f"
-         " | SL: %.1f pts | TickVal: %.6f $/pt | Raw: %.5f",
+         "OrderFlowEA — DynLot | %s | Bal: %.2f | Risk: %.2f%% = $%.2f"
+         " | SL: %.5f price (%.0f pts) | PipVal: %.5f $/price-unit | Raw lot: %.5f",
          _Symbol, balance, InpRiskPercent, riskAmt,
-         slPoints, liveTickSize, lot));
+         slPrice, usedSlPoints, pipVal, lot));
      }
    else
      {
       lot = InpFixedLot;
-      // Log reason only at FULL level to avoid spamming on every fixed-lot order.
       if(InpUseRiskPercent)
          LogWarning(StringFormat(
-            "OrderFlowEA — DynLot FALLBACK → FixedLot (%.2f) | %s"
-            " | slPoints=%.1f liveTickSize=%.6f",
-            lot, _Symbol, slPoints, liveTickSize));
+            "OrderFlowEA — DynLot FALLBACK → FixedLot %.2f | %s"
+            " | slPoints=%.1f pipVal=%.6f",
+            lot, _Symbol, slPoints, pipVal));
      }
 
-   // ---------------------------------------------------------------
-   // Step 3: normalise to broker constraints.
-   // ---------------------------------------------------------------
+   // --- Step 5: normalise to broker volume constraints ---
    double step   = (g_VolStep > 0.0) ? g_VolStep : 0.01;
    double lotMin = (g_VolMin  > 0.0) ? g_VolMin  : 0.01;
    double lotMax = (g_VolMax  > 0.0) ? g_VolMax  : 100.0;
@@ -1467,17 +1530,17 @@ double CalcLot(double slPoints)
    lot = MathMax(lotMin, MathMin(lotMax, lot));
    lot = NormalizeDouble(lot, 2);
 
-   // ---------------------------------------------------------------
-   // Step 4: post-normalisation audit — shows exact USD at risk
-   // after rounding so the user can verify against account balance.
-   // ---------------------------------------------------------------
+   // --- Step 6: post-normalisation audit ---
+   // Prints the ACTUAL dollar risk after broker rounding so the user
+   // can confirm it matches the intended % of balance.
    if(canDynamic)
      {
-      double actualRisk = lot * slPoints * liveTickSize;
-      double pctOfBal   = (balance > 0.0) ? actualRisk / balance * 100.0 : 0.0;
+      double usedSlPrice = usedSlPoints * _Point;
+      double actualRisk  = lot * usedSlPrice * pipVal;
+      double pctOfBal    = (balance > 0.0) ? actualRisk / balance * 100.0 : 0.0;
       LogTradeExec(StringFormat(
          "OrderFlowEA — DynLot FINAL | %s | Lot: %.2f"
-         " | Actual $risk: %.2f (%.3f%% of $%.2f balance)",
+         " | Risk: $%.2f = %.3f%% of $%.2f",
          _Symbol, lot, actualRisk, pctOfBal, balance));
      }
 
