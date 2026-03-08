@@ -1,19 +1,19 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                                    Footprint.mq5  |
-//|   Footprint (Order Flow) — Production Ready v6.00                |
+//|   Footprint (Order Flow) — Production Ready v5.10                |
 //|   Volume / Delta / Bid x Ask per price level                     |
 //|   POC · VA% · Imbalance · Absorption · Stacked Imbalances        |
 //|   HVN/LVN · Delta Divergence · Buy/Sell Ratio Stripe             |
 //|   Delta Gradient · Exhaustion Signal · OFS Score                 |
 //|   Tick-size aggregation · Tick Multiplier (x1..x40)              |
 //|   Compact canvas overlay + control panel                         |
-//|   v6.00: Closed-bar signals · Regime-adaptive HFT engine        |
-//|          Continuous features · Antifragility filters             |
 //+------------------------------------------------------------------+
-#property copyright   "Ali Magdy"
-#property version     "6.00"
-#property description "Footprint Chart EA v6.00 — Closed-bar HFT signals + Antifragility + Discord alerts"
-#property strict
+#property copyright "Ali Magdy"
+#property version   "5.10"
+#property description "Footprint Chart v5 — Delta default · Naked POC · CumΔ Profile · VP-style POC/VAH/VAL"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots   0
 
 #include <Canvas\Canvas.mqh>
 
@@ -23,14 +23,6 @@ enum ENUM_FOOT_CHART_MODE
    FOOT_CHART_VOLUME = 0,   // Volume per price level
    FOOT_CHART_DELTA  = 1,   // Delta (Ask-Bid) per price level
    FOOT_CHART_BIDASK = 2    // Bid x Ask cluster (industry standard)
-  };
-
-//--- Signal frequency gating mode
-enum ENUM_SIG_FREQ_MODE
-  {
-   SIG_FREQ_BARS = 0,   // Gate by minimum bars between signals
-   SIG_FREQ_TIME = 1,   // Gate by minimum seconds between signals
-   SIG_FREQ_BOTH = 2    // Both gates must pass (most selective)
   };
 
 //--- Inputs
@@ -105,49 +97,6 @@ input double InpOFWtImb           = 25.0;          // OFS weight: imbalance coun
 input double InpOFWtStacked       = 20.0;          // OFS weight: stacked imbalance (%)
 input double InpOFWtAbsorb        = 15.0;          // OFS weight: absorption (%)
 
-input group "High Probability Signals"
-input bool              InpShowSignals        = true;             // Show High Probability Signals
-input int               InpSignalThreshold    = 60;              // Score Threshold (Buy >= thresh, Sell <= 100-thresh)
-input color             InpSignalBuyColor     = C'0,220,100';    // Buy Signal Color
-input color             InpSignalSellColor    = C'220,40,60';    // Sell Signal Color
-input string            InpSignalBuySound     = "alert.wav";     // Buy signal sound file
-input string            InpSignalSellSound    = "alert2.wav";    // Sell signal sound file
-
-input group "Signal Frequency Control"
-input ENUM_SIG_FREQ_MODE InpSignalFreqMode    = SIG_FREQ_BOTH;  // Frequency gating mode (Bars / Time / Both)
-input int               InpSignalFreqBars     = 3;              // [BARS mode] Min closed bars between signals (1=every bar)
-input int               InpSignalCooldownSecs = 120;            // [TIME mode] Min seconds between signals (0=disabled)
-
-input group "Antifragility Filters"
-input int               InpMinLevels          = 5;              // Min populated price levels (0=disabled)
-input int               InpMinVolPctile       = 20;             // Min bar volume percentile vs last 50 bars (0=disabled)
-input int               InpMaxSpreadPts       = 0;              // Max spread in points before suppressing (0=disabled)
-input bool              InpSessionFilter      = false;          // Enable session-hour filter
-input int               InpSessionStartHour   = 8;             // Session start hour GMT (0-23)
-input int               InpSessionEndHour     = 17;            // Session end hour GMT (0-23)
-input double            InpOffSessionMult     = 1.5;           // Threshold multiplier outside session hours
-input bool              InpVolRegimeEnable    = true;           // Enable volatility regime adaptive weighting
-
-input group "HFT Component Weights"
-input double            InpHFTWtOFS           = 25.0;           // HFT weight: OFS composite (%)
-input double            InpHFTWtDelta         = 20.0;           // HFT weight: delta continuation/divergence (%)
-input double            InpHFTWtPOC           = 12.0;           // HFT weight: POC gravity (%)
-input double            InpHFTWtAbsorb        = 12.0;           // HFT weight: location-aware absorption (%)
-input double            InpHFTWtExhaust       = 10.0;           // HFT weight: bid/ask exhaustion (%)
-input double            InpHFTWtCVD           = 11.0;           // HFT weight: adaptive CVD slope (%)
-input double            InpHFTWtPOCMig        = 10.0;           // HFT weight: POC migration (3-bar) (%)
-
-input group "Signal Ball Style"
-input int    InpSigBallRadius    = 14;   // Signal ball max radius (px)
-input int    InpSigBallMinRadius = 5;    // Signal ball min radius (px)
-input int    InpSigRingCount     = 5;    // Concentric rings per ball
-input int    InpSigRingThickness = 2;    // Ring line thickness
-
-input group "Discord Notifications"
-input bool   InpDiscordEnable    = true;          // Enable Discord webhook notifications
-input string InpDiscordWebhook   = "https://discord.com/api/webhooks/1479510739520852094/1Cpxwva9TOTW4hDd6VqXr7LDe4gL-JLvagfE5bU-ULh2lm_XqsO-w3G3cxZDTLHygIJd"; // Webhook URL
-input bool   InpDiscordBuyOnly   = false;         // Only send BUY signals (false = both directions)
-
 input group "Delta Mode Cell Coloring"           // Enable per-cell green/red in Delta mode
 input bool   InpDeltaCellColor    = true;           // Enable per-cell green/red in Delta mode
 input color  InpDeltaCellBull     = C'5,70,40';     // Delta mode: ask>bid base (dark green floor)
@@ -206,35 +155,9 @@ struct FPBar
    PriceLevel levels[];
   };
 
-//--- Signal snapshot — frozen at the moment a signal fires.
-//    DrawSignalMarkersPass reads ONLY from this cache; it never
-//    re-evaluates ComputeHFTSignal so cards are stable across renders.
-struct SignalRecord
-  {
-   datetime bar_time;      // bar that triggered the signal
-   bool     is_buy;        // direction
-   int      hft_score;     // score magnitude (always positive, 0-100)
-   int      ofs_score;     // OFS score at fire time (0-100)
-   double   price;         // bar close price (frozen)
-   double   bar_high;      // bar high at fire time
-   double   bar_low;       // bar low  at fire time
-   // ── Diagnostics (for offline calibration) ──────────────────────
-   int      regime;        // 0=LOW 1=NORMAL 2=HIGH volatility at fire time
-   double   bar_volume;    // total bar volume at fire time
-   double   spread_pts;    // spread in points at fire time
-   // Component values normalised [-1,+1] at fire time
-   double   comp_ofs;      // c1 OFS composite
-   double   comp_delta;    // c2 delta continuation
-   double   comp_poc;      // c3 POC gravity
-   double   comp_absorb;   // c4 absorption
-   double   comp_exhaust;  // c5 exhaustion
-   double   comp_cvd;      // c6 CVD slope
-   double   comp_pocmig;   // c7 POC migration
-  };
-
 //--- Globals
 CCanvas              canvas;
-string               g_name     = "FP_Canvas";   // will be suffixed with ChartID in OnInit
+string               g_name     = "FP_Canvas";
 FPBar                g_bars[];
 double               g_step;         // aggregated step = g_baseStep * g_tickMult
 double               g_baseStep;     // base step from InpTickSize
@@ -275,34 +198,8 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 #define FP_IMB_MID     300.0
 #define FP_IMB_HI      400.0
 #define FP_HIST_EDIT   "FP_HistEdit"   // OBJ_EDIT name for history-bars input
-#define FP_SIG_FREQ_EDIT   "FP_SigFreqEdit"   // OBJ_EDIT name for signal-frequency input
-#define FP_SIG_THRESH_EDIT "FP_SigThreshEdit" // OBJ_EDIT name for signal-threshold input
 #define FP_HIST_MIN    1               // minimum allowed history bars
 #define FP_HIST_MAX    5000            // maximum allowed history bars
-
-// Signal card rendering constants
-#define FP_CARD_W            85   // fixed card width (px) — never bar-width dependent
-#define FP_CARD_PAD_X        8     // inner horizontal padding
-#define FP_CARD_PAD_Y        5     // inner vertical padding
-#define FP_CARD_HDR_H        17    // header band height
-#define FP_CARD_ROW_H        13    // data row height
-#define FP_CARD_H            (FP_CARD_PAD_Y + FP_CARD_HDR_H + 1 + 3 + 3*FP_CARD_ROW_H + FP_CARD_PAD_Y)
-#define FP_MAX_VISIBLE_CARDS 10    // max cards drawn per render — keeps chart readable
-
-// Card placement descriptor (built in phase 1, consumed in phases 2-3)
-struct CardPlacement
-  {
-   int fi;        // index into g_firedSignals[]
-   int barCX;     // bar centre pixel X
-   int x1, x2;   // bar frame X extents
-   int barTop;    // bar top pixel Y
-   int barBot;    // bar bottom pixel Y
-   int cardX1;    // final card left edge
-   int cardX2;    // final card right edge
-   int cardY1;    // final card top edge (updated by overlap resolver)
-   int cardY2;    // final card bottom edge
-   int ballR;     // ring ball radius
-  };
 
 int   g_panelX1, g_panelY1, g_panelX2, g_panelY2;
 int   g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2;
@@ -326,25 +223,8 @@ int   g_histEditH  = FP_PANEL_H - 2 * FP_PANEL_PAD;
 int   g_histBars   = 100;             // runtime history-bars count
 int   g_mouseX = -1, g_mouseY = -1;
 double g_vaPercent = 0;
-bool   g_visible     = false;
+bool   g_visible     = true;
 bool   g_profileOnly = false;
-
-// --- Trading Signal Feature ---
-bool              g_signalsEnabled    = true;     // runtime toggle (mirrors InpShowSignals on init)
-ENUM_SIG_FREQ_MODE g_signalFreqMode   = SIG_FREQ_BOTH; // frequency gating mode
-int               g_signalFreqBars   = 3;         // runtime min-bars between signals
-int               g_signalCooldownSecs = 120;     // runtime min-seconds between signals
-int               g_signalThreshold  = 60;        // runtime score threshold
-int               g_lastSignalBar    = -9999;     // bar index at which last alert was fired
-datetime          g_lastSignalTime   = 0;         // wall-clock time of last fired signal
-datetime          g_lastClosedBarTime = 0;        // bar_time of last fully-evaluated closed bar
-double            g_intrabarHFTScore = 0.0;       // live-bar score — display only, never fires
-int               g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2;
-
-// Persistent fired-signal cache — populated once per signal event,
-// read every render.  Never cleared mid-session except on full reload.
-SignalRecord g_firedSignals[];
-int          g_firedCount = 0;
 
 // Persistent scratch buffers
 int  g_scratchY1[];
@@ -433,21 +313,6 @@ void ComputeNakedPOCs()
 void ReloadHistory()
   {
    g_dirty = false;
-
-   // Purge any previously placed signal arrows — they'll be recreated from fresh data
-   int total = ObjectsTotal(g_chart, 0, OBJ_ARROW);
-   for(int i = total - 1; i >= 0; i--)
-     {
-      string nm = ObjectName(g_chart, i, 0, OBJ_ARROW);
-      if(StringFind(nm, "FP_Sig_") == 0)
-         ObjectDelete(g_chart, nm);
-     }
-   // Clear the signal snapshot cache — SeedHistoricalSignals will repopulate it
-   g_firedCount        = 0;
-   g_lastSignalBar     = -9999;
-   g_lastSignalTime    = 0;
-   g_lastClosedBarTime = 0;
-   g_intrabarHFTScore  = 0.0;
    int n = ArraySize(g_bars);
    for(int i = 0; i < n; i++)
      {
@@ -464,8 +329,7 @@ void ReloadHistory()
    int loaded = LoadHistory(startTime, endTime);
    if(loaded > 0)
      {
-      ComputeNakedPOCs();        // Mark POC levels not yet retested
-      SeedHistoricalSignals();   // Populate signal cache from history (no Discord/sound)
+      ComputeNakedPOCs(); // Mark POC levels not yet retested
       g_dirty = true;
      }
    else
@@ -1112,273 +976,14 @@ void EnsureScratch(int needed)
   }
 
 //+------------------------------------------------------------------+
-//| HELPER: Rolling 20th-percentile bar volume over last N bars     |
-//| Returns 0 if not enough data.                                   |
-//+------------------------------------------------------------------+
-double ComputeVolumePercentile20(int bi, int lookback)
-  {
-   int n = ArraySize(g_bars);
-   int start = MathMax(0, bi - lookback);
-   int count = bi - start;
-   if(count <= 1) return 0.0;
-
-   double vols[];
-   ArrayResize(vols, count);
-   for(int k = 0; k < count; k++)
-      vols[k] = (double)g_bars[start + k].total_vol;
-   ArraySort(vols);  // ascending
-   int idx = (int)MathFloor(count * 0.20);
-   idx = MathMax(0, MathMin(count - 1, idx));
-   return vols[idx];
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: ATR-based volatility regime classifier                  |
-//| Returns: 0=LOW  1=NORMAL  2=HIGH                                |
-//+------------------------------------------------------------------+
-int ClassifyVolatilityRegime(int bi, int lookback = 20)
-  {
-   if(bi < 3) return 1;  // not enough data → assume NORMAL
-   // Bar range as cheap ATR proxy using stored high/low
-   double rangeSum = 0;
-   int    cnt = 0;
-   int    start = MathMax(0, bi - lookback);
-   for(int k = start; k < bi; k++)
-     {
-      double r = g_bars[k].high - g_bars[k].low;
-      if(r > 0) { rangeSum += r; cnt++; }
-     }
-   if(cnt == 0) return 1;
-   double avgRange = rangeSum / cnt;
-   double curRange = g_bars[bi].high - g_bars[bi].low;
-   if(avgRange <= 0) return 1;
-   double ratio = curRange / avgRange;
-   if(ratio > 1.6) return 2;   // HIGH
-   if(ratio < 0.6) return 0;   // LOW
-   return 1;                    // NORMAL
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: Pre-signal context filters                              |
-//| Returns true = signal allowed; false = suppress.                |
-//| outThreshMult is set to 1.0 normally, >1.0 outside session.    |
-//+------------------------------------------------------------------+
-bool CheckContextFilters(int bi, double &outThreshMult)
-  {
-   outThreshMult = 1.0;
-   int  len  = g_bars[bi].level_count;
-   long tvol = g_bars[bi].total_vol;
-
-   // Minimum price levels
-   if(InpMinLevels > 0 && len < InpMinLevels)
-      return false;
-
-   // Minimum volume percentile
-   if(InpMinVolPctile > 0)
-     {
-      double volP20 = ComputeVolumePercentile20(bi, 50);
-      if(volP20 > 0 && tvol < (long)volP20)
-         return false;
-     }
-
-   // Spread filter
-   if(InpMaxSpreadPts > 0)
-     {
-      long spreadPts = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-      if(spreadPts > (long)InpMaxSpreadPts)
-         return false;
-     }
-
-   // Session filter
-   if(InpSessionFilter)
-     {
-      MqlDateTime dt;
-      TimeToStruct(g_bars[bi].bar_time, dt);
-      int h = dt.hour;
-      bool inSession;
-      if(InpSessionStartHour <= InpSessionEndHour)
-         inSession = (h >= InpSessionStartHour && h < InpSessionEndHour);
-      else
-         inSession = (h >= InpSessionStartHour || h < InpSessionEndHour);  // overnight wrap
-      if(!inSession)
-         outThreshMult = MathMax(1.0, InpOffSessionMult);
-     }
-
-   return true;  // pass
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: Regime-adaptive component weights                       |
-//| regime: 0=LOW 1=NORMAL 2=HIGH                                   |
-//| comp:   0=OFS 1=DELTA 2=POC 3=ABSORB 4=EXHAUST 5=CVD 6=POCMIG  |
-//+------------------------------------------------------------------+
-double GetAdaptiveWeight(int comp, int regime)
-  {
-   // Base user-configurable weights — indexed 0..6
-   double base[7];
-   base[0] = MathMax(0.0, InpHFTWtOFS);
-   base[1] = MathMax(0.0, InpHFTWtDelta);
-   base[2] = MathMax(0.0, InpHFTWtPOC);
-   base[3] = MathMax(0.0, InpHFTWtAbsorb);
-   base[4] = MathMax(0.0, InpHFTWtExhaust);
-   base[5] = MathMax(0.0, InpHFTWtCVD);
-   base[6] = MathMax(0.0, InpHFTWtPOCMig);
-
-   if(!InpVolRegimeEnable || regime == 1)
-      return base[comp];
-
-   // Regime multipliers — keep ratio changes modest (±40%) so user
-   // intent is preserved; just tilt the balance, don't override it.
-   static const double mulLow[7]  = {1.1, 0.8, 1.3, 0.8, 0.7, 0.7, 1.2};  // LOW: trust structure
-   static const double mulHigh[7] = {0.9, 0.7, 0.8, 1.4, 1.4, 1.0, 0.8};  // HIGH: trust exhaustion
-
-   double m = (regime == 0) ? mulLow[comp] : mulHigh[comp];
-   return base[comp] * m;
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: Volume-weighted imbalance score → [0,1]                 |
-//| >0.5 = buy-imbalance heavier by volume                          |
-//+------------------------------------------------------------------+
-double ComputeVWImbalanceScore(int bi)
-  {
-   int  len  = g_bars[bi].level_count;
-   long tvol = g_bars[bi].total_vol;
-   if(len == 0 || tvol == 0) return 0.5;
-
-   long buyImbVol = 0, sellImbVol = 0;
-   for(int i = 0; i < len; i++)
-     {
-      if(g_bars[bi].levels[i].is_imb_buy)
-         buyImbVol  += g_bars[bi].levels[i].ask_vol;
-      if(g_bars[bi].levels[i].is_imb_sell)
-         sellImbVol += g_bars[bi].levels[i].bid_vol;
-     }
-   long totalImbVol = buyImbVol + sellImbVol;
-   if(totalImbVol == 0) return 0.5;
-   return ((double)(buyImbVol - sellImbVol) / (double)totalImbVol + 1.0) * 0.5;
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: Continuous stacked imbalance score → [-1, +1]          |
-//| Magnitude reflects the longest run relative to total levels.    |
-//+------------------------------------------------------------------+
-double ComputeStackedRunScore(int bi)
-  {
-   int len = g_bars[bi].level_count;
-   if(len == 0) return 0.0;
-
-   int maxBuyRun = 0, maxSellRun = 0;
-   int curBuy = 0, curSell = 0;
-   for(int i = 0; i < len; i++)
-     {
-      curBuy  = g_bars[bi].levels[i].is_imb_buy  ? curBuy  + 1 : 0;
-      curSell = g_bars[bi].levels[i].is_imb_sell ? curSell + 1 : 0;
-      if(curBuy  > maxBuyRun)  maxBuyRun  = curBuy;
-      if(curSell > maxSellRun) maxSellRun = curSell;
-     }
-   double net = (double)(maxBuyRun - maxSellRun) / (double)len;
-   return MathMax(-1.0, MathMin(1.0, net * 3.0));  // scale: full run of 33% levels → ±1
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: Location-aware continuous absorption score → [-1, +1]  |
-//| Measures absorption intensity at bar extremes.                  |
-//| +1 = strong absorption at low (bullish)                         |
-//| -1 = strong absorption at high (bearish)                        |
-//+------------------------------------------------------------------+
-double ComputeAbsorptionContinuous(int bi)
-  {
-   int  len    = g_bars[bi].level_count;
-   long tvol   = g_bars[bi].total_vol;
-   if(len < 2 || tvol == 0) return 0.0;
-
-   long avgVol = tvol / len;
-   if(avgVol <= 0) avgVol = 1;
-
-   int checkLevels = MathMax(1, len / 4);  // top/bottom 25%
-
-   long absLow = 0, absHigh = 0;
-   // Levels sorted descending: [0]=high ... [len-1]=low
-   for(int i = len - checkLevels; i < len; i++)
-      if(g_bars[bi].levels[i].is_absorption)
-         absLow = MathMax(absLow, g_bars[bi].levels[i].total_vol);
-   for(int i = 0; i < checkLevels; i++)
-      if(g_bars[bi].levels[i].is_absorption)
-         absHigh = MathMax(absHigh, g_bars[bi].levels[i].total_vol);
-
-   // Intensity: how far above threshold?  Clamp to [0,1]
-   double scoreLow = 0.0, scoreHigh = 0.0;
-   if(absLow  > 0)
-      scoreLow  = MathMin(1.0, ((double)absLow  / avgVol - InpAbsorptionRatio) / MathMax(1.0, InpAbsorptionRatio));
-   if(absHigh > 0)
-      scoreHigh = MathMin(1.0, ((double)absHigh / avgVol - InpAbsorptionRatio) / MathMax(1.0, InpAbsorptionRatio));
-
-   // Net: bullish from low, bearish from high; conflicting → partial cancel
-   if(scoreLow > 0 && scoreHigh <= 0)  return +scoreLow;
-   if(scoreHigh > 0 && scoreLow <= 0)  return -scoreHigh;
-   if(scoreLow > 0 && scoreHigh > 0)   return MathMax(-1.0, MathMin(1.0, scoreLow - scoreHigh));
-   return 0.0;
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: Continuous exhaustion score → [-1, +1]                 |
-//| Run-length intensity replaces hard binary.                      |
-//+------------------------------------------------------------------+
-double ComputeExhaustionContinuous(int bi)
-  {
-   int  len = g_bars[bi].level_count;
-   if(len == 0) return 0.0;
-
-   int bidRun = 0, askRun = 0;
-   for(int i = 0; i < len; i++)
-     {
-      if(g_bars[bi].levels[i].is_exhaustion_bid) bidRun++;
-      if(g_bars[bi].levels[i].is_exhaustion_ask) askRun++;
-     }
-   double exhMin = MathMax(1.0, (double)InpExhaustionCells);
-   double scoreBid = MathMin(1.0, (double)bidRun / (exhMin * 2.0));
-   double scoreAsk = MathMin(1.0, (double)askRun / (exhMin * 2.0));
-
-   if(bidRun >= InpExhaustionCells && askRun < InpExhaustionCells) return +scoreBid;
-   if(askRun >= InpExhaustionCells && bidRun < InpExhaustionCells) return -scoreAsk;
-   if(bidRun >= InpExhaustionCells && askRun >= InpExhaustionCells)
-      return MathMax(-1.0, MathMin(1.0, scoreBid - scoreAsk));
-   return 0.0;
-  }
-
-//+------------------------------------------------------------------+
-//| HELPER: 3-bar POC migration → [-1, +1]                         |
-//| POC drifting toward low = bullish (+), toward high = bearish(-) |
-//+------------------------------------------------------------------+
-double ComputePOCMigration(int bi)
-  {
-   if(bi < 2) return 0.0;
-   int len0 = g_bars[bi].level_count;
-   int len1 = g_bars[bi - 1].level_count;
-   int len2 = g_bars[bi - 2].level_count;
-   if(len0 < 2 || len1 < 2 || len2 < 2) return 0.0;
-   if(g_bars[bi].poc_idx < 0 || g_bars[bi-1].poc_idx < 0 || g_bars[bi-2].poc_idx < 0)
-      return 0.0;
-   // Ensure prior bars are computed
-   if(!g_bars[bi-1].sorted) ComputeBarSignals(bi - 1);
-   if(!g_bars[bi-2].sorted) ComputeBarSignals(bi - 2);
-
-   // Normalised POC position: 0=top 1=bottom
-   double pos0 = (double)g_bars[bi].poc_idx     / MathMax(1.0, (double)(len0 - 1));
-   double pos1 = (double)g_bars[bi-1].poc_idx   / MathMax(1.0, (double)(len1 - 1));
-   double pos2 = (double)g_bars[bi-2].poc_idx   / MathMax(1.0, (double)(len2 - 1));
-   double migration = (pos0 - pos2) / 2.0;  // positive = POC moving to low = bullish
-   return MathMax(-1.0, MathMin(1.0, migration * 2.5));
-  }
-
-//+------------------------------------------------------------------+
 //| Order Flow Strength Score (0-100).                              |
-//| Upgraded: volume-weighted imbalance + location-aware absorption |
-//|  A. Delta ratio        — directional by sign                    |
-//|  B. VW Imbalance score — buy/sell imb weighted by volume        |
-//|  C. Stacked run score  — continuous run-length, not binary      |
-//|  D. Absorption         — location-aware continuous score        |
+//|   >50 = net bullish pressure  |  <50 = net bearish  |  50 = neutral
+//|                                                                  |
+//| Component breakdown:                                            |
+//|  A. Delta ratio          — directional by sign                  |
+//|  B. Imbalance balance    — (buyImb-sellImb)/(total) → [0,1]    |
+//|  C. Stacked imbalance    — buy=1.0 / sell=0.0 / mixed=0.5      |
+//|  D. Absorption sentiment — flipped by bar direction             |
 //+------------------------------------------------------------------+
 int ComputeOFScore(int bi)
   {
@@ -1392,126 +997,48 @@ int ComputeOFScore(int bi)
    dRatio        = MathMax(-1.0, MathMin(1.0, dRatio));
    double cDelta = (dRatio + 1.0) * 0.5;
 
-   // B: volume-weighted imbalance [0,1]  (upgraded from count-based)
-   double cImb = ComputeVWImbalanceScore(bi);
+   // B: directional imbalance balance [-1=all sell, +1=all buy] → [0,1]
+   int  imbBuy = 0, imbSell = 0;
+   bool hasStackBuy = false, hasStackSell = false;
+   bool hasAbsorb   = false;
+   for(int i = 0; i < len; i++)
+     {
+      if(g_bars[bi].levels[i].is_imb_buy)          imbBuy++;
+      if(g_bars[bi].levels[i].is_imb_sell)         imbSell++;
+      if(g_bars[bi].levels[i].is_stacked_imb_buy)  hasStackBuy  = true;
+      if(g_bars[bi].levels[i].is_stacked_imb_sell) hasStackSell = true;
+      if(g_bars[bi].levels[i].is_absorption)        hasAbsorb    = true;
+     }
+   int totalImb = imbBuy + imbSell;
+   double cImb;
+   if(totalImb > 0)
+      cImb = ((double)(imbBuy - imbSell) / (double)totalImb + 1.0) * 0.5;
+   else
+      cImb = 0.5; // no imbalances → neutral
 
-   // C: stacked imbalance run score [-1,+1] → [0,1]
-   double stackRaw = ComputeStackedRunScore(bi);
-   double cStack   = (stackRaw + 1.0) * 0.5;
+   // C: stacked direction
+   double cStack;
+   if     (hasStackBuy  && !hasStackSell) cStack = 1.0;
+   else if(hasStackSell && !hasStackBuy)  cStack = 0.0;
+   else                                    cStack = 0.5; // both or neither → neutral
 
-   // D: location-aware absorption [-1,+1] → [0,1]
-   double absorbRaw = ComputeAbsorptionContinuous(bi);
-   double cAbsorb   = (absorbRaw + 1.0) * 0.5;
+   // D: absorption sentiment — absorbing sellers on bullish bar = bullish, vice versa
+   double cAbsorb;
+   if(!hasAbsorb)
+      cAbsorb = 0.5; // no absorption → neutral contribution
+   else
+      cAbsorb = g_bars[bi].is_bullish ? 1.0 : 0.0;
 
    double wD = MathMax(0.0, InpOFWtDelta)   / 100.0;
    double wI = MathMax(0.0, InpOFWtImb)     / 100.0;
    double wS = MathMax(0.0, InpOFWtStacked) / 100.0;
    double wA = MathMax(0.0, InpOFWtAbsorb)  / 100.0;
    double wT = wD + wI + wS + wA;
-   if(wT <= 0.0) wT = 1.0;
+   if(wT <= 0.0) wT = 1.0; // prevent division by zero if all weights = 0
 
    double raw   = (cDelta * wD + cImb * wI + cStack * wS + cAbsorb * wA) / wT;
    int    score = (int)(raw * 100.0 + 0.5);
    return MathMax(0, MathMin(100, score));
-  }
-
-//+------------------------------------------------------------------+
-//| HFT Enhanced Signal Score — [-100, +100]                        |
-//| 7 components, regime-adaptive user-configurable weights.        |
-//| Struct to return components for diagnostics logging.            |
-//+------------------------------------------------------------------+
-struct HFTComponents
-  {
-   double c1_ofs;      // OFS composite
-   double c2_delta;    // delta continuation/divergence
-   double c3_poc;      // POC gravity
-   double c4_absorb;   // continuous absorption
-   double c5_exhaust;  // continuous exhaustion
-   double c6_cvd;      // adaptive CVD slope
-   double c7_pocmig;   // POC migration
-   int    regime;      // 0=LOW 1=NORMAL 2=HIGH
-  };
-
-// Global diagnostics — always written by ComputeHFTSignal, read by callers.
-// MQL5 does not support struct pointers so we use a shared global instead.
-HFTComponents g_signalDiag;
-
-double ComputeHFTSignal(int bi)
-  {
-   int  len  = g_bars[bi].level_count;
-   long tvol = g_bars[bi].total_vol;
-   if(len < 2 || tvol == 0)
-      return 0.0;
-
-   // ── Regime classification ──────────────────────────────────────
-   int regime = ClassifyVolatilityRegime(bi, 20);
-
-   // ── Component 1: OFS Score (normalised -1 → +1) ───────────────
-   int    ofs = ComputeOFScore(bi);
-   double c1  = (ofs - 50.0) / 50.0;
-
-   // ── Component 2: Delta continuation / divergence ─────────────
-   double dRatio = MathMax(-1.0, MathMin(1.0,
-                            (double)g_bars[bi].total_delta / tvol));
-   double c2 = g_bars[bi].is_delta_divergence ? -dRatio : dRatio;
-
-   // ── Component 3: POC gravity ──────────────────────────────────
-   double c3 = 0.0;
-   if(g_bars[bi].poc_idx >= 0 && len > 2)
-     {
-      double pocPos = (double)g_bars[bi].poc_idx / (double)(len - 1);
-      c3 = pocPos * 2.0 - 1.0;   // 0=top → -1(bearish), 1=bot → +1(bullish)
-     }
-
-   // ── Component 4: Location-aware continuous absorption ─────────
-   double c4 = ComputeAbsorptionContinuous(bi);
-
-   // ── Component 5: Continuous exhaustion ───────────────────────
-   double c5 = ComputeExhaustionContinuous(bi);
-
-   // ── Component 6: Adaptive CVD slope ──────────────────────────
-   double c6 = 0.0;
-   if(bi >= 2)
-     {
-      long v0 = MathMax(1, g_bars[bi].total_vol);
-      long v1 = MathMax(1, g_bars[bi-1].total_vol);
-      long v2 = MathMax(1, g_bars[bi-2].total_vol);
-      double nd0 = (double)g_bars[bi].total_delta   / v0;
-      double nd1 = (double)g_bars[bi-1].total_delta / v1;
-      double nd2 = (double)g_bars[bi-2].total_delta / v2;
-      double slope = (nd0 - nd2) / 2.0;
-      // Adaptive normaliser: use average absolute nd as scale proxy
-      double scale = (MathAbs(nd0) + MathAbs(nd1) + MathAbs(nd2)) / 3.0;
-      double denom = MathMax(0.05, scale * 2.0);
-      c6 = MathMax(-1.0, MathMin(1.0, slope / denom));
-     }
-
-   // ── Component 7: POC migration (3-bar trend) ─────────────────
-   double c7 = ComputePOCMigration(bi);
-
-   // ── Regime-adaptive weighted composite ───────────────────────
-   double w[7];
-   for(int k = 0; k < 7; k++)
-      w[k] = GetAdaptiveWeight(k, regime);
-   double wTotal = 0;
-   for(int k = 0; k < 7; k++) wTotal += w[k];
-   if(wTotal <= 0) wTotal = 1.0;
-
-   double comps[7] = {c1, c2, c3, c4, c5, c6, c7};
-   double raw = 0.0;
-   for(int k = 0; k < 7; k++) raw += comps[k] * w[k] / wTotal;
-
-   // Always fill the global diagnostics struct — callers read g_signalDiag after this call
-   g_signalDiag.c1_ofs     = c1;
-   g_signalDiag.c2_delta   = c2;
-   g_signalDiag.c3_poc     = c3;
-   g_signalDiag.c4_absorb  = c4;
-   g_signalDiag.c5_exhaust = c5;
-   g_signalDiag.c6_cvd     = c6;
-   g_signalDiag.c7_pocmig  = c7;
-   g_signalDiag.regime     = regime;
-
-   return MathMax(-1.0, MathMin(1.0, raw)) * 100.0;
   }
 
 //+------------------------------------------------------------------+
@@ -2078,9 +1605,6 @@ void DrawBar(int bi, int shift, int barW)
                         FpARGB(scoreCol, (220 * opaScale) / 255), TA_CENTER | TA_TOP);
         }
      }
-
-   // Signal visual markers are drawn by DrawSignalMarkersPass() called from Render(),
-   // so they appear regardless of g_profileOnly state.
   }
 
 //+------------------------------------------------------------------+
@@ -2094,8 +1618,8 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 1 SigThresh OBJ_EDIT = 17 items
-   int panelW = pad + (btnW * 17 + btnGap * 16) + pad;
+   // 1 history OBJ_EDIT + 13 buttons = 14 items
+   int panelW = pad + (btnW * 14 + btnGap * 13) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
@@ -2142,47 +1666,18 @@ void LayoutPanel(int cw, int ch)
    g_btnScaleFixX1 = x; g_btnScaleFixY1 = y1; g_btnScaleFixX2 = x + btnW; g_btnScaleFixY2 = y2;
    x += btnW + btnGap;
 
-   // Group 6: Granularity -------------------------------------------
+   // Group 6: Granularity + Visibility (right cluster) -----------
    g_btnSizeX1 = x; g_btnSizeY1 = y1; g_btnSizeX2 = x + btnW; g_btnSizeY2 = y2;
    x += btnW + btnGap;
 
    g_btnTickX1 = x; g_btnTickY1 = y1; g_btnTickX2 = x + btnW; g_btnTickY2 = y2;
    x += btnW + btnGap;
 
-   // Group 7: Signals — Sig toggle + Freq edit + Thresh edit ---------
-   g_btnSigX1 = x; g_btnSigY1 = y1; g_btnSigX2 = x + btnW; g_btnSigY2 = y2;
-   x += btnW + btnGap;
-
-   // SigFreq OBJ_EDIT — inline numeric input for min bars between signals
-   int sigFreqEditX = x;
-   int sigFreqEditY = y1;
-   if(ObjectFind(g_chart, FP_SIG_FREQ_EDIT) >= 0)
-     {
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XDISTANCE, sigFreqEditX);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YDISTANCE, sigFreqEditY);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XSIZE,     btnW);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YSIZE,     y2 - y1);
-     }
-   x += btnW + btnGap;
-
-   // SigThresh OBJ_EDIT — inline numeric input for signal score threshold
-   int sigThreshEditX = x;
-   int sigThreshEditY = y1;
-   if(ObjectFind(g_chart, FP_SIG_THRESH_EDIT) >= 0)
-     {
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XDISTANCE, sigThreshEditX);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YDISTANCE, sigThreshEditY);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XSIZE,     btnW);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YSIZE,     y2 - y1);
-     }
-   x += btnW + btnGap;
-
-   // Group 8: Visibility — Prof + Viz/Hid (rightmost, always visible) --
-   g_btnProfX1 = x; g_btnProfY1 = y1; g_btnProfX2 = x + btnW; g_btnProfY2 = y2;
-   x += btnW + btnGap;
-
    g_btnShowX1 = x; g_btnShowY1 = y1; g_btnShowX2 = x + btnW; g_btnShowY2 = y2;
    x += btnW + btnGap;
+
+   // Prof — always last
+   g_btnProfX1 = x; g_btnProfY1 = y1; g_btnProfX2 = x + btnW; g_btnProfY2 = y2;
 
    // Keep native OBJ_EDIT in sync with panel position
    if(ObjectFind(g_chart, FP_HIST_EDIT) >= 0)
@@ -2209,20 +1704,18 @@ void DrawPanel()
                     FpARGB(C'70,70,80', 200));
 
    // Subtle group-separator lines
-   // After Sync | after Mode | after VA | after Lbl | after Lock | after Tick | after Thresh
+   // After Sync | after Mode | after VA | after Lbl | after Lock
    int sepY1 = g_panelY1 + 4;
    int sepY2 = g_panelY2 - 4;
    int sepAlpha = 55;
    uint sepCol = FpARGB(C'100,100,120', sepAlpha);
-   int sepPositions[7];
-   sepPositions[0] = g_btnRefreshX2  + FP_PANEL_BTN_GAP / 2;
-   sepPositions[1] = g_btnModeX2     + FP_PANEL_BTN_GAP / 2;
-   sepPositions[2] = g_btnVAX2       + FP_PANEL_BTN_GAP / 2;
-   sepPositions[3] = g_btnTxtX2      + FP_PANEL_BTN_GAP / 2;
+   int sepPositions[5];
+   sepPositions[0] = g_btnRefreshX2 + FP_PANEL_BTN_GAP / 2;
+   sepPositions[1] = g_btnModeX2    + FP_PANEL_BTN_GAP / 2;
+   sepPositions[2] = g_btnVAX2      + FP_PANEL_BTN_GAP / 2;
+   sepPositions[3] = g_btnTxtX2     + FP_PANEL_BTN_GAP / 2;
    sepPositions[4] = g_btnScaleFixX2 + FP_PANEL_BTN_GAP / 2;
-   sepPositions[5] = g_btnTickX2     + FP_PANEL_BTN_GAP / 2;
-   sepPositions[6] = g_btnSigX2      + (FP_PANEL_BTN_W * 2 + FP_PANEL_BTN_GAP * 2);  // after SigThresh
-   for(int s = 0; s < 7; s++)
+   for(int s = 0; s < 5; s++)
       canvas.LineVertical(sepPositions[s], sepY1, sepY2, sepCol);
 
    // Hover detection
@@ -2239,7 +1732,6 @@ void DrawPanel()
    bool hoveredTxt      = HitTest(g_mouseX, g_mouseY, g_btnTxtX1,      g_btnTxtY1,      g_btnTxtX2,      g_btnTxtY2);
    bool hoveredMode     = HitTest(g_mouseX, g_mouseY, g_btnModeX1,     g_btnModeY1,     g_btnModeX2,     g_btnModeY2);
    bool hoveredProf     = HitTest(g_mouseX, g_mouseY, g_btnProfX1,     g_btnProfY1,     g_btnProfX2,     g_btnProfY2);
-   bool hoveredSig      = HitTest(g_mouseX, g_mouseY, g_btnSigX1,      g_btnSigY1,      g_btnSigX2,      g_btnSigY2);
 
    uint baseFill    = FpARGB(C'35,35,45', 230);
    uint hoverFill   = FpARGB(C'55,55,70', 250);
@@ -2346,7 +1838,7 @@ void DrawPanel()
    canvas.TextOut(g_btnScaleFixX1 + btnCenterX, btnCenterY,
                   "Lock", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // --- Group 6: Granularity ---
+   // --- Group 6: Granularity + Visibility ---
 
    // Cell size (e.g. "10p")
    canvas.FillRectangle(g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2,
@@ -2364,42 +1856,14 @@ void DrawPanel()
    canvas.TextOut(g_btnTickX1 + btnCenterX, btnCenterY,
                   "x" + IntegerToString(g_tickMult), FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // --- Group 7: Signals ---
-
-   // Sig — enable/disable trading signals (green=on / red=off)
-   uint sigFill   = g_signalsEnabled ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
-   uint sigBorder = g_signalsEnabled ? FpARGB(C'80,200,120', 230)  : FpARGB(C'200,80,80', 230);
-   if(hoveredSig) { sigFill = hoverFill; sigBorder = hoverBorder; }
-   canvas.FillRectangle(g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2, sigFill);
-   canvas.Rectangle(g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2, sigBorder);
-   canvas.TextOut(g_btnSigX1 + btnCenterX, btnCenterY,
-                  "Sig", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // SigFreq OBJ_EDIT slot — green accent border, dims when signals off
-   if(ObjectFind(g_chart, FP_SIG_FREQ_EDIT) >= 0)
-     {
-      int sfX = (int)ObjectGetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XDISTANCE);
-      int sfY = (int)ObjectGetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YDISTANCE);
-      int sfW = (int)ObjectGetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XSIZE);
-      int sfH = (int)ObjectGetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YSIZE);
-      canvas.FillRectangle(sfX, sfY, sfX + sfW, sfY + sfH, FpARGB(C'25,25,35', 230));
-      canvas.Rectangle(sfX, sfY, sfX + sfW, sfY + sfH,
-                       g_signalsEnabled ? FpARGB(C'60,160,100', 200) : FpARGB(C'80,80,100', 200));
-     }
-
-   // SigThresh OBJ_EDIT slot — amber accent border, dims when signals off
-   if(ObjectFind(g_chart, FP_SIG_THRESH_EDIT) >= 0)
-     {
-      int stX = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XDISTANCE);
-      int stY = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YDISTANCE);
-      int stW = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XSIZE);
-      int stH = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YSIZE);
-      canvas.FillRectangle(stX, stY, stX + stW, stY + stH, FpARGB(C'25,25,35', 230));
-      canvas.Rectangle(stX, stY, stX + stW, stY + stH,
-                       g_signalsEnabled ? FpARGB(C'200,140,30', 200) : FpARGB(C'80,80,100', 200));
-     }
-
-   // --- Group 8: Visibility (rightmost — Prof then Viz/Hid) ---
+   // Viz (visible) / Hid (hidden) — show/hide footprint
+   uint vizFill   = g_visible ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
+   uint vizBorder = g_visible ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
+   if(hoveredShow) { vizFill = hoverFill; vizBorder = hoverBorder; }
+   canvas.FillRectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, vizFill);
+   canvas.Rectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, vizBorder);
+   canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
+                  g_visible ? "Viz" : "Hid", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
    // Prof — profile-only mode (teal when active)
    uint profFill, profBorder;
@@ -2412,16 +1876,7 @@ void DrawPanel()
    canvas.Rectangle(g_btnProfX1, g_btnProfY1, g_btnProfX2, g_btnProfY2, profBorder);
    canvas.TextOut(g_btnProfX1 + btnCenterX, btnCenterY,
                   "Prof", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-
-   // Viz (visible) / Hid (hidden) — rightmost button, always reachable
-   uint vizFill   = g_visible ? FpARGB(C'20,90,50', 230)   : FpARGB(C'90,30,30', 230);
-   uint vizBorder = g_visible ? FpARGB(C'80,200,120', 230) : FpARGB(C'200,80,80', 230);
-   if(hoveredShow) { vizFill = hoverFill; vizBorder = hoverBorder; }
-   canvas.FillRectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, vizFill);
-   canvas.Rectangle(g_btnShowX1, g_btnShowY1, g_btnShowX2, g_btnShowY2, vizBorder);
-   canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
-                  g_visible ? "Viz" : "Hid", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
-  }  // end DrawPanel
+  }
 
 //+------------------------------------------------------------------+
 //| Session Cumulative Delta Profile  (Enhanced v5.3)               |
@@ -2654,646 +2109,6 @@ void DrawCumDeltaProfile(int cw, int ch, int profX, int profW)
   }
 
 //+------------------------------------------------------------------+
-//| SendDiscordAlert                                                |
-//| Fires an HTTP POST to the configured Discord webhook.           |
-//| WebRequest works in EAs (NOT in indicators — that was the bug). |
-//| IMPORTANT: https://discord.com must be whitelisted in:          |
-//|   Tools → Options → Expert Advisors → Allow WebRequest URLs     |
-//+------------------------------------------------------------------+
-void SendDiscordAlert(bool isBuy, double hftScore, int ofsScore)
-  {
-   if(!InpDiscordEnable) return;
-   if(InpDiscordBuyOnly && !isBuy) return;
-   // Security guard: require a plausibly valid Discord webhook URL
-   if(StringLen(InpDiscordWebhook) < 30 ||
-      StringFind(InpDiscordWebhook, "discord.com/api/webhooks/") < 0)
-     {
-      static bool s_warnedWebhook = false;
-      if(!s_warnedWebhook)
-        {
-         Print("Footprint EA — Discord: no valid webhook URL configured. "
-               "Paste your webhook URL into InpDiscordWebhook.");
-         s_warnedWebhook = true;
-        }
-      return;
-     }
-
-   string direction = isBuy ? "BUY  :chart_with_upwards_trend:" : "SELL  :chart_with_downwards_trend:";
-   string emoji     = isBuy ? ":green_circle:" : ":red_circle:";
-   string timeStr   = TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES);
-   string bid       = DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits);
-   string tf        = EnumToString(Period());
-   int    score     = (int)MathRound(isBuy ? hftScore : -hftScore);
-
-   // Build the Discord message content
-   string content = StringFormat(
-      "%s  **%s Signal** on **%s** (%s)\\n"
-      "HFT Score: **%d** | OFS Score: **%d**\\n"
-      "Price: **%s** | Time: %s (server)",
-      emoji, direction, _Symbol, tf,
-      score, ofsScore, bid, timeStr
-   );
-
-   // Wrap in JSON — escape internal double-quotes
-   string jsonBody = "{\"content\":\"" + content + "\"}";
-
-   char   postData[];
-   char   result[];
-   string responseHeaders;
-   StringToCharArray(jsonBody, postData, 0, StringLen(jsonBody));
-
-   int httpCode = WebRequest(
-      "POST",
-      InpDiscordWebhook,
-      "Content-Type: application/json\r\n",
-      5000,
-      postData,
-      result,
-      responseHeaders
-   );
-
-   // httpCode 204 = Discord success (No Content). Anything else is a problem.
-   if(httpCode == -1)
-     {
-      int err = GetLastError();
-      if(err == 4014)  // URL not in whitelist
-         Alert("Footprint EA — Discord blocked!\n"
-               "Go to: Tools → Options → Expert Advisors\n"
-               "→ Allow WebRequest for listed URLs\n"
-               "→ Add:  https://discord.com\n"
-               "Then reload the EA.");
-      else
-         Print("Footprint EA — Discord WebRequest failed, error: ", err);
-     }
-   else if(httpCode != 204 && httpCode != 200)
-      Print("Footprint EA — Discord returned HTTP ", httpCode);
-  }
-
-//+------------------------------------------------------------------+
-//| DrawRings — Concentric ring ball (from Bookmap shape reference)  |
-//| Draws a set of concentric circles at (xc, yc) with a bright     |
-//| core dot, matching the Bookmap trade bubble visual style.        |
-//+------------------------------------------------------------------+
-void DrawRings(int xc, int yc, int maxR, color col, int alpha)
-  {
-   int rings = InpSigRingCount;
-   if(rings < 1) rings = 1;
-   int thick = InpSigRingThickness;
-   if(thick < 1) thick = 1;
-
-   for(int r = 0; r < rings; r++)
-     {
-      double frac = (double)(r + 1) / (double)rings;
-      int rad = (int)(maxR * frac);
-      if(rad < 2) rad = 2;
-
-      // Alpha fades outward
-      int ringAlpha = (int)(alpha * (1.0 - frac * 0.5));
-      if(ringAlpha < 10) ringAlpha = 10;
-
-      // Draw thick ring using multiple outline circles
-      for(int t = 0; t < thick; t++)
-        {
-         int rr = rad + t;
-         if(rr > 0)
-            canvas.Circle(xc, yc, rr, FpARGB(col, ringAlpha));
-        }
-     }
-
-   // Bright core dot
-   int coreR = MathMax(1, maxR / 8);
-   canvas.FillCircle(xc, yc, coreR, FpARGB(clrWhite, alpha / 2));
-  }
-
-//+------------------------------------------------------------------+
-//| PushSignalRecord                                                |
-//| Appends a frozen snapshot to g_firedSignals[].                 |
-//| Returns false if a record for bar_time already exists.         |
-//+------------------------------------------------------------------+
-bool PushSignalRecord(datetime bt, bool isBuy, int hft, int ofs,
-                      double price, double barHigh, double barLow,
-                      const HFTComponents &diag, double spreadPts, double barVol)
-  {
-   // Deduplicate — same bar_time + same direction = already recorded
-   for(int i = 0; i < g_firedCount; i++)
-      if(g_firedSignals[i].bar_time == bt && g_firedSignals[i].is_buy == isBuy)
-         return false;
-
-   if(g_firedCount >= ArraySize(g_firedSignals))
-      ArrayResize(g_firedSignals, g_firedCount + 64, 64);
-
-   g_firedSignals[g_firedCount].bar_time    = bt;
-   g_firedSignals[g_firedCount].is_buy      = isBuy;
-   g_firedSignals[g_firedCount].hft_score   = hft;
-   g_firedSignals[g_firedCount].ofs_score   = ofs;
-   g_firedSignals[g_firedCount].price       = price;
-   g_firedSignals[g_firedCount].bar_high    = barHigh;
-   g_firedSignals[g_firedCount].bar_low     = barLow;
-   // Diagnostics
-   g_firedSignals[g_firedCount].regime      = diag.regime;
-   g_firedSignals[g_firedCount].bar_volume  = barVol;
-   g_firedSignals[g_firedCount].spread_pts  = spreadPts;
-   g_firedSignals[g_firedCount].comp_ofs    = diag.c1_ofs;
-   g_firedSignals[g_firedCount].comp_delta  = diag.c2_delta;
-   g_firedSignals[g_firedCount].comp_poc    = diag.c3_poc;
-   g_firedSignals[g_firedCount].comp_absorb = diag.c4_absorb;
-   g_firedSignals[g_firedCount].comp_exhaust= diag.c5_exhaust;
-   g_firedSignals[g_firedCount].comp_cvd    = diag.c6_cvd;
-   g_firedSignals[g_firedCount].comp_pocmig = diag.c7_pocmig;
-   g_firedCount++;
-   return true;
-  }
-
-//+------------------------------------------------------------------+
-//| SeedHistoricalSignals                                           |
-//| Silently walks all CLOSED bars (0..n-2) and seeds the fired-   |
-//| signal cache — NO Discord, NO sound, NO arrows.                |
-//| Uses identical scoring/gating logic as live EvalAndFireSignal  |
-//| so historical and live signals are fully consistent.           |
-//+------------------------------------------------------------------+
-void SeedHistoricalSignals()
-  {
-   g_firedCount       = 0;
-   g_lastSignalBar    = -9999;
-   g_lastSignalTime   = 0;
-   g_lastClosedBarTime = 0;
-
-   int n = ArraySize(g_bars);
-   // Only evaluate bars 0..(n-2): skip the live (last) bar
-   int lastClosed = n - 2;
-   if(lastClosed < 0) return;
-
-   int      lastSeeded     = -9999;
-   datetime lastSeededTime = 0;
-
-   for(int bi = 0; bi <= lastClosed; bi++)
-     {
-      if(g_bars[bi].level_count == 0 || g_bars[bi].total_vol == 0)
-         continue;
-      if(!g_bars[bi].sorted)
-         ComputeBarSignals(bi);
-
-      // ── Frequency gate ─────────────────────────────────────────
-      bool barsOk = (bi - lastSeeded >= g_signalFreqBars);
-      bool timeOk = (g_signalCooldownSecs <= 0 ||
-                     (g_bars[bi].bar_time - lastSeededTime) >= (datetime)g_signalCooldownSecs);
-      bool freqPass;
-      switch(g_signalFreqMode)
-        {
-         case SIG_FREQ_BARS: freqPass = barsOk;             break;
-         case SIG_FREQ_TIME: freqPass = timeOk;             break;
-         default:            freqPass = barsOk && timeOk;   break;  // BOTH
-        }
-      if(!freqPass) continue;
-
-      // ── Context filters ────────────────────────────────────────
-      double threshMult = 1.0;
-      if(!CheckContextFilters(bi, threshMult)) continue;
-
-      double effectiveThresh = (double)g_signalThreshold * threshMult;
-
-      // ── Score ──────────────────────────────────────────────────
-      double hftRaw = ComputeHFTSignal(bi);   // fills g_signalDiag
-      int    ofs    = ComputeOFScore(bi);
-      bool   isBuy  = (hftRaw >=  effectiveThresh);
-      bool   isSell = (hftRaw <= -effectiveThresh);
-      if(!isBuy && !isSell) continue;
-
-      int hftInt = (int)MathRound(isBuy ? hftRaw : -hftRaw);
-      int shift  = iBarShift(_Symbol, PERIOD_CURRENT, g_bars[bi].bar_time);
-      double px  = (shift >= 0) ? iClose(_Symbol, PERIOD_CURRENT, shift)
-                                : g_bars[bi].levels[MathMax(0, g_bars[bi].poc_idx)].price;
-
-      double spreadPts = 0.0;  // not available for historical bars
-      double barVol    = (double)g_bars[bi].total_vol;
-
-      PushSignalRecord(g_bars[bi].bar_time, isBuy, hftInt, ofs,
-                       px, g_bars[bi].high, g_bars[bi].low,
-                       g_signalDiag, spreadPts, barVol);
-
-      lastSeeded      = bi;
-      lastSeededTime  = g_bars[bi].bar_time;
-      g_lastSignalBar = bi;
-      g_lastSignalTime = g_bars[bi].bar_time;
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| EvalAndFireSignal — Closed-bar, non-repainting                 |
-//|                                                                  |
-//| TWO-STAGE DESIGN:                                               |
-//|   Stage 1 (intrabar)  — update g_intrabarHFTScore for display. |
-//|                          Never fires an alert.                  |
-//|   Stage 2 (bar close) — detect new bar open, evaluate the      |
-//|                          just-CLOSED bar, apply all filters,    |
-//|                          fire alert if score exceeds threshold. |
-//|                                                                  |
-//| Result: zero repainting — every signal on the chart corresponds |
-//| to a fully completed bar with the same logic as history seeding.|
-//+------------------------------------------------------------------+
-void EvalAndFireSignal()
-  {
-   if(!g_signalsEnabled) return;
-   int nBars = ArraySize(g_bars);
-   if(nBars < 2) return;
-
-   int    liveBi   = nBars - 1;               // current incomplete bar
-   int    closedBi = nBars - 2;               // most-recently completed bar
-
-   // ── Stage 1: Intrabar score (display only) ─────────────────────
-   if(g_bars[liveBi].level_count > 0 && g_bars[liveBi].total_vol > 0)
-     {
-      if(!g_bars[liveBi].sorted) ComputeBarSignals(liveBi);
-      g_intrabarHFTScore = ComputeHFTSignal(liveBi);
-     }
-   else
-      g_intrabarHFTScore = 0.0;
-
-   // ── Stage 2: Bar-close gate ─────────────────────────────────────
-   // Fires once per bar close: when a new bar has opened and we
-   // have not yet processed the bar that just closed.
-   datetime currentBarOpen = iTime(_Symbol, PERIOD_CURRENT, 0);
-   if(currentBarOpen == g_lastClosedBarTime) return;  // already evaluated this close
-
-   // Validate the closed bar has data
-   if(g_bars[closedBi].level_count == 0 || g_bars[closedBi].total_vol == 0)
-     {
-      g_lastClosedBarTime = currentBarOpen;  // mark processed even if empty
-      return;
-     }
-   if(!g_bars[closedBi].sorted) ComputeBarSignals(closedBi);
-
-   // Mark this bar-open as processed so we don't re-evaluate on next tick
-   g_lastClosedBarTime = currentBarOpen;
-
-   // ── Frequency gate ──────────────────────────────────────────────
-   bool barsOk = (closedBi - g_lastSignalBar >= g_signalFreqBars);
-   bool timeOk = (g_signalCooldownSecs <= 0 ||
-                  (TimeCurrent() - g_lastSignalTime) >= (datetime)g_signalCooldownSecs);
-   bool freqPass;
-   switch(g_signalFreqMode)
-     {
-      case SIG_FREQ_BARS: freqPass = barsOk;             break;
-      case SIG_FREQ_TIME: freqPass = timeOk;             break;
-      default:            freqPass = barsOk && timeOk;   break;  // BOTH
-     }
-   if(!freqPass) return;
-
-   // ── Context / antifragility filters ─────────────────────────────
-   double threshMult = 1.0;
-   if(!CheckContextFilters(closedBi, threshMult)) return;
-   double effectiveThresh = (double)g_signalThreshold * threshMult;
-
-   // ── Score (fills g_signalDiag) ───────────────────────────────────
-   double hftScore     = ComputeHFTSignal(closedBi);  // g_signalDiag written here
-   int    currentScore = ComputeOFScore(closedBi);
-
-   bool isBuySignal  = (hftScore >=  effectiveThresh);
-   bool isSellSignal = (hftScore <= -effectiveThresh);
-   if(!isBuySignal && !isSellSignal) return;
-
-   // ── Arm frequency gate ───────────────────────────────────────────
-   g_lastSignalBar  = closedBi;
-   g_lastSignalTime = TimeCurrent();
-
-   // ── Frozen snapshot — use bar CLOSE as representative price ──────
-   int    closedShift = iBarShift(_Symbol, PERIOD_CURRENT, g_bars[closedBi].bar_time);
-   double snapPrice   = (closedShift >= 0)
-                        ? iClose(_Symbol, PERIOD_CURRENT, closedShift)
-                        : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-   double spreadPts = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   double barVol    = (double)g_bars[closedBi].total_vol;
-
-   PushSignalRecord(g_bars[closedBi].bar_time,
-                    isBuySignal,
-                    (int)MathRound(isBuySignal ? hftScore : -hftScore),
-                    currentScore,
-                    snapPrice,
-                    g_bars[closedBi].high,
-                    g_bars[closedBi].low,
-                    g_signalDiag, spreadPts, barVol);
-
-   // ── Diagnostics print (always logged, regardless of Discord) ─────
-   Print(StringFormat(
-      "FP Signal [%s] %s  HFT:%.1f  OFS:%d  Regime:%s  Vol:%.0f  Spread:%.1f  "
-      "c1=%.2f c2=%.2f c3=%.2f c4=%.2f c5=%.2f c6=%.2f c7=%.2f",
-      TimeToString(g_bars[closedBi].bar_time, TIME_DATE|TIME_MINUTES),
-      isBuySignal ? "BUY" : "SELL",
-      hftScore, currentScore,
-      g_signalDiag.regime == 2 ? "HIGH" : (g_signalDiag.regime == 0 ? "LOW" : "NORMAL"),
-      barVol, spreadPts,
-      g_signalDiag.c1_ofs, g_signalDiag.c2_delta, g_signalDiag.c3_poc,
-      g_signalDiag.c4_absorb, g_signalDiag.c5_exhaust, g_signalDiag.c6_cvd, g_signalDiag.c7_pocmig));
-
-   // ── Sound ────────────────────────────────────────────────────────
-   if(isBuySignal)  PlaySound(InpSignalBuySound);
-   else             PlaySound(InpSignalSellSound);
-
-   // ── Discord ──────────────────────────────────────────────────────
-   SendDiscordAlert(isBuySignal, hftScore, currentScore);
-
-   // ── Chart arrow object (unique per bar_time) ──────────────────────
-   int    displayScore = (int)MathRound(isBuySignal ? hftScore : -hftScore);
-   string objName = StringFormat("FP_Sig_%s_%I64d",
-                                 isBuySignal ? "B" : "S",
-                                 (long)g_bars[closedBi].bar_time);
-   if(ObjectFind(g_chart, objName) < 0)
-     {
-      double arrowPrice = isBuySignal ? g_bars[closedBi].low  - g_step * 2.0
-                                      : g_bars[closedBi].high + g_step * 2.0;
-      if(ObjectCreate(g_chart, objName, OBJ_ARROW, 0,
-                      g_bars[closedBi].bar_time, arrowPrice))
-        {
-         ObjectSetInteger(g_chart, objName, OBJPROP_ARROWCODE,  108);
-         ObjectSetInteger(g_chart, objName, OBJPROP_COLOR,
-                          isBuySignal ? InpSignalBuyColor : InpSignalSellColor);
-         ObjectSetInteger(g_chart, objName, OBJPROP_WIDTH,      2);
-         ObjectSetInteger(g_chart, objName, OBJPROP_BACK,       false);
-         ObjectSetInteger(g_chart, objName, OBJPROP_SELECTABLE, false);
-         ObjectSetInteger(g_chart, objName, OBJPROP_SELECTED,   false);
-         ObjectSetInteger(g_chart, objName, OBJPROP_HIDDEN,     false);
-         ObjectSetString( g_chart, objName, OBJPROP_TOOLTIP,
-                          StringFormat("%s SIGNAL | %s (%s)\nHFT:%d OFS:%d Regime:%s\n"
-                                       "Price:%s Spread:%.1fpts Vol:%.0f\n"
-                                       "c1=%.2f c2=%.2f c3=%.2f c4=%.2f\nc5=%.2f c6=%.2f c7=%.2f\n%s",
-                                       isBuySignal ? "BUY" : "SELL", _Symbol,
-                                       EnumToString(Period()),
-                                       displayScore, currentScore,
-                                       g_signalDiag.regime==2?"HIGH":(g_signalDiag.regime==0?"LOW":"NORM"),
-                                       DoubleToString(snapPrice, _Digits), spreadPts, barVol,
-                                       g_signalDiag.c1_ofs, g_signalDiag.c2_delta, g_signalDiag.c3_poc, g_signalDiag.c4_absorb,
-                                       g_signalDiag.c5_exhaust, g_signalDiag.c6_cvd, g_signalDiag.c7_pocmig,
-                                       TimeToString(g_bars[closedBi].bar_time,
-                                                    TIME_DATE|TIME_MINUTES)));
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
-//| DrawSignalMarkersPass                                           |
-//| Renders frozen signal cards from g_firedSignals[] cache.        |
-//|                                                                  |
-//| Production rules:                                               |
-//|  • Never calls ComputeHFTSignal / ComputeOFScore (cache only)   |
-//|  • Fixed 188px card width — never bar-width dependent           |
-//|  • No ShortToString glyphs — all plain ASCII for glyph safety   |
-//|  • Caps visible cards at FP_MAX_VISIBLE_CARDS (most recent)     |
-//|  • Two-phase: collect positions → resolve Y overlaps → draw     |
-//+------------------------------------------------------------------+
-void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
-  {
-   if(!g_signalsEnabled || g_firedCount == 0)
-      return;
-
-   int cw = canvas.Width();
-   int ch = canvas.Height();
-
-   // ── PHASE 1: Collect visible signals (newest first, cap at FP_MAX_VISIBLE_CARDS) ──
-   // Walk g_firedSignals newest→oldest; stop once we have enough candidates.
-   // "Visible" means the bar's shift is inside the current window.
-
-   static CardPlacement placements[];
-   int  nPlaced = 0;
-   ArrayResize(placements, FP_MAX_VISIBLE_CARDS);
-
-   int ballRBase = MathMax(InpSigBallMinRadius, InpSigBallRadius);
-   int stemGap   = 4;
-
-   for(int fi = g_firedCount - 1; fi >= 0 && nPlaced < FP_MAX_VISIBLE_CARDS; fi--)
-     {
-      SignalRecord sig = g_firedSignals[fi];
-
-      int shift = iBarShift(_Symbol, PERIOD_CURRENT, sig.bar_time);
-      if(shift < 0) continue;
-      if(shift > firstVis || shift < firstVis - visBars + 1) continue;
-
-      int bi = FindBarIndex(sig.bar_time);
-      if(bi < 0) continue;
-      if(g_bars[bi].level_count == 0) continue;
-
-      // Screen coords
-      int wx, wy_h, wy_l, tmpX, tmpY;
-      ChartTimePriceToXY(g_chart, g_sub, sig.bar_time, sig.bar_high, wx, wy_h);
-      ChartTimePriceToXY(g_chart, g_sub, sig.bar_time, sig.bar_low,  tmpX, wy_l);
-      ChartTimePriceToXY(g_chart, g_sub, sig.bar_time,
-                         g_bars[bi].levels[0].price, tmpX, tmpY);
-
-      int halfW  = MathMax((int)(barW * 0.45), 14);
-      int barCX  = tmpX;
-      int barTop = MathMin(wy_h, wy_l);
-      int barBot = MathMax(wy_h, wy_l);
-
-      // Card X: centred on bar, clamped to canvas
-      int cx1 = barCX - FP_CARD_W / 2;
-      int cx2 = cx1   + FP_CARD_W;
-      if(cx1 < 2)      { cx1 = 2;      cx2 = cx1 + FP_CARD_W; }
-      if(cx2 > cw - 2) { cx2 = cw - 2; cx1 = cx2 - FP_CARD_W; }
-
-      // Card Y: start from preferred position (above bar for SELL, below for BUY)
-      int cy1, cy2;
-      if(sig.is_buy)
-        {
-         cy1 = barBot + ballRBase * 2 + stemGap * 2 + 2;
-         cy2 = cy1 + FP_CARD_H;
-        }
-      else
-        {
-         cy2 = barTop - ballRBase * 2 - stemGap * 2 - 2;
-         cy1 = cy2 - FP_CARD_H;
-        }
-
-      // Screen boundary clamp
-      if(cy1 < 2)      { cy1 = 2;      cy2 = cy1 + FP_CARD_H; }
-      if(cy2 > ch - 2) { cy2 = ch - 2; cy1 = cy2 - FP_CARD_H; }
-
-      placements[nPlaced].fi      = fi;
-      placements[nPlaced].barCX   = barCX;
-      placements[nPlaced].x1      = barCX - halfW;
-      placements[nPlaced].x2      = barCX + halfW;
-      placements[nPlaced].barTop  = barTop;
-      placements[nPlaced].barBot  = barBot;
-      placements[nPlaced].cardX1  = cx1;
-      placements[nPlaced].cardX2  = cx2;
-      placements[nPlaced].cardY1  = cy1;
-      placements[nPlaced].cardY2  = cy2;
-      placements[nPlaced].ballR   = ballRBase;
-      nPlaced++;
-     }
-
-   if(nPlaced == 0) return;
-
-   // ── PHASE 2: Resolve Y overlaps (simple greedy push) ──────────────
-   // For each card, if it overlaps a previously committed card in the
-   // same horizontal band, push it further away from the bar by the
-   // overlap amount. Two passes ensure cascading pushes propagate.
-   for(int pass = 0; pass < 2; pass++)
-     {
-      for(int i = 0; i < nPlaced; i++)
-        {
-         bool isBuyI = g_firedSignals[placements[i].fi].is_buy;
-         for(int j = 0; j < i; j++)
-           {
-            // Horizontal overlap check — only resolve if cards share X space
-            bool xOverlap = (placements[i].cardX1 < placements[j].cardX2 + 4 &&
-                             placements[i].cardX2 > placements[j].cardX1 - 4);
-            if(!xOverlap) continue;
-
-            // Vertical overlap check
-            bool yOverlap = (placements[i].cardY1 < placements[j].cardY2 + 2 &&
-                             placements[i].cardY2 > placements[j].cardY1 - 2);
-            if(!yOverlap) continue;
-
-            // Compute push amount to clear the overlap
-            int push = (placements[j].cardY2 + 4) - placements[i].cardY1;
-            if(push <= 0) push = FP_CARD_H + 4;
-
-            if(isBuyI)
-              {  // BUY cards sit below bars — push further down
-               placements[i].cardY1 += push;
-               placements[i].cardY2 += push;
-               // Re-clamp bottom
-               if(placements[i].cardY2 > ch - 2)
-                 {
-                  placements[i].cardY2 = ch - 2;
-                  placements[i].cardY1 = placements[i].cardY2 - FP_CARD_H;
-                 }
-              }
-            else
-              {  // SELL cards sit above bars — push further up
-               placements[i].cardY1 -= push;
-               placements[i].cardY2 -= push;
-               // Re-clamp top
-               if(placements[i].cardY1 < 2)
-                 {
-                  placements[i].cardY1 = 2;
-                  placements[i].cardY2 = placements[i].cardY1 + FP_CARD_H;
-                 }
-              }
-           }
-        }
-     }
-
-   // ── PHASE 3: Draw ──────────────────────────────────────────────────
-   // Draw in reverse order so oldest signals (furthest left) paint first
-   // and newest signals paint on top.
-   for(int i = nPlaced - 1; i >= 0; i--)
-     {
-      SignalRecord sig = g_firedSignals[placements[i].fi];
-      bool  isBuy     = sig.is_buy;
-
-      int barCX  = placements[i].barCX;
-      int x1     = placements[i].x1;
-      int x2     = placements[i].x2;
-      int barTop = placements[i].barTop;
-      int barBot = placements[i].barBot;
-      int cardX1 = placements[i].cardX1;
-      int cardX2 = placements[i].cardX2;
-      int cardY1 = placements[i].cardY1;
-      int cardY2 = placements[i].cardY2;
-      int ballR  = placements[i].ballR;
-
-      // Ball Y: between bar and card (after final card position is known)
-      int ballY;
-      if(isBuy)
-         ballY = barBot + ballR + stemGap;
-      else
-         ballY = barTop - ballR - stemGap;
-      // Clamp ball between bar and card so it never falls outside canvas
-      ballY = MathMax(ballR + 1, MathMin(ch - ballR - 1, ballY));
-
-      //--- Colours ---
-      color sigColor = isBuy ? InpSignalBuyColor : InpSignalSellColor;
-      color bgDark   = isBuy ? C'3,20,10'        : C'20,3,8';
-      color bgHeader = isBuy ? C'4,34,16'        : C'34,4,12';
-      uint  cBdr     = FpARGB(sigColor, 255);
-      uint  cGlow1   = FpARGB(sigColor,  80);
-      uint  cGlow2   = FpARGB(sigColor,  28);
-      uint  cBgDark  = FpARGB(bgDark,  245);
-      uint  cBgHdr   = FpARGB(bgHeader, 245);
-      uint  cWhite   = FpARGB(clrWhite, 240);
-      uint  cDim     = FpARGB(C'140,140,158', 210);
-      uint  cShadow  = FpARGB(clrBlack, 190);
-      uint  cSep     = FpARGB(sigColor, 110);
-      uint  cAccent  = FpARGB(sigColor, 210);
-      uint  cScoreV  = FpARGB(isBuy ? C'70,245,140' : C'245,90,100', 255);
-
-      //--- Card text — pure ASCII, no ShortToString glyphs ---
-      string dirStr   = isBuy ? "BUY SIGNAL" : "SELL SIGNAL";
-      string tfStr    = EnumToString(Period());
-      StringReplace(tfStr, "PERIOD_", "");
-      string priceStr = DoubleToString(sig.price, _Digits);
-      string timeStr  = TimeToString(sig.bar_time, TIME_MINUTES);
-
-      string rowHeader = dirStr;
-      string rowScores = StringFormat("HFT:%d  OFS:%d", sig.hft_score, sig.ofs_score);
-      string rowPrice  = "Price: " + priceStr;
-      string rowFooter = _Symbol + "  " + tfStr + "  " + timeStr;
-
-      // ── Bar frame (triple glow) ──
-      canvas.Rectangle(x1 - 3, barTop - 3, x2 + 3, barBot + 3, cGlow2);
-      canvas.Rectangle(x1 - 2, barTop - 2, x2 + 2, barBot + 2, cGlow1);
-      canvas.Rectangle(x1 - 1, barTop - 1, x2 + 1, barBot + 1, cBdr);
-      canvas.Rectangle(x1,     barTop,     x2,     barBot,     cBdr);
-
-      // ── Stem: bar → card ──
-      int stemY1 = isBuy ? barBot : cardY2;
-      int stemY2 = isBuy ? cardY1 : barTop;
-      if(stemY1 > stemY2) { int t = stemY1; stemY1 = stemY2; stemY2 = t; }
-      canvas.LineVertical(barCX, stemY1, stemY2, FpARGB(sigColor, 85));
-
-      // ── Ring ball ──
-      DrawRings(barCX, ballY, ballR, sigColor, 230);
-
-      // ── Card outer glow ──
-      canvas.Rectangle(cardX1 - 2, cardY1 - 2, cardX2 + 2, cardY2 + 2, cGlow2);
-      canvas.Rectangle(cardX1 - 1, cardY1 - 1, cardX2 + 1, cardY2 + 1, cGlow1);
-
-      // ── Card fill ──
-      canvas.FillRectangle(cardX1, cardY1, cardX2, cardY2, cBgDark);
-
-      // ── Header band ──
-      int hdrY2 = cardY1 + FP_CARD_PAD_Y + FP_CARD_HDR_H + FP_CARD_PAD_Y / 2;
-      canvas.FillRectangle(cardX1, cardY1, cardX2, hdrY2, cBgHdr);
-
-      // ── Left accent stripe ──
-      canvas.FillRectangle(cardX1, cardY1, cardX1 + 3, cardY2, cAccent);
-
-      // ── Card border ──
-      canvas.Rectangle(cardX1, cardY1, cardX2, cardY2, cBdr);
-
-      // ── Separator ──
-      canvas.LineHorizontal(cardX1 + 4, cardX2 - 1, hdrY2, cSep);
-
-      int tX = cardX1 + FP_CARD_PAD_X + 4;   // left text origin (clears accent + padding)
-
-      // ── Header: direction label ──
-      canvas.FontSet("Consolas", 11, FW_BOLD);
-      int tY = cardY1 + FP_CARD_PAD_Y;
-      canvas.TextOut(tX + 1, tY + 1, rowHeader, cShadow,            TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     tY,     rowHeader, FpARGB(sigColor,255),TA_LEFT | TA_TOP);
-
-      // ── Scores row ──
-      canvas.FontSet("Consolas", 10, FW_BOLD);
-      int r2Y = hdrY2 + 3;
-      canvas.TextOut(tX + 1, r2Y + 1, rowScores, cShadow, TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     r2Y,     rowScores, cScoreV, TA_LEFT | TA_TOP);
-
-      // ── Price row ──
-      canvas.FontSet("Consolas", 10, FW_NORMAL);
-      int r3Y = r2Y + FP_CARD_ROW_H;
-      canvas.TextOut(tX + 1, r3Y + 1, rowPrice, cShadow, TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     r3Y,     rowPrice, cWhite,  TA_LEFT | TA_TOP);
-
-      // ── Footer: Symbol  TF  Time ──
-      canvas.FontSet("Consolas", 9, FW_NORMAL);
-      int r4Y = r3Y + FP_CARD_ROW_H;
-      canvas.TextOut(tX + 1, r4Y + 1, rowFooter, cShadow, TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     r4Y,     rowFooter, cDim,    TA_LEFT | TA_TOP);
-     }
-  }
-
-//+------------------------------------------------------------------+
 //| Draw visible footprint bars                                      |
 //+------------------------------------------------------------------+
 void DrawVisibleBars(int visBars, int firstVis, int barW)
@@ -3380,13 +2195,6 @@ void Render()
       if(g_bars[i].is_delta_divergence) divCount++;
 
    canvas.FontSet("Consolas", 9, FW_NORMAL);
-   string regimeStr = "NORM";
-   if(nBars > 1)
-     {
-      int reg = ClassifyVolatilityRegime(nBars - 1, 20);
-      regimeStr = (reg == 2) ? "HIGH" : (reg == 0 ? "LOW" : "NORM");
-     }
-   string intraStr = StringFormat("%.0f", g_intrabarHFTScore);
    string header =
       "Mode: " + modeStr +
       "  Vol: " + IntegerToString(totalVol) +
@@ -3400,18 +2208,12 @@ void Render()
       "  VA: " + DoubleToString(GetEffectiveVAPercent(), 0) + "%" +
       "  Opa: " + IntegerToString((g_opacity * 100) / 255) + "%" +
       "  Bars: " + IntegerToString(nBars) +
-      "  Div: " + IntegerToString(divCount) +
-      "  Regime:" + regimeStr +
-      "  LiveHFT:" + intraStr;
+      "  Div: " + IntegerToString(divCount);
 
    canvas.TextOut(5, 5, header, FpARGB(C'160,160,170', 180), TA_LEFT | TA_TOP);
 
    LayoutPanel(cw, ch);
    DrawPanel();
-
-   // ── Signal dispatch runs unconditionally — fires regardless of
-   //    g_visible or g_profileOnly state.
-   EvalAndFireSignal();
 
    if(!g_visible)
      {
@@ -3424,16 +2226,13 @@ void Render()
    if(!g_profileOnly)
       DrawVisibleBars(visBars, firstVis, barW);
 
-   // Signal markers are drawn AFTER footprint cells (so they appear on top)
-   // and unconditionally w.r.t. g_profileOnly — they show even in profile-only mode.
-   if(g_signalsEnabled)
-      DrawSignalMarkersPass(visBars, firstVis, barW);
-
    // Cumulative Delta Profile — drawn over bars, right of canvas
    if(InpShowCumDeltaProf)
      {
       int profW = InpCumDeltaProfW;
       int profX = cw - profW - FP_PANEL_MARGIN;
+      // Shift the panel leftward so they don't overlap
+      // (LayoutPanel already ran; we just avoid the profile overlapping the bottom panel)
       DrawCumDeltaProfile(cw, ch, profX, profW);
      }
 
@@ -3505,26 +2304,8 @@ int OnInit()
    g_histBars     = MathMax(FP_HIST_MIN, MathMin(FP_HIST_MAX, InpHistoryBars));
    // Seed runtime VA% so the button shows the correct value on load
    g_vaPercent    = (double)InpVAPercent;
-   // Seed signal runtime state
-   g_signalsEnabled    = InpShowSignals;
-   g_signalFreqMode    = InpSignalFreqMode;
-   g_signalFreqBars    = MathMax(1, InpSignalFreqBars);
-   g_signalCooldownSecs = MathMax(0, InpSignalCooldownSecs);
-   g_signalThreshold   = MathMax(1, MathMin(99, InpSignalThreshold));
-   g_lastSignalBar     = -9999;
-   g_lastSignalTime    = 0;
-   g_lastClosedBarTime = 0;
-   g_intrabarHFTScore  = 0.0;
-
-   // Validate Discord webhook if enabled
-   if(InpDiscordEnable && StringLen(InpDiscordWebhook) < 10)
-      Print("Footprint EA — Discord enabled but no valid webhook URL provided. Notifications suppressed.");
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
-
-   // Make all object names unique per chart instance so multiple EA copies
-   // on different charts never share or overwrite each other's objects.
-   g_name = "FP_Canvas_" + IntegerToString(g_chart);
 
    // Enable mouse-move events for panel hover states
    ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
@@ -3577,62 +2358,6 @@ int OnInit()
       Print("Footprint: Warning — could not create history input box (", GetLastError(), ").");
      }
 
-   // Create signal-frequency OBJ_EDIT — inline numeric input (min bars between alerts)
-   ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
-   if(ObjectCreate(g_chart, FP_SIG_FREQ_EDIT, OBJ_EDIT, 0, 0, 0))
-     {
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BACK,         false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_ZORDER,       10);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_SELECTABLE,   false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_SELECTED,     false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_READONLY,     false);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_COLOR,        C'220,220,230');
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_BORDER_COLOR, C'60,160,100');
-      ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_FONTSIZE,     9);
-      ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_FONT,         "Consolas");
-      ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalFreqBars));
-      ObjectSetString( g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TOOLTIP,      "Min bars between signals — press Enter to apply (see InpSignalFreqMode for gating mode)");
-     }
-   else
-     {
-      Print("Footprint: Warning — could not create signal-frequency input box (", GetLastError(), ").");
-     }
-
-   // Create signal-threshold OBJ_EDIT — inline numeric input (HFT signal score threshold)
-   ObjectDelete(g_chart, FP_SIG_THRESH_EDIT);
-   if(ObjectCreate(g_chart, FP_SIG_THRESH_EDIT, OBJ_EDIT, 0, 0, 0))
-     {
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YDISTANCE,    0);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_BACK,         false);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_ZORDER,       10);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_SELECTABLE,   false);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_SELECTED,     false);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_READONLY,     false);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_COLOR,        C'220,220,230');
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_BORDER_COLOR, C'255,160,40');  // amber — matches signal theme
-      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_FONTSIZE,     9);
-      ObjectSetString( g_chart, FP_SIG_THRESH_EDIT, OBJPROP_FONT,         "Consolas");
-      ObjectSetString( g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalThreshold));
-      ObjectSetString( g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TOOLTIP,      "HFT signal score threshold (1-99) — press Enter to apply");
-     }
-   else
-     {
-      Print("Footprint: Warning — could not create signal-threshold input box (", GetLastError(), ").");
-     }
-
    ReloadHistory();
 
    return INIT_SUCCEEDED;
@@ -3644,18 +2369,6 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    ObjectDelete(g_chart, FP_HIST_EDIT);
-   ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
-   ObjectDelete(g_chart, FP_SIG_THRESH_EDIT);
-
-   // Remove all signal arrow objects placed on the chart
-   int total = ObjectsTotal(g_chart, 0, OBJ_ARROW);
-   for(int i = total - 1; i >= 0; i--)
-     {
-      string nm = ObjectName(g_chart, i, 0, OBJ_ARROW);
-      if(StringFind(nm, "FP_Sig_") == 0)
-         ObjectDelete(g_chart, nm);
-     }
-
    canvas.Destroy();
    ObjectDelete(g_chart, g_name);
    
@@ -3675,20 +2388,31 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
-//| OnTick — EA equivalent of OnCalculate                           |
-//| Fires on every new price tick from the broker.                  |
+//| OnCalculate                                                      |
 //+------------------------------------------------------------------+
-void OnTick()
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double   &open[],
+                const double   &high[],
+                const double   &low[],
+                const double   &close[],
+                const long     &tick_volume[],
+                const long     &volume[],
+                const int      &spread[])
   {
-   // Full reload when bars array is empty (first run or after param change)
-   if(ArraySize(g_bars) == 0)
+   if(rates_total == 0)
+      return 0;
+
+   // Handle timeframe change or full reset
+   if(prev_calculated == 0 || rates_total < prev_calculated || ArraySize(g_bars) == 0)
      {
       ReloadHistory();
-      if(!g_dirty)
-         return;
+      if(!g_dirty) // History load failed, try again later
+         return 0;
      }
 
-   // Deferred reload: panel buttons set this flag, heavy work executes here
+   // Deferred reload: buttons set flag, heavy work executes here
    if(g_needs_reload)
      {
       g_needs_reload = false;
@@ -3702,8 +2426,11 @@ void OnTick()
 
    if(from_msc == 0)
      {
-      long lookback = 60000; // 1-minute safe window on first live tick
-      from_msc = (now_msc > lookback) ? now_msc - lookback : now_msc;
+      long lookback = 60000; // 1 minute safe window
+      if(now_msc > lookback)
+         from_msc = now_msc - lookback;
+      else
+         from_msc = now_msc;
      }
 
    int copied = CopyTicksRange(_Symbol, ticks, flag, from_msc, now_msc);
@@ -3716,6 +2443,7 @@ void OnTick()
 
    if(g_dirty)
       ThrottledRender();
+   return rates_total;
   }
 
 //+------------------------------------------------------------------+
@@ -3735,34 +2463,6 @@ void OnChartEvent(const int id, const long &lparam,
       ObjectSetString(g_chart, FP_HIST_EDIT, OBJPROP_TEXT, IntegerToString(g_histBars));
       g_needs_reload = true;
       g_dirty        = true;
-      Render();
-      return;
-     }
-
-   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_SIG_FREQ_EDIT)
-     {
-      // User finished editing the signal-frequency input — parse, clamp, apply
-      string rawF  = ObjectGetString(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT);
-      int    freqV = (int)StringToInteger(rawF);
-      freqV        = MathMax(1, MathMin(500, freqV));
-      g_signalFreqBars = freqV;
-      ObjectSetString(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT, IntegerToString(g_signalFreqBars));
-      SeedHistoricalSignals();  // rebuild cache with new frequency spacing
-      g_dirty = true;
-      Render();
-      return;
-     }
-
-   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_SIG_THRESH_EDIT)
-     {
-      // User finished editing the signal-threshold input — parse, clamp, apply
-      string rawT   = ObjectGetString(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT);
-      int    thrV   = (int)StringToInteger(rawT);
-      thrV          = MathMax(1, MathMin(99, thrV));
-      g_signalThreshold = thrV;
-      ObjectSetString(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT, IntegerToString(g_signalThreshold));
-      SeedHistoricalSignals();  // rebuild cache with new threshold
-      g_dirty = true;
       Render();
       return;
      }
@@ -3954,16 +2654,6 @@ void OnChartEvent(const int id, const long &lparam,
         {
          g_profileOnly = !g_profileOnly;
          g_dirty       = true;
-         Render();
-        }
-      // Signals toggle: enable / disable trading signal diamonds and alerts
-      else if(HitTest(mx, my, g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2))
-        {
-         g_signalsEnabled = !g_signalsEnabled;
-         g_lastSignalBar  = -9999; // reset frequency gate on toggle
-         g_lastSignalTime = 0;
-         g_lastClosedBarTime = 0;
-         g_dirty          = true;
          Render();
         }
      }
