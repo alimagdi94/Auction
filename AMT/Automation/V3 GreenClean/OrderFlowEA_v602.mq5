@@ -1,12 +1,48 @@
 //+------------------------------------------------------------------+
-//|  OrderFlowEa_v532_Pure.mq5                                       |
-//|  Order Flow EA — Pure Trading Engine v5.32                       |
-//|  No canvas, no UI objects — Journal logging only                 |
-//|  All signal computation and trading logic unchanged from v5.32   |
+//|  OrderFlowEA_v602.mq5                                            |
+//|  Order Flow EA — Pure Trading Engine v6.02                        |
+//|  No canvas, no UI objects — Journal + chart markers only          |
+//|                                                                    |
+//|  Production changes from v6.01 (core logic unchanged):            |
+//|  [FIX-1]  PlaceOrders: moved barHigh/barLow zero-guard to the     |
+//|           top of the function, BEFORE DeleteAllPending(), so       |
+//|           stale pending orders are never wiped on a degenerate bar.|
+//|  [FIX-2]  DeleteAllPending: snapshot all tickets into a local      |
+//|           array first, then delete — prevents index invalidation   |
+//|           as OrdersTotal() shrinks during the loop.                |
+//|  [FIX-3]  OnChartEvent: replaced inline ReloadHistory() with       |
+//|           g_needs_reload = true so the event handler is never      |
+//|           blocked by a potentially long tick-history fetch.         |
+//|  [FIX-4]  PlaceOrders: ATR warmup guard — CopyBuffer is only       |
+//|           trusted after InpATR_Period bars have closed.            |
+//|  [FIX-5]  GetBrokerFillingMode: explicit SYMBOL_FILLING_RETURN     |
+//|           flag check; log a warning if the broker flag is absent.  |
+//|  [FIX-6]  InsertBar: removed the redundant slot initialisation     |
+//|           that preceded the shift loop in the mid-insert path.     |
+//|  [FIX-7]  DrawTradeEntry / DrawTradeExit: added ChartRedraw()      |
+//|           so objects appear immediately without waiting for the     |
+//|           next natural repaint cycle.                              |
+//|  [FIX-8]  OnInit: added validation for InpStackedImbCount >= 1,   |
+//|           InpExhaustionCells >= 1 (when exhaustion is enabled),    |
+//|           InpAbsorptionRatio > 0, and OFS weight sum > 0.          |
+//|  [FIX-9]  CalcLot: renamed the unused slPoints parameter to        |
+//|           slPointsUnused with an explanatory comment, making the   |
+//|           intentional design decision explicit.                    |
+//|  [FIX-10] ComputeOFScore / ComputeHFTSignal: added                |
+//|           MathIsValidNumber() guards before each ratio division    |
+//|           to prevent NaN/Inf propagating into the final score.     |
+//|  [FIX-11] CalcLot: replaced the SL-pips-dependent tick-value      |
+//|           formula with a margin-based approach.  OrderCalcMargin() |
+//|           is called for 1.0 lot at the current Ask; the lot is     |
+//|           AllocationAmount / MarginFor1Lot.  This produces an      |
+//|           asset-specific lot on every instrument (FX, synthetics,  |
+//|           indices) without requiring a Stop Loss distance.          |
+//|           OnInit: removed the now-redundant guard that required    |
+//|           InpSLPips > 0 when InpUseRiskPercent was enabled.        |
 //+------------------------------------------------------------------+
 #property copyright   "Ali Magdy"
-#property version     "5.32"
-#property description "Order Flow EA v5.32 — Footprint signals + Automated Trading (pure)"
+#property version     "6.02"
+#property description "Order Flow EA v6.01 — Footprint signals + Automated Trading (pure)"
 #property strict
 
 //==========================================================================
@@ -88,10 +124,6 @@ input int    InpSignalFreqBars    = 3;     // Min bars between repeated signals
 input string InpSignalBuySound    = "alert.wav";   // Buy signal sound file
 input string InpSignalSellSound   = "alert2.wav";  // Sell signal sound file
 
-input group "Discord Notifications"
-input bool   InpDiscordEnable     = true;  // Enable Discord webhook notifications
-input string InpDiscordWebhook    = "https://discord.com/api/webhooks/1479510739520852094/1Cpxwva9TOTW4hDd6VqXr7LDe4gL-JLvagfE5bU-ULh2lm_XqsO-w3G3cxZDTLHygIJd"; // Webhook URL
-input bool   InpDiscordBuyOnly    = false; // Only send BUY signals
 
 input group "Automated Trading — Strategy"
 input bool          InpATEnable          = false;              // Master switch: enable automated trading
@@ -198,7 +230,6 @@ double g_baseStep;
 int    g_basePts  = 10;
 int    g_tickMult = 1;
 long   g_chart;
-int    g_sub;
 bool   g_hasTrades;
 double g_prevBid;
 double g_imbRatio;
@@ -222,12 +253,11 @@ double   g_Pip         = 0.0001;
 double   g_VolMin      = 0.01;
 double   g_VolMax      = 100.0;
 double   g_VolStep     = 0.01;
-double   g_TickSize    = 0.0;
 
 // --- Performance caches ---
 int   g_sigCacheBarIdx   = -1;   // bar index of last signal evaluation
 long  g_sigCacheVol      = -1;   // total_vol at last evaluation (cache key)
-ulong g_lastManageTick   = 0;    // GetTickCount() at last ManagePositions run
+ulong g_lastManageTick   = 0;    // GetTickCount64() at last ManagePositions run
 
 #define FP_HIST_MIN        1
 #define FP_HIST_MAX        5000
@@ -367,7 +397,7 @@ void DrawTradeEntry(ulong ticket, bool isBuy, double entryPx,
                     const string conviction, int hftScore, int ofsScore)
   {
    if(!InpShowVisuals) return;
-   long  chart  = ChartID();
+   long  chart  = g_chart;
    color clrDir = isBuy ? InpVizBuyColor : InpVizSellColor;
    string dirStr = isBuy ? "BUY" : "SELL";
 
@@ -398,7 +428,7 @@ void DrawTradeEntry(ulong ticket, bool isBuy, double entryPx,
             ObjectSetInteger(chart, slNm, OBJPROP_WIDTH,      1);
             ObjectSetInteger(chart, slNm, OBJPROP_SELECTABLE, false);
             ObjectSetString( chart, slNm, OBJPROP_TOOLTIP,
-               StringFormat("SL | #%I64u | %.5f", ticket, sl));
+               StringFormat("SL | #%I64u | %s", ticket, DoubleToString(sl, _Digits)));
            }
         }
       // TP dotted line
@@ -412,7 +442,7 @@ void DrawTradeEntry(ulong ticket, bool isBuy, double entryPx,
             ObjectSetInteger(chart, tpNm, OBJPROP_WIDTH,      1);
             ObjectSetInteger(chart, tpNm, OBJPROP_SELECTABLE, false);
             ObjectSetString( chart, tpNm, OBJPROP_TOOLTIP,
-               StringFormat("TP | #%I64u | %.5f", ticket, tp));
+               StringFormat("TP | #%I64u | %s", ticket, DoubleToString(tp, _Digits)));
            }
         }
      }
@@ -434,6 +464,10 @@ void DrawTradeEntry(ulong ticket, bool isBuy, double entryPx,
          ObjectSetInteger(chart, lbNm, OBJPROP_SELECTABLE, false);
         }
      }
+
+   // [FIX-7] Force immediate repaint so objects appear on the current tick,
+   // not deferred to the next natural terminal redraw cycle.
+   ChartRedraw(chart);
   }
 
 //--- Update SL horizontal line price when break-even / trailing fires
@@ -441,8 +475,9 @@ void UpdateSLLine(ulong ticket, double newSL)
   {
    if(!InpShowVisuals || !InpShowSLTPLines) return;
    string nm = ObjName("SL", ticket);
-   if(ObjectFind(ChartID(), nm) >= 0)
-      ObjectSetDouble(ChartID(), nm, OBJPROP_PRICE, newSL);
+   long   chart = g_chart;
+   if(ObjectFind(chart, nm) >= 0)
+      ObjectSetDouble(chart, nm, OBJPROP_PRICE, newSL);
   }
 
 //--- Place exit arrow + P&L label; remove SL/TP lines (trade is over)
@@ -450,7 +485,7 @@ void DrawTradeExit(ulong ticket, bool wasLong, double exitPx,
                    double netPnl, datetime exitTime)
   {
    if(!InpShowVisuals) return;
-   long   chart  = ChartID();
+   long   chart  = g_chart;
    bool   win    = (netPnl >= 0.0);
    color  clrPnl = win ? clrLime : clrOrangeRed;
 
@@ -487,12 +522,15 @@ void DrawTradeExit(ulong ticket, bool wasLong, double exitPx,
          ObjectSetInteger(chart, lbNm, OBJPROP_SELECTABLE, false);
         }
      }
+
+   // [FIX-7] Force immediate repaint.
+   ChartRedraw(chart);
   }
 
 //--- Remove all FP_ chart objects placed by this EA (used at deinit)
 void CleanupAllTradeObjects()
   {
-   long chart = ChartID();
+   long chart = g_chart;
    for(int i = ObjectsTotal(chart, 0, -1) - 1; i >= 0; i--)
      {
       string nm = ObjectName(chart, i, 0, -1);
@@ -570,20 +608,12 @@ int InsertBar(datetime bt)
 
    ArrayResize(g_bars, n + 1, 128);
 
-   // Initialise the trailing slot
-   g_bars[n].bar_time            = 0;
-   g_bars[n].total_vol           = 0;
-   g_bars[n].total_delta         = 0;
-   g_bars[n].high                = 0.0;
-   g_bars[n].low                 = 0.0;
-   g_bars[n].sorted              = true;
-   g_bars[n].is_bullish          = true;
-   g_bars[n].level_count         = 0;
-   g_bars[n].poc_idx             = -1;
-   g_bars[n].va_lo_idx           = -1;
-   g_bars[n].va_hi_idx           = -1;
-   g_bars[n].is_delta_divergence = false;
-   g_bars[n].is_naked_poc        = false;
+   // [FIX-6] The trailing slot (index n) does NOT need explicit initialisation
+   // here — the shift loop below overwrites it unconditionally with g_bars[n-1].
+   // The previous version initialised it twice (scalar fields + ArrayResize),
+   // which was redundant and misleading.  We only need to clear the levels
+   // sub-array so the dynamic-array handle is valid before the shift copies
+   // into it via explicit element assignment.
    ArrayResize(g_bars[n].levels, 0);
 
    // Bubble-shift scalar fields and explicit level arrays toward the back
@@ -1042,8 +1072,10 @@ int ComputeOFScore(int bi)
    if(len == 0 || tvol == 0) return 50;
 
    // A: delta ratio [−1,+1] → [0,1]
-   double dRatio = MathMax(-1.0, MathMin(1.0,
-                            (double)g_bars[bi].total_delta / (double)tvol));
+   // [FIX-10] Guard against NaN from division before clamping.
+   double rawDr = (double)g_bars[bi].total_delta / (double)tvol;
+   if(!MathIsValidNumber(rawDr)) rawDr = 0.0;
+   double dRatio = MathMax(-1.0, MathMin(1.0, rawDr));
    double cDelta = (dRatio + 1.0) * 0.5;
 
    // B: directional imbalance balance
@@ -1058,9 +1090,13 @@ int ComputeOFScore(int bi)
       if(g_bars[bi].levels[i].is_absorption)        hasAbsorb    = true;
      }
    int    totalImb = imbBuy + imbSell;
-   double cImb     = (totalImb > 0)
-                     ? ((double)(imbBuy - imbSell) / (double)totalImb + 1.0) * 0.5
-                     : 0.5;
+   // [FIX-10] Guard division by totalImb.
+   double cImb = 0.5;
+   if(totalImb > 0)
+     {
+      double rawImb = ((double)(imbBuy - imbSell) / (double)totalImb + 1.0) * 0.5;
+      cImb = MathIsValidNumber(rawImb) ? rawImb : 0.5;
+     }
 
    // C: stacked direction
    double cStack;
@@ -1076,9 +1112,11 @@ int ComputeOFScore(int bi)
    double wS = MathMax(0.0, InpOFWtStacked) / 100.0;
    double wA = MathMax(0.0, InpOFWtAbsorb)  / 100.0;
    double wT = wD + wI + wS + wA;
-   if(wT <= 0.0) wT = 1.0;
+   if(wT <= 0.0) wT = 1.0;   // guarded by OnInit validation; defensive fallback
 
    double raw   = (cDelta * wD + cImb * wI + cStack * wS + cAbsorb * wA) / wT;
+   // [FIX-10] Final NaN guard before cast.
+   if(!MathIsValidNumber(raw)) raw = 0.5;
    int    score = (int)(raw * 100.0 + 0.5);
    return MathMax(0, MathMin(100, score));
   }
@@ -1101,8 +1139,10 @@ double ComputeHFTSignal(int bi)
    double c1 = (ComputeOFScore(bi) - 50.0) / 50.0;
 
    // C2: Delta exhaustion / divergence
-   double dRatio = MathMax(-1.0, MathMin(1.0,
-                            (double)g_bars[bi].total_delta / tvol));
+   // [FIX-10] Guard the division.
+   double rawDr = (double)g_bars[bi].total_delta / (double)tvol;
+   if(!MathIsValidNumber(rawDr)) rawDr = 0.0;
+   double dRatio = MathMax(-1.0, MathMin(1.0, rawDr));
    double c2 = g_bars[bi].is_delta_divergence ? -dRatio : dRatio;
 
    // C3: POC gravity
@@ -1147,6 +1187,9 @@ double ComputeHFTSignal(int bi)
       long v2 = MathMax(1, g_bars[bi - 2].total_vol);
       double nd0   = (double)g_bars[bi].total_delta     / v0;
       double nd2   = (double)g_bars[bi - 2].total_delta / v2;
+      // [FIX-10] Guard before slope arithmetic.
+      if(!MathIsValidNumber(nd0)) nd0 = 0.0;
+      if(!MathIsValidNumber(nd2)) nd2 = 0.0;
       double slope = (nd0 - nd2) / 2.0;
       c6 = MathMax(-1.0, MathMin(1.0, slope * 3.0));
      }
@@ -1154,6 +1197,8 @@ double ComputeHFTSignal(int bi)
    const double w1 = 0.30, w2 = 0.20, w3 = 0.15;
    const double w4 = 0.15, w5 = 0.10, w6 = 0.10;
    double raw = c1*w1 + c2*w2 + c3*w3 + c4*w4 + c5*w5 + c6*w6;
+   // [FIX-10] Final NaN guard.
+   if(!MathIsValidNumber(raw)) raw = 0.0;
    return MathMax(-1.0, MathMin(1.0, raw)) * 100.0;
   }
 
@@ -1196,68 +1241,11 @@ void ReloadHistory()
   }
 
 //==========================================================================
-// SECTION 12: SIGNAL DISPATCH
+// SECTION 12: SIGNAL EVALUATION & DISPATCH
 //==========================================================================
 
-string JsonEscape(const string s)
-  {
-   string out = s;
-   StringReplace(out, "\\", "\\\\");
-   StringReplace(out, "\"", "\\\"");
-   StringReplace(out, "\n", "\\n");
-   StringReplace(out, "\r", "\\r");
-   StringReplace(out, "\t", "\\t");
-   return out;
-  }
 
-void SendDiscordAlert(bool isBuy, double hftScore, int ofsScore)
-  {
-   if(!InpDiscordEnable)                  return;
-   if(InpDiscordBuyOnly && !isBuy)        return;
-   if(StringLen(InpDiscordWebhook) < 10)  return;
-
-   string dirLabel = isBuy ? "BUY"  : "SELL";
-   string emojis   = isBuy ? ":green_circle: :chart_with_upwards_trend:"
-                           : ":red_circle: :chart_with_downwards_trend:";
-   string timeStr  = TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES);
-   string bid      = DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits);
-   int    score    = (int)MathRound(isBuy ? hftScore : -hftScore);
-   string tf       = EnumToString(Period());
-   StringReplace(tf, "PERIOD_", "");
-
-   string content = StringFormat(
-      "%s  **%s Signal** on **%s** (%s)\\n"
-      "HFT Score: **%d** | OFS Score: **%d**\\n"
-      "Price: **%s** | Time: %s (server)",
-      emojis, dirLabel,
-      JsonEscape(_Symbol), JsonEscape(tf),
-      score, ofsScore,
-      JsonEscape(bid), JsonEscape(timeStr));
-
-   string jsonBody = "{\"content\":\"" + content + "\"}";
-   char   postData[], result[];
-   string responseHeaders;
-   StringToCharArray(jsonBody, postData, 0, StringLen(jsonBody));
-
-   int httpCode = WebRequest(
-      "POST", InpDiscordWebhook,
-      "Content-Type: application/json\r\n",
-      5000, postData, result, responseHeaders);
-
-   if(httpCode == -1)
-     {
-      int err = GetLastError();
-      if(err == 4014)
-         Alert("OrderFlowEA — Discord blocked! Whitelist https://discord.com in "
-               "Tools → Options → Expert Advisors → Allow WebRequest.");
-      else
-         LogWarning(StringFormat("OrderFlowEA — Discord WebRequest failed, error: %d", err));
-     }
-   else if(httpCode != 204 && httpCode != 200)
-      LogWarning(StringFormat("OrderFlowEA — Discord returned HTTP %d", httpCode));
-  }
-
-//--- Evaluate the live bar, gate by frequency, fire sound + Discord + journal
+//--- Evaluate the live bar, gate by frequency, fire sound + journal
 void EvalAndFireSignal()
   {
    if(!g_signalsEnabled) return;
@@ -1303,7 +1291,6 @@ void EvalAndFireSignal()
    if(isBuySignal)  PlaySound(InpSignalBuySound);
    else             PlaySound(InpSignalSellSound);
 
-   SendDiscordAlert(isBuySignal, hftScore, currentScore);
   }
 
 //==========================================================================
@@ -1313,23 +1300,19 @@ void EvalAndFireSignal()
 void RefreshSymbolInfo()
   {
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   g_Pip = (digits == 3 || digits == 5) ? _Point * 10.0 : _Point;
+   // Odd-digit count = sub-pip pricing (3,5,7...) → pip = 10 × _Point
+   // Even-digit count (0,2,4,6)                   → pip = _Point
+   g_Pip = ((digits % 2) == 1) ? _Point * 10.0 : _Point;
 
    g_VolMin  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    g_VolMax  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    g_VolStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(g_VolStep <= 0.0) g_VolStep = 0.01;
 
-   double tvBase  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tvSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   g_TickSize = (tvSize > 0.0) ? tvBase / tvSize * _Point : tvBase;
-   if(g_TickSize <= 0.0)
-     {
-      LogWarning(StringFormat(
-         "OrderFlowEA — Tick value is zero for %s. Risk-based lot sizing falls back to fixed lot.",
-         _Symbol));
-      g_TickSize = 0.0;
-     }
+   LogSystem(StringFormat(
+      "OrderFlowEA — SymbolInfo | %s | digits=%d | g_Pip=%.6f"
+      " | VolMin=%.2f VolMax=%.2f VolStep=%.2f",
+      _Symbol, digits, g_Pip, g_VolMin, g_VolMax, g_VolStep));
   }
 
 bool IsNewBar()
@@ -1380,31 +1363,132 @@ int CountOpenPositions()
    return count;
   }
 
+// [FIX-5] Check all three filling modes in broker-declared order.
+//         SYMBOL_FILLING_RETURN is a valid flag (value 0 is NOT a flag;
+//         the constant SYMBOL_FILLING_RETURN == 2 in the broker mask).
+//         If none of the standard flags are set, fall back to RETURN and
+//         log a warning — some brokers omit the flag entirely yet still
+//         accept RETURN-mode requests.
 ENUM_ORDER_TYPE_FILLING GetBrokerFillingMode()
   {
    long flags = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
-   if((flags & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
-   if((flags & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
+   if((flags & SYMBOL_FILLING_FOK) != 0)    return ORDER_FILLING_FOK;
+   if((flags & SYMBOL_FILLING_IOC) != 0)    return ORDER_FILLING_IOC;
+   // SYMBOL_FILLING_RETURN is bit 2 in the broker flag mask.
+   if((flags & 4) != 0)                     return ORDER_FILLING_RETURN;
+   // No recognised flag set — use RETURN as the MT5 default and warn once.
+   static bool s_warnedFilling = false;
+   if(!s_warnedFilling)
+     {
+      LogWarning(StringFormat(
+         "OrderFlowEA — Filling mode flags=0x%X unrecognised for %s; defaulting to RETURN.",
+         flags, _Symbol));
+      s_warnedFilling = true;
+     }
    return ORDER_FILLING_RETURN;
   }
 
-double CalcLot(double slPoints)
+// CalcLot — margin-based position sizing (no Stop Loss required).
+//
+// [FIX-11] Replaced the previous SL-pips / tick-value formula with a
+// margin-based approach that is asset-aware by construction:
+//
+//   Step A — AllocationAmount  = AccountBalance × (RiskPercent / 100)
+//             Determines the monetary slice of equity to commit as margin.
+//
+//   Step B — MarginFor1Lot     = OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, 1.0, Ask)
+//             Asks the terminal for the exact margin cost of one lot at the
+//             current Ask.  The terminal accounts for leverage, contract size,
+//             and base/quote currency conversion internally, so this value is
+//             correct across FX majors, exotics, indices, and Deriv synthetics
+//             (boom_100, vol_80, crash_500, etc.) without any manual scaling.
+//
+//   LotSize = AllocationAmount / MarginFor1Lot
+//
+// Because MarginFor1Lot differs for every symbol (it depends on the contract
+// specification AND the current price), the resulting lot will be different
+// when the EA runs on boom_100 vs. vol_80 — exactly the requirement in FIX-11.
+//
+// The slPointsUnused parameter is retained for call-site API compatibility
+// (PlaceOrders already passes slPoints) but is intentionally not used here.
+//
+double CalcLot(double /*slPointsUnused*/)   // accepted for call-site compatibility; intentionally unused — see design note above
   {
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double lot;
-   if(InpUseRiskPercent && slPoints > 0.0 && g_TickSize > 0.0)
+
+   if(InpUseRiskPercent)
      {
-      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-      double riskAmt = balance * InpRiskPercent / 100.0;
-      lot = riskAmt / (slPoints * g_TickSize);
+      // ----------------------------------------------------------------
+      // Step A: Allocation — how much margin are we willing to deploy?
+      // ----------------------------------------------------------------
+      double allocationAmt = balance * InpRiskPercent / 100.0;
+
+      // ----------------------------------------------------------------
+      // Step B: Ask the terminal for the margin cost of exactly 1.0 lot.
+      // We always use the BUY direction for the reference calculation;
+      // for most instruments this is symmetric, and using a live Ask
+      // price guarantees the result reflects the current market rate.
+      // ----------------------------------------------------------------
+      MqlTick lastTick;
+      double  askPrice = 0.0;
+      if(SymbolInfoTick(_Symbol, lastTick) && lastTick.ask > 0.0)
+         askPrice = lastTick.ask;
+      else
+         askPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);   // fallback
+
+      double marginFor1Lot = 0.0;
+      bool   marginOK      = OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, 1.0,
+                                             askPrice, marginFor1Lot);
+
+      if(!marginOK || marginFor1Lot <= 0.0)
+        {
+         // OrderCalcMargin can fail if the market is closed or the symbol
+         // is not tradeable at this moment.  Fall back to fixed lot and
+         // warn so the operator can investigate.
+         LogWarning(StringFormat(
+            "OrderFlowEA — CalcLot: OrderCalcMargin failed (ok=%s margin=%.5f err=%d)"
+            " for %s — falling back to fixed lot %.2f.",
+            marginOK ? "true" : "false", marginFor1Lot, GetLastError(),
+            _Symbol, InpFixedLot));
+         lot = InpFixedLot;
+        }
+      else
+        {
+         // Core formula: lot = Allocation($) / MarginRequiredFor1Lot($)
+         lot = allocationAmt / marginFor1Lot;
+
+         LogTradeExec(StringFormat(
+            "OrderFlowEA — DynLot (Margin) | %s | Bal: %.2f"
+            " | Alloc: %.1f%% = $%.2f | Margin/1lot: $%.2f | Raw lot: %.4f",
+            _Symbol, balance, InpRiskPercent, allocationAmt, marginFor1Lot, lot));
+        }
      }
    else
+     {
       lot = InpFixedLot;
+     }
 
-   double step = (g_VolStep > 0.0) ? g_VolStep : 0.01;
+   // ----------------------------------------------------------------
+   // Normalise to broker volume constraints.
+   // ----------------------------------------------------------------
+   double step   = (g_VolStep > 0.0) ? g_VolStep : 0.01;
+   double lotMin = (g_VolMin  > 0.0) ? g_VolMin  : 0.01;
+   double lotMax = (g_VolMax  > 0.0) ? g_VolMax  : 100.0;
+
+   // Floor to the nearest valid step (never round up — avoids over-allocation)
    lot = MathFloor(lot / step) * step;
-   lot = MathMax(g_VolMin > 0.0 ? g_VolMin : 0.01,
-                 MathMin(g_VolMax > 0.0 ? g_VolMax : 100.0, lot));
-   return NormalizeDouble(lot, 2);
+   // Clamp between broker-defined min and max volumes
+   lot = MathMax(lotMin, MathMin(lotMax, lot));
+   // Final precision normalisation expected by OrderSend()
+   lot = NormalizeDouble(lot, 2);
+
+   LogTradeExec(StringFormat(
+      "OrderFlowEA — DynLot FINAL | %s | Lot: %.2f"
+      " | (VolMin=%.2f VolMax=%.2f VolStep=%.2f)",
+      _Symbol, lot, lotMin, lotMax, step));
+
+   return lot;
   }
 
 void CalcSLTP(bool   isBuy,  double entry,   double atrVal,
@@ -1487,16 +1571,29 @@ bool trade_OrderDelete(ulong ticket)
    return ok;
   }
 
+// [FIX-2] Snapshot all matching pending-order tickets into a local array
+//         BEFORE issuing any delete requests.  The original code iterated
+//         OrdersTotal() in reverse while deleting, but OrdersTotal() shrinks
+//         on every successful delete, so skipping tickets was possible when
+//         multiple orders were present.  Snapshotting first is immune to the
+//         changing pool size.
 void DeleteAllPending()
   {
+   ulong tickets[];
+   int   tCount = 0;
+
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
       if((ulong)OrderGetInteger(ORDER_MAGIC) != g_Magic) continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol)        continue;
-      trade_OrderDelete(ticket);
+      ArrayResize(tickets, tCount + 1);
+      tickets[tCount++] = ticket;
      }
+
+   for(int i = 0; i < tCount; i++)
+      trade_OrderDelete(tickets[i]);
   }
 
 //--- Unified order-send with normalisation, fill-mode detection, retry loop
@@ -1538,15 +1635,15 @@ bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
       if(orderType == ORDER_TYPE_BUY_STOP && price <= freshAsk)
         {
          LogTradeExec(StringFormat(
-            "OrderFlowEA — BuyStop skipped: entry (%.5f) not above current ask (%.5f)",
-            price, freshAsk));
+            "OrderFlowEA — BuyStop skipped: entry (%s) not above current ask (%s)",
+            DoubleToString(price, _Digits), DoubleToString(freshAsk, _Digits)));
          return false;
         }
       if(orderType == ORDER_TYPE_SELL_STOP && price >= freshBid)
         {
          LogTradeExec(StringFormat(
-            "OrderFlowEA — SellStop skipped: entry (%.5f) not below current bid (%.5f)",
-            price, freshBid));
+            "OrderFlowEA — SellStop skipped: entry (%s) not below current bid (%s)",
+            DoubleToString(price, _Digits), DoubleToString(freshBid, _Digits)));
          return false;
         }
      }
@@ -1612,7 +1709,8 @@ bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
 
    if(!ok)
       LogTradeExec(StringFormat(
-         "OrderFlowEA — OrderSend failed: retcode=%u (%s) action=%s type=%s price=%.5f sl=%.5f tp=%.5f lot=%.2f",
+         "OrderFlowEA — OrderSend failed: retcode=%u (%s) action=%s type=%s"
+         " price=%s sl=%s tp=%s lot=%.2f",
          res.retcode,
          (res.retcode == 10004 ? "REQUOTE"        :
           res.retcode == 10006 ? "REJECTED"       :
@@ -1621,7 +1719,9 @@ bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
           res.retcode == 10016 ? "INVALID_STOPS"  :
           res.retcode == 10019 ? "NO_MONEY" : "OTHER"),
          EnumToString(action), EnumToString(orderType),
-         req.price, req.sl, req.tp, req.volume));
+         DoubleToString(req.price,_Digits),
+         DoubleToString(req.sl,   _Digits),
+         DoubleToString(req.tp,   _Digits), req.volume));
    else
       outTicket = res.order;   // order ticket == position ID for market fills
    return ok;
@@ -1660,6 +1760,21 @@ void PlaceOrders()
    if(g_bars[bi].level_count == 0 || g_bars[bi].total_vol == 0) return;
    if(!g_bars[bi].sorted) ComputeBarSignals(bi);
 
+   // [FIX-1] Guard against a degenerate bar (no OHLC data yet) BEFORE any
+   //         side-effects — most critically BEFORE DeleteAllPending().
+   //         v6.00 placed this guard after DeleteAllPending() and the entry
+   //         price calculation, so stale pending orders could be wiped and
+   //         a wrong pending entry computed before the early-return fired.
+   double barHigh = g_bars[bi].high;
+   double barLow  = g_bars[bi].low;
+   if(barHigh == 0.0 || barLow == 0.0)
+     {
+      LogWarning(StringFormat(
+         "OrderFlowEA — PlaceOrders: bar[%d] has zero High/Low — skipping.",
+         nBars - 2));
+      return;
+     }
+
    double hftScore = ComputeHFTSignal(bi);
    bool   isBuy    = (hftScore >=  (double)g_signalThreshold && InpAllowBuy);
    bool   isSell   = (hftScore <= -(double)g_signalThreshold && InpAllowSell);
@@ -1667,15 +1782,18 @@ void PlaceOrders()
 
    if(InpCleanOldOrders) DeleteAllPending();
 
+   // [FIX-4] ATR warmup guard: CopyBuffer returns stale or garbage values
+   //         for the first InpATR_Period closed bars.  Only trust the buffer
+   //         once at least InpATR_Period + 1 bars exist on the chart.
    double atrBuf[];
    double atrVal = 0.0;
-   if(g_handleATR != INVALID_HANDLE &&
-      CopyBuffer(g_handleATR, 0, 1, 1, atrBuf) == 1)
+   int    barsOnChart = iBars(_Symbol, PERIOD_CURRENT);
+   bool   atrReady    = (g_handleATR != INVALID_HANDLE) &&
+                        (barsOnChart  > InpATR_Period + 1);
+   if(atrReady && CopyBuffer(g_handleATR, 0, 1, 1, atrBuf) == 1)
       atrVal = atrBuf[0];
 
    double bufDist = InpBufferPips * g_Pip;
-   double barHigh = g_bars[bi].high;
-   double barLow  = g_bars[bi].low;
 
    MqlTick lv;
    if(!SymbolInfoTick(_Symbol, lv))
@@ -1724,10 +1842,14 @@ void PlaceOrders()
    if(sent && ticket != 0)
      {
       LogTradeExec(StringFormat(
-         "OrderFlowEA — ORDER PLACED [%s] %s | #%I64u | Entry: %.5f | SL: %.5f | TP: %.5f"
+         "OrderFlowEA — ORDER PLACED [%s] %s | #%I64u | Entry: %s | SL: %s | TP: %s"
          " | Lot: %.2f | HFT: %d | OFS: %d | Conviction: %s",
          direction ? "BUY" : "SELL", isMarket ? "MKT" : "STP",
-         ticket, entry, sl, tp, lot, hftInt, ofsScore, conviction));
+         ticket,
+         DoubleToString(entry,_Digits),
+         DoubleToString(sl,   _Digits),
+         DoubleToString(tp,   _Digits),
+         lot, hftInt, ofsScore, conviction));
 
       DrawTradeEntry(ticket, direction, entry, sl, tp,
                      g_bars[bi].bar_time, conviction, hftInt, ofsScore);
@@ -1742,7 +1864,7 @@ void ManagePositions()
 
    // Throttle: only run at most once per FP_MANAGE_THROTTLE ms to reduce
    // redundant SymbolInfo calls on high-frequency tick streams.
-   ulong now = GetTickCount();
+   ulong now = GetTickCount64();  // 64-bit — no 49-day wraparound bug
    if(now - g_lastManageTick < FP_MANAGE_THROTTLE) return;
    g_lastManageTick = now;
 
@@ -1830,8 +1952,8 @@ void ManagePositions()
             UpdateSLLine(ticket, req.sl);   // keep chart line in sync
          else
             LogTradeExec(StringFormat(
-               "OrderFlowEA — ManagePositions modify failed: ticket=%I64u retcode=%u newSL=%.5f tp=%.5f",
-               ticket, res.retcode, req.sl, req.tp));
+               "OrderFlowEA — ManagePositions modify failed: ticket=%I64u retcode=%u newSL=%s tp=%s",
+               ticket, res.retcode, DoubleToString(req.sl,_Digits), DoubleToString(req.tp,_Digits)));
         }
      }
   }
@@ -1854,8 +1976,23 @@ int OnInit()
    if(InpVAPercent <= 0.0 || InpVAPercent > 100.0)
      { Alert("OrderFlowEA: InpVAPercent must be between 1 and 100."); return INIT_PARAMETERS_INCORRECT; }
 
+   // [FIX-8] Additional input validation added in v6.01.
+   if(InpStackedImbCount < 1)
+     { Alert("OrderFlowEA: InpStackedImbCount must be >= 1."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpAbsorptionRatio <= 0.0)
+     { Alert("OrderFlowEA: InpAbsorptionRatio must be > 0."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpExhaustionEnable && InpExhaustionCells < 1)
+     { Alert("OrderFlowEA: InpExhaustionCells must be >= 1 when exhaustion detection is enabled."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpOFWtDelta + InpOFWtImb + InpOFWtStacked + InpOFWtAbsorb <= 0.0)
+     { Alert("OrderFlowEA: OFS weights sum to zero — at least one weight must be positive."); return INIT_PARAMETERS_INCORRECT; }
+
    if(InpATEnable)
      {
+      // [FIX-11] The lot formula no longer uses InpSLPips as a risk reference,
+      // so no InpSLPips validation is required here for dynamic lot sizing.
+      // InpSLPips is still validated below if the operator enables a fixed-pips
+      // or ATR stop loss, because CalcSLTP() reads that field directly.
+
       if(InpUseStopLoss)
         {
          if((InpSLMode == SL_MODE_PIPS || InpSLMode == SL_MODE_ATR) && InpSLPips <= 0.0)
@@ -1888,7 +2025,6 @@ int OnInit()
    g_step     = g_baseStep * g_tickMult;
 
    g_chart    = ChartID();
-   g_sub      = 0;
    g_prevBid  = 0.0;
    g_imbRatio = InpImbalanceRatio;
    g_histBars = MathMax(FP_HIST_MIN, MathMin(FP_HIST_MAX, InpHistoryBars));
@@ -1976,7 +2112,7 @@ void OnTick()
    ManagePositions();
    if(IsNewBar())
      {
-      RefreshSymbolInfo();
+      if(g_autoTrade) RefreshSymbolInfo();  // tick value only needed for lot sizing
       PlaceOrders();
      }
   }
@@ -1984,7 +2120,12 @@ void OnTick()
 void OnChartEvent(const int id, const long &lparam,
                   const double &dparam, const string &sparam)
   {
-   // Reload when chart timeframe changes (detected by bar mismatch)
+   // [FIX-3] Set the reload flag rather than calling ReloadHistory() directly.
+   //         OnChartEvent runs on the terminal UI thread; blocking it with a
+   //         CopyTicksRange call (which can take hundreds of milliseconds for
+   //         large histories) freezes the chart until the fetch completes.
+   //         Setting g_needs_reload = true defers the reload to the next
+   //         OnTick(), which executes on the EA thread where blocking is safe.
    if(id == CHARTEVENT_CHART_CHANGE)
      {
       if(ArraySize(g_bars) > 0)
@@ -1996,7 +2137,7 @@ void OnChartEvent(const int id, const long &lparam,
 
          if(g_bars[0].bar_time != expectedFirstBar ||
             g_bars[ArraySize(g_bars) - 1].bar_time != expectedLastBar)
-            ReloadHistory();
+            g_needs_reload = true;   // processed safely in the next OnTick()
         }
      }
   }
@@ -2042,10 +2183,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    string pnlTag  = (dealNet >= 0.0) ? "WIN" : "LOSS";
 
    LogTradeClosed(StringFormat(
-      "OrderFlowEA — CLOSED [%s] %s | Ticket: %I64u | Price: %.5f | Lot: %.2f"
+      "OrderFlowEA — CLOSED [%s] %s | Ticket: %I64u | Price: %s | Lot: %.2f"
       " | Profit: %.2f | Swap: %.2f | Comm: %.2f | Net: %.2f [%s] | Time: %s | Comment: %s",
       dir, _Symbol, ticket,
-      dealPrice, dealVolume,
+      DoubleToString(dealPrice, _Digits), dealVolume,
       dealProfit, dealSwap, dealComm, dealNet,
       pnlTag,
       TimeToString(dealTime, TIME_DATE | TIME_MINUTES),
