@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//|  OrderFlowEa_v534_Pure.mq5                                       |
-//|  Order Flow EA — Pure Trading Engine v5.34                       |
+//|  OrderFlowEa_v535_Pure.mq5                                       |
+//|  Order Flow EA — Pure Trading Engine v5.35                       |
 //|  No canvas, no UI objects — Journal logging only                 |
 //|  All signal computation and trading logic unchanged from v5.32   |
 //+------------------------------------------------------------------+
 #property copyright   "Ali Magdy"
-#property version     "5.34"
-#property description "Order Flow EA v5.34 — Footprint signals + Automated Trading (pure)"
+#property version     "5.35"
+#property description "Order Flow EA v5.35 — Footprint signals + Automated Trading (pure)"
 #property strict
 
 //==========================================================================
@@ -107,7 +107,6 @@ input group "Automated Trading — Money Management"
 input bool   InpUseRiskPercent    = true;   // true = dynamic risk sizing, false = fixed lot
 input double InpRiskPercent       = 1.0;    // % of account balance to risk per trade
 input double InpFixedLot          = 0.01;   // Fixed lot size
-input double InpMaxSLPips         = 0.0;    // Max SL distance in pips (0 = no cap); caps oversized bar-mode SL on high-price instruments
 
 input group "Automated Trading — Exit"
 input bool          InpUseStopLoss      = true;         // Enable hard stop-loss
@@ -1212,7 +1211,7 @@ string JsonEscape(const string s)
    return out;
   }
 
-//++------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| SendDiscordAlert — posts a signal alert to a Discord webhook.    |
 //|                                                                  |
 //| COMMON FAILURE MODES:                                            |
@@ -1240,17 +1239,18 @@ void SendDiscordAlert(bool isBuy, double hftScore, int ofsScore)
    StringReplace(tf, "PERIOD_", "");
 
    // Discord message content with markdown formatting.
-   // \n inside JSON string becomes a real newline in Discord chat.
+   // "\\n" in MQL5 = the two characters \ and n in the string value,
+   // which is the JSON escape sequence for newline — Discord renders it as a line break.
    string content = StringFormat(
-      "%s  **%s Signal** — **%s** (%s)\n"
-      "HFT Score: **%d** | OFS Score: **%d**\n"
+      "%s  **%s Signal** - **%s** (%s)\\n"
+      "HFT Score: **%d** | OFS Score: **%d**\\n"
       "Price: **%s** | %s UTC",
       emojis, dirLabel,
       JsonEscape(_Symbol), JsonEscape(tf),
       score, ofsScore,
       JsonEscape(bidStr), JsonEscape(timeStr));
 
-   string jsonBody = "{"content":"" + content + ""}";
+   string jsonBody = "{\"content\":\"" + content + "\"}";
 
    // FIX: StringToCharArray without an explicit length appends a trailing
    // null byte (\0), making the JSON body malformed and causing HTTP 400.
@@ -1439,90 +1439,73 @@ ENUM_ORDER_TYPE_FILLING GetBrokerFillingMode()
    return ORDER_FILLING_RETURN;
   }
 
-double CalcLot(double slPoints)
+// CalcLot — industry-standard risk-based position sizing.
+//
+// The lot is sized against InpSLPips ALWAYS — the actual SL distance on
+// the chart (bar-mode, ATR-mode, etc.) is intentionally ignored here.
+// This decouples lot sizing from SL placement:
+//   • SL placement protects the trade structurally (bar high/low logic)
+//   • Lot sizing controls exactly how many dollars are at risk (% of balance)
+//
+// Formula:
+//   refPrice  = InpSLPips × g_Pip           (fixed reference SL in price units)
+//   pipVal    = TICK_VALUE / TICK_SIZE       ($ per 1.0 price move per 1 lot)
+//   lot       = RiskAmount / (refPrice × pipVal)
+//
+// Works for all instruments: FX, JPY, Gold, Deriv synthetics (any price level)
+// because TICK_VALUE already encodes the contract's monetary scaling.
+//
+double CalcLot(double /*slPoints*/)          // slPoints accepted but not used
   {
-   // =================================================================
-   // INDUSTRY-STANDARD RISK-BASED LOT SIZING
-   // Formula (used by every professional EA):
-   //   lot = RiskAmount($) / (SL_distance_in_price × pip_value_per_lot)
-   //
-   // Where:
-   //   RiskAmount   = Balance × RiskPercent%
-   //   SL_distance  = |entry − sl|  (in price units, e.g. 1.05230)
-   //   pip_value    = SYMBOL_TRADE_TICK_VALUE / SYMBOL_TRADE_TICK_SIZE
-   //                  ($ per 1 full price-unit move, per 1 lot)
-   //
-   // This formulation is symbol-agnostic: it works identically for
-   // standard FX (EURUSD price 1.1x), JPY pairs (110.x), Gold (2000.x),
-   // and high-price Deriv synthetics (VOL_20 at 700,000+) because the
-   // tick_value already encodes the contract's monetary scaling.
-   // =================================================================
-
-   // --- Step 1: live tick value (never use a cached global) ---
-   // SYMBOL_TRADE_TICK_VALUE is re-fetched here to get the rate-converted
-   // value at the exact moment of the trade, not from the previous bar.
+   // ----------------------------------------------------------------
+   // Step 1: live tick value — re-fetched every call, never stale.
+   // SYMBOL_TRADE_TICK_VALUE is rate-converted on cross pairs and some
+   // synthetics; a cached bar-level value can be off by several percent.
+   // ----------------------------------------------------------------
    double tvBase = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tvSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-
-   // pip_value_per_lot = $ value of a move equal to 1 full tick in price
-   // Dividing tvBase by tvSize gives $/price-unit/lot, which is then the
-   // multiplier used against the SL price distance.
+   // pipVal = $ per 1.0 price-unit move per 1 lot.
+   // tvBase / tvSize removes the tick-size scaling so the result is
+   // always expressed per unit of price, regardless of instrument.
    double pipVal = (tvSize > 0.0) ? tvBase / tvSize : 0.0;
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double lot;
-   double usedSlPoints = slPoints;  // may be capped below
 
-   // --- Step 2: guard conditions ---
-   bool canDynamic = InpUseRiskPercent && (slPoints > 0.0) && (pipVal > 0.0);
+   // ----------------------------------------------------------------
+   // Step 2: dynamic sizing using fixed InpSLPips as the reference.
+   // This guarantees a consistent, non-zero SL reference on every
+   // instrument — no bar-size dependency, no account blow-up risk.
+   // ----------------------------------------------------------------
+   bool canDynamic = InpUseRiskPercent && (InpSLPips > 0.0) && (pipVal > 0.0);
 
    if(canDynamic)
      {
-      double riskAmt   = balance * InpRiskPercent / 100.0;
-      // Convert slPoints (raw _Point multiples) to price distance
-      double slPrice   = slPoints * _Point;   // e.g. 11102 pts × 0.01 = 111.02 price units
-
-      // --- Step 3: SL cap (optional, prevents absurdly wide bar-mode SL) ---
-      // On high-price instruments (Deriv synthetics, indices) a single bar
-      // can span thousands of points.  Without a cap the raw lot calculation
-      // correctly produces a sub-minimum result because the dollar risk of
-      // that SL exceeds the entire account risk budget per trade.
-      // InpMaxSLPips > 0 clamps the effective SL so sizing stays reasonable.
-      if(InpMaxSLPips > 0.0)
-        {
-         double maxSlPrice = InpMaxSLPips * g_Pip;   // cap in price units
-         if(slPrice > maxSlPrice)
-           {
-            LogWarning(StringFormat(
-               "OrderFlowEA — SL cap applied on %s: bar SL %.5f > max %.5f"
-               " (%.0f pips). Lot sized to capped SL.",
-               _Symbol, slPrice, maxSlPrice, InpMaxSLPips));
-            slPrice      = maxSlPrice;
-            usedSlPoints = slPrice / _Point;
-           }
-        }
-
-      // --- Step 4: core lot formula ---
-      // lot = Risk($) / (SL_price_distance × pip_value_per_lot)
-      lot = riskAmt / (slPrice * pipVal);
+      double riskAmt  = balance * InpRiskPercent / 100.0;
+      // Reference SL expressed as a price distance (same units as price)
+      double refPrice = InpSLPips * g_Pip;
+      // Core formula: lot = Risk($) / (price_distance × $/price-unit/lot)
+      lot = riskAmt / (refPrice * pipVal);
 
       LogTradeExec(StringFormat(
-         "OrderFlowEA — DynLot | %s | Bal: %.2f | Risk: %.2f%% = $%.2f"
-         " | SL: %.5f price (%.0f pts) | PipVal: %.5f $/price-unit | Raw lot: %.5f",
+         "OrderFlowEA — DynLot | %s | Bal: %.2f | Risk: %.1f%% = $%.2f"
+         " | RefSL: %.1f pips (%.5f price) | PipVal: %.5f | Raw: %.4f",
          _Symbol, balance, InpRiskPercent, riskAmt,
-         slPrice, usedSlPoints, pipVal, lot));
+         InpSLPips, refPrice, pipVal, lot));
      }
    else
      {
       lot = InpFixedLot;
       if(InpUseRiskPercent)
          LogWarning(StringFormat(
-            "OrderFlowEA — DynLot FALLBACK → FixedLot %.2f | %s"
-            " | slPoints=%.1f pipVal=%.6f",
-            lot, _Symbol, slPoints, pipVal));
+            "OrderFlowEA — DynLot FALLBACK fixed=%.2f | %s"
+            " | InpSLPips=%.1f pipVal=%.6f",
+            lot, _Symbol, InpSLPips, pipVal));
      }
 
-   // --- Step 5: normalise to broker volume constraints ---
+   // ----------------------------------------------------------------
+   // Step 3: normalise to broker volume constraints.
+   // ----------------------------------------------------------------
    double step   = (g_VolStep > 0.0) ? g_VolStep : 0.01;
    double lotMin = (g_VolMin  > 0.0) ? g_VolMin  : 0.01;
    double lotMax = (g_VolMax  > 0.0) ? g_VolMax  : 100.0;
@@ -1530,17 +1513,17 @@ double CalcLot(double slPoints)
    lot = MathMax(lotMin, MathMin(lotMax, lot));
    lot = NormalizeDouble(lot, 2);
 
-   // --- Step 6: post-normalisation audit ---
-   // Prints the ACTUAL dollar risk after broker rounding so the user
-   // can confirm it matches the intended % of balance.
+   // ----------------------------------------------------------------
+   // Step 4: post-normalisation audit — actual $ at risk after rounding.
+   // ----------------------------------------------------------------
    if(canDynamic)
      {
-      double usedSlPrice = usedSlPoints * _Point;
-      double actualRisk  = lot * usedSlPrice * pipVal;
-      double pctOfBal    = (balance > 0.0) ? actualRisk / balance * 100.0 : 0.0;
+      double refPrice   = InpSLPips * g_Pip;
+      double actualRisk = lot * refPrice * pipVal;
+      double pctOfBal   = (balance > 0.0) ? actualRisk / balance * 100.0 : 0.0;
       LogTradeExec(StringFormat(
          "OrderFlowEA — DynLot FINAL | %s | Lot: %.2f"
-         " | Risk: $%.2f = %.3f%% of $%.2f",
+         " | Actual risk: $%.2f = %.3f%% of $%.2f",
          _Symbol, lot, actualRisk, pctOfBal, balance));
      }
 
