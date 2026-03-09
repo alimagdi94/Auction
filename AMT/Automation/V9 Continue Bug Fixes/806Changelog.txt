@@ -1,0 +1,9 @@
+v8.06 — 4 passes applied, all verified:
+Pass 1 — CARRY-PIV (SortLevelsPartition + SortPocPartition)
+Median-of-three pivot inserted into both quicksort functions. The lo/mid/hi median is computed and swapped into the [hi] slot before the Lomuto loop runs — the partition logic itself is untouched. Eliminates O(n²) degenerate behaviour on nearly-sorted level prices and POC arrays.
+Pass 2 — CARRY-CTR (RiskStateSave / RiskStateLoad)
+g_sigMarkerCount and g_virtualTicket are now persisted as GVKey("SigMarkerCnt") and GVKey("VirtualTicket"). On a crash-restart RiskStateLoad() overwrites the hardcoded 800M/900M defaults, so new chart-object names continue from where the prior session left off and ObjectCreate() can no longer collide with stale objects.
+Pass 3 — DEAD-UA (GetConvictionResult)
+is_unfinished_lo (bar LOW) now appends "UA_Lo" to the conviction tag list for LONG signals; is_unfinished_hi (bar HIGH) appends "UA_Hi" for SHORT signals — placed after the existing BidExh/AskExh entries, matching the same directional guard pattern. After five patch cycles the flags now produce trading output.
+Pass 4 — C6-SCALE (ComputeHFTSignal)
+Amplifier changed from * 3.0 to * 2.25. The 3-bar formula's max unscaled slope is 4/3, so (4/3) × 2.25 ≈ 3.0 — restoring the same clamp-engagement frequency the old 2-point formula had. Directional signal is unchanged; only the saturation boundary is corrected.
