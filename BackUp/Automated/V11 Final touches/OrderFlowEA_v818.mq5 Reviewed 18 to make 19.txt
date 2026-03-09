@@ -1,0 +1,5 @@
+Persistence is not account-scoped GVKey() uses only magic + symbol. MT5 GlobalVariables are terminal-wide, so the same EA on two accounts in one terminal can load the wrong persisted halt/counter state.
+Pending-order expiry is not restart-safe InpPendingExpiryBars depends on in-memory arrays (g_pendingTickets, g_pendingBarTimes). After restart, existing EA-created pending orders are no longer tracked, so expiry can silently stop working.
+Max position cap ignores pending exposure CheckRiskConditions() uses CountOpenPositions(), which excludes pending entry orders. That allows stacked stop orders to bypass intended exposure limits.
+Session filter breaks for overnight windows CheckSessionTime() only supports same-day ranges like 08:00–17:00. A production session like 22:00–02:00 is evaluated incorrectly.
+Retry logic still carries duplicate-entry risk on ambiguous send outcomes trade_Send() retries on timeout/connection-class failures, but does not reconcile broker state first. In live trading, ambiguous OrderSend() outcomes can create duplicate entries if the first request actually succeeded upstream. Apply the fixes in small focused clean sequential passes.
