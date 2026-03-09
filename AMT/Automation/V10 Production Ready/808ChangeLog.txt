@@ -1,0 +1,20 @@
+v8.08 — 9 passes applied, 3,313 lines (+176 from v8.07). Here's what was done in order:
+
+Pass 1 — CHANGELOG-ORPHAN (Very Low)
+Restored the missing [V8-21] DEAD-UA WIRED: prefix to the orphan block at lines 65–71. The entry was separated from its header when SL-COMMENT-CASE was inserted above it; the changelog record is now complete.
+Pass 2 — DELTA-THRESH-VALIDATE (Low)
+Added InpDeltaConvThreshold bounds check in OnInit(). A value of 0 made Component 2 trivially fire on every directional bar; >= 1 silently disabled it entirely. Now returns INIT_PARAMETERS_INCORRECT with a clear Alert(), matching every other threshold input.
+Pass 3 — NEWDAY-DEFER-PERSIST (Low)
+g_newDayDeferStart added to RiskStateSave() / RiskStateLoad() via GVKey("NewDayDefer"). Also explicitly zeroed in the OnInit() defaults block. A crash or VPS reboot during a weekend-gap deferral now continues the 24-hour clock from its original start, not from restart time.
+Pass 4 — CTR-ANALYSIS-VTICKET (Low)
+CounterSave() added in PlaceOrders() immediately after g_virtualTicket++ in the analysis-mode path. This closes the gap that existed when InpShowVisuals=false — virtual orders now always persist their counter regardless of the visuals flag.
+Pass 5 — RISKSTATELOAD-LOG (Low)
+LastSLBuy and LastSLSell timestamps added to the RiskStateLoad() journal message. After a restart it is now possible to confirm from the journal exactly which SL cooldown state was recovered.
+Pass 6 — ARRAYRESIZE-INCONSISTENT (Very Low)
+All 14 ArrayResize(tags, n+1) calls in GetConvictionResult() now uniformly supply ,12 as the reserve parameter. The initial ArrayResize(tags, 0, 12) reservation is now actually honoured by all subsequent appends.
+Pass 7 — C3-INDEX (Low)
+C3 pocPos replaced with (poc_price − bar_low) / bar_range. The old formula (poc_idx / (len-1)) varied with level density on sparse/gapped footprints; the new formula is numerically invariant to how many discrete slots exist between the same two prices.
+Pass 8 — BAR-ASYMMETRY (Low)
+Explanatory comment block added at both the EvalAndFireSignal() bi = nBars-1 declaration and the PlaceOrders() bi = nBars-2 declaration, documenting why a signal arrow on bar N may not produce an order if bar N closes against the setup.
+Pass 9 — TICK-SEARCH (Low)
+FPBar struct extended with int levelMapBase and int levelMap[]. AccumulateTick() now resolves in-range prices via an O(1) integer grid offset instead of the reverse linear scan. The map is initialised lazily on the first tick and grows in 16-slot increments when the bar range extends. InsertBar() copies the map when shifting bars. This eliminates the last O(n×m) path in the live tick pipeline.
