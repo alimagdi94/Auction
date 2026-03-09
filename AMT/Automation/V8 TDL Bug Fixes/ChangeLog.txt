@@ -1,0 +1,22 @@
+CRITICAL (3 bugs fixed)
+
+C-03 → V8-06: OnTradeTransaction() SL detection now gates on FP_ comment prefix first. The previous fallback (dealNet < 0 when comments were absent) was firing on manual closes and break-even exits, inflating g_consecutiveLosses and triggering false size reductions/session halts.
+C-02 → V8-08: CleanupAllTradeObjects() now deletes SIG_AR_, SIG_LB_, AN_AR_, AN_SL_, AN_TP_, and AN_EL_ objects in addition to FP_. These were accumulating silently every session and would eventually degrade chart performance.
+C-01 → V8-09: FindVA() now uses CME-standard single-level lookahead. The two-level lookahead was biasing Value Area expansion toward whichever direction had a larger second-next level — a level the algorithm hadn't committed to yet.
+
+HIGH (2 documented lies corrected)
+
+H-01 → V8-07: CheckDailyLoss() now defers the day-start balance snapshot until PositionsTotal() == 0 for this magic number. The V8-05 changelog claimed this was already done; it wasn't — it was identical to v7.
+H-02 → V8-11: Input descriptions and init log corrected from "UTC server hour" to "broker server hour." TimeCurrent() returns broker server time, not UTC.
+
+MEDIUM (5 structural improvements)
+
+M-03 → V8-10: Risk state (g_consecutiveLosses, g_sizeReductionLeft, g_sessionHalted, g_dailyLossHalted) is now persisted via GlobalVariableSet/Get keyed to magic+symbol, and restored on OnInit(). A mid-session restart no longer silently resets loss-streak protection.
+M-04 → V8-13: OnTick() lazily re-checks g_hasTrades if SYMBOL_LAST was zero at init (pre-open window), restoring accurate tick classification without requiring a restart.
+M-05 → V8-14: ATR baseline is now updated with a 50-bar EMA each new bar instead of being frozen at history-load time. Adaptive threshold degradation after volatility regime changes is eliminated.
+M-06 → V8-12: OnInit() fires an Alert() when InpATEnable=true and InpAnalysisMode=true simultaneously — a plausible misconfiguration that previously ran silently with no real orders placed.
+
+LOW (2 polish items)
+
+L-01 → V8-15: Each OFS weight is now validated >= 0 individually in OnInit() with a clear error message, rather than silently clamping negative values to zero.
+L-05 → V8-16: ManagePositions() now logs when the trailing stop is suppressed because break-even has produced a better newSL, aiding strategy-tester diagnosis
