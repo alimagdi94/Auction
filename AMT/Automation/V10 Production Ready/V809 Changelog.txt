@@ -1,0 +1,9 @@
+v8.09 — 4 passes applied, 3,376 lines (+63 from v8.08). All checklist items verified:
+Pass 1 — TICK-SEARCH-UPWARD (Medium)
+The upward map-extension branch was calling ArrayResize once per new slot — up to 16 separate heap allocations per extension. The downward branch already did it correctly in one shot. Replaced the per-slot loop with a single ArrayResize(newSize) followed by a slot-initialisation loop, matching the downward path exactly.
+Pass 2 — LEVMAP-FREE (Low)
+levelMap[] was added to FPBar in v8.08 alongside levels[], but only levels was being explicitly freed in the two cleanup loops (ReloadHistory() and OnDeinit()). Both loops now free levelMap first, then levels, before ArrayFree(g_bars) — consistent with the established pattern.
+Pass 3 — RISKLOAD-LOG-COND (Low)
+The RiskStateLoad() log condition only checked loss-streak variables. A restart after a SL hit with no consecutive loss count (cooldown active but streak at zero) left the log silent — the user had no journal confirmation the cooldown was recovered. The condition is extended with g_lastSLBarTimeBuy > 0 || g_lastSLBarTimeSell > 0.
+Pass 4 — LEVMAP-SKIP (Low)
+The new-level registration block was guarded by if(!skipSearch). An out-of-range tick created a level with no map entry; a second tick at that same price before the OHLC refreshed would compute skipSearch=true again, get idx=-1, and silently create a duplicate level — corrupting volume and delta totals. Registration now runs unconditionally with a defensive bounds check. The if(!skipSearch) that remains at line 1211 is the correct lookup-entry guard (controlling whether we consult the map), not the registration guard.
