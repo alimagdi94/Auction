@@ -1,0 +1,175 @@
+# OrderFlowEA v8.16 — Patch Prompt
+
+## Context
+Apply the four fixes below to `OrderFlowEA_v815.mq5` and produce `OrderFlowEA_v816.mq5`.
+
+**Rules:**
+- Increment `#property version` to `"8.16"` and `EA_VERSION` to `"8.16"`
+- Add a `[V8-16-x]` changelog block at the top of the file for each fix
+- Do **not** change: signal computation (C1–C6), footprint pipeline, risk-state persistence schema, input parameters (except the new validation), or any existing changelog entries
+- Output: `OrderFlowEA_v816.mq5`
+
+---
+
+## TDL
+
+| # | Tag | Severity | Location |
+|---|-----|----------|----------|
+| 1 | LOGEXEC-GATE | HIGH | `LogTradeExec()`, line ~955 |
+| 2 | ATR-PERIOD-VALIDATE | HIGH | `OnInit()`, after `InpMaxEquityLoss` check |
+| 3 | BANNER-STALE | MEDIUM | File header, lines 2–6 |
+| 4 | TP-FORMAT-ASYMMETRY | MEDIUM | `OnTradeTransaction()`, `isTPHit` declaration |
+
+---
+
+## Fix 1 — `[V8-16]` LOGEXEC-GATE: LogTradeExec gate lowered to LOG_TRADES_ONLY
+
+**Problem:** `LogTradeExec` is gated at `LOG_SIGNALS` (level 2). All execution-level events — "ORDER PLACED", "CalcLot FINAL", spread filter blocks, "BuyStop skipped", and SLTP-CLAMP warnings — are invisible when `InpLogMode = LOG_TRADES_ONLY`. The V8-17 fix explicitly lowered `LogWarning` and `LogRisk` to `LOG_TRADES_ONLY` for the same reason but missed `LogTradeExec`. A live trader running `LOG_TRADES_ONLY` cannot see whether an order was placed, why it was blocked, or what lot size was calculated.
+
+**Location:** `LogTradeExec()` function body (~line 953–956).
+
+**Current code:**
+```cpp
+void LogTradeExec(const string msg)
+  {
+   if(!InpLoggingEnable || InpLogMode < LOG_SIGNALS) return;
+   Print("[EXEC] ", msg);
+  }
+```
+
+**Replace with:**
+```cpp
+void LogTradeExec(const string msg)
+  {
+   // [V8-16] LOGEXEC-GATE: gate lowered to LOG_TRADES_ONLY.
+   //    Order placement, lot sizing, spread filter blocks, BuyStop/SellStop skips,
+   //    and SLTP-CLAMP events are all execution-level trade facts. They must be
+   //    visible to any user who has trade-level logging enabled, matching the intent
+   //    of the V8-17 gate fixes applied to LogWarning and LogRisk.
+   if(!InpLoggingEnable || InpLogMode < LOG_TRADES_ONLY) return;
+   Print("[EXEC] ", msg);
+  }
+```
+
+---
+
+## Fix 2 — `[V8-16]` ATR-PERIOD-VALIDATE: InpATR_Period validated in OnInit()
+
+**Problem:** `InpATR_Period` has no OnInit() bounds check. A value of `0` or negative passed to `iATR(_Symbol, PERIOD_CURRENT, InpATR_Period)` creates an `INVALID_HANDLE` with no user feedback. Every ATR-dependent feature then silently degrades: SL/TP in ATR mode falls back to fixed pips, the adaptive threshold is disabled, and the spread ATR ratio filter is skipped — all without any journal entry. Consistent with the validation pattern applied to every other indicator-dependent input (`InpHTFEMA`, `InpSLATRMult`, `InpTPATRMult`, `InpATR_Period` is the sole remaining unvalidated indicator period).
+
+**Location:** `OnInit()`, insert immediately after the `InpMaxEquityLoss` check and before the `if(InpATEnable)` block (~line 3284).
+
+**Current code (context only — do not remove):**
+```cpp
+   if(InpMaxEquityLoss < 0.0)
+     { Alert("InpMaxEquityLoss must be >= 0 (0 = disabled)."); return INIT_PARAMETERS_INCORRECT; }
+
+   if(InpATEnable)
+```
+
+**Insert between those two blocks:**
+```cpp
+   // [V8-16] ATR-PERIOD-VALIDATE: InpATR_Period <= 0 causes iATR() to return
+   //    INVALID_HANDLE. All ATR-dependent features (SL/TP in ATR mode, adaptive
+   //    threshold, spread ATR ratio filter) then silently degrade or are skipped
+   //    with no journal entry or user alert. Validated here consistent with all
+   //    other indicator-period inputs.
+   if(InpATR_Period < 1)
+     { Alert("InpATR_Period must be >= 1."); return INIT_PARAMETERS_INCORRECT; }
+```
+
+---
+
+## Fix 3 — `[V8-16]` BANNER-STALE: File header banner updated to v8.16
+
+**Problem:** The top three lines of the file still read `OrderFlowEA_v813.mq5`, `Order Flow EA — Production Grade v8.13`, and `v8.13 — March 2026 code-review patch`. The `#property version` and `EA_VERSION` define are correct at 8.15 (will be updated to 8.16 by this patch), but the banner comment block — which appears in MT5's Expert tab and in any diff — trails two versions behind. V8-18 introduced `EA_VERSION` as the single source of truth for runtime strings; the static banner comment is outside that system and requires a manual update each release.
+
+**Location:** Lines 2–6 of the file.
+
+**Current code:**
+```cpp
+//|  OrderFlowEA_v813.mq5                                            |
+//|  Order Flow EA — Production Grade v8.13                          |
+//|                                                                    |
+//|  v8.13 — March 2026 code-review patch (2 fixes applied).        |
+```
+
+**Replace with:**
+```cpp
+//|  OrderFlowEA_v816.mq5                                            |
+//|  Order Flow EA — Production Grade v8.16                          |
+//|                                                                    |
+//|  v8.16 — March 2026 code-review patch (4 fixes applied).        |
+```
+
+---
+
+## Fix 4 — `[V8-16]` TP-FORMAT-ASYMMETRY: isTPHit expanded with full-text TP variants
+
+**Problem:** The V8-15 `SL-SLASH-FORMAT` fix added `"stop loss"` and `"stop-loss"` to `isSLHit` and its changelog states *"matching t/p expansion applied to isTPHit for symmetry"* — but `isTPHit` only received `"t/p"`. The variants `"take profit"` and `"take-profit"` were not added. Consequence: (a) `isTPHit` is silently `false` for brokers writing `"take profit"` — streak-reset still fires via the `dealNet > 0.0` fallback in typical cases, but the diagnostic log path is wrong; (b) the `isSLHit` mutual-exclusion guard only checks `"tp"` and `"t/p"`, so a `"take profit"` close where `dealNet < 0` (TP hit net-negative after swap/commission) is NOT excluded from `isSLHit` — meaning if `"sl"` appears anywhere else in the comment tail it would be misclassified as an SL hit, silently inflating `g_consecutiveLosses` and potentially triggering a spurious session halt.
+
+**Location:** `OnTradeTransaction()`, `isTPHit` declaration and `isSLHit` mutual-exclusion guard (~lines 3591–3595).
+
+**Current code:**
+```cpp
+   bool isSLHit = isOurOrder
+                  ? ( (StringFind(commentTail, "sl")         >= 0 ||
+                       StringFind(commentTail, "s/l")        >= 0 ||
+                       StringFind(commentTail, "stop loss")  >= 0 ||
+                       StringFind(commentTail, "stop-loss")  >= 0)
+                      && StringFind(commentTail, "tp") < 0
+                      && StringFind(commentTail, "t/p") < 0 )
+                  : (dealNet < 0.0);
+   bool isTPHit = (StringFind(commentTail, "tp")  >= 0 ||
+                   StringFind(commentTail, "t/p") >= 0);
+```
+
+**Replace with:**
+```cpp
+   // [V8-16] TP-FORMAT-ASYMMETRY: isTPHit now matches all common broker TP formats,
+   //    mirroring the four-variant SL coverage added in V8-15 SL-SLASH-FORMAT.
+   //    The isSLHit mutual-exclusion guard is extended with the same variants so a
+   //    "take profit" close with negative net (swap/commission) is never misclassified
+   //    as an SL hit and silently inflates g_consecutiveLosses.
+   bool isTPHit = (StringFind(commentTail, "tp")          >= 0 ||
+                   StringFind(commentTail, "t/p")         >= 0 ||
+                   StringFind(commentTail, "take profit")  >= 0 ||
+                   StringFind(commentTail, "take-profit")  >= 0);
+   bool isSLHit = isOurOrder
+                  ? ( (StringFind(commentTail, "sl")         >= 0 ||
+                       StringFind(commentTail, "s/l")        >= 0 ||
+                       StringFind(commentTail, "stop loss")  >= 0 ||
+                       StringFind(commentTail, "stop-loss")  >= 0)
+                      && !isTPHit )
+                  : (dealNet < 0.0);
+```
+
+> **Note:** `isTPHit` is now declared **before** `isSLHit` so the mutual-exclusion guard can reference it directly (`&& !isTPHit`) instead of repeating four string searches.
+
+---
+
+## Changelog entries to prepend (inside the top comment block, before the v8.15 entries)
+
+```
+//|  [V8-16] LOGEXEC-GATE: LogTradeExec gate lowered to LOG_TRADES_ONLY         |
+//|    LogTradeExec was gated at LOG_SIGNALS, making ORDER PLACED, CalcLot,      |
+//|    spread filter blocks, BuyStop/SellStop skips, and SLTP-CLAMP warnings     |
+//|    invisible at LOG_TRADES_ONLY. Fix: gate matches LogWarning / LogRisk.     |
+//|                                                                               |
+//|  [V8-16] ATR-PERIOD-VALIDATE: InpATR_Period validated in OnInit()            |
+//|    InpATR_Period had no bounds check. Value <= 0 caused iATR() to return     |
+//|    INVALID_HANDLE; all ATR features (SL/TP, adaptive threshold, spread ATR   |
+//|    filter) silently degraded with no alert. Fix: INIT_PARAMETERS_INCORRECT   |
+//|    on InpATR_Period < 1, consistent with all other indicator inputs.          |
+//|                                                                               |
+//|  [V8-16] BANNER-STALE: file header banner updated to v8.16                   |
+//|    Lines 2–6 still read v8.13 after two patch cycles. Fix: updated.          |
+//|                                                                               |
+//|  [V8-16] TP-FORMAT-ASYMMETRY: isTPHit expanded with full-text TP variants    |
+//|    V8-15 SL-SLASH-FORMAT added "stop loss"/"stop-loss" to isSLHit but its   |
+//|    stated isTPHit symmetry omitted "take profit"/"take-profit". A broker      |
+//|    writing "take profit" left the mutual-exclusion guard incomplete; a TP      |
+//|    close with negative net could be misclassified as an SL hit and inflate   |
+//|    g_consecutiveLosses. Fix: isTPHit gains both variants; isSLHit guard       |
+//|    rewritten as && !isTPHit (single evaluation, four variants covered).       |
+```
