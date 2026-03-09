@@ -1,0 +1,11 @@
+v8.07 is ready — 3,137 lines (+101 from v8.06). Here's a summary of the 8 passes applied in order:
+
+Pass 1 — Version bump — header, #property version, EA_VERSION/EA_NAME all updated to 8.07 with a full v8.22 changelog block.
+Pass 2 — SL-COOLDOWN-PERSIST (Medium) — g_lastSLBarTimeBuy/Sell now saved in RiskStateSave() and restored in RiskStateLoad(). InpSLCooldownBars protection no longer silently resets on every restart.
+Pass 3 — CVD-DRY (Medium) — New ComputeCVDSlope(int bi) helper extracted. Both the C6 inline block (ComputeHFTSignal) and the Component 4 inline block (GetConvictionResult) replaced with calls to it. One formula change now propagates everywhere automatically.
+Pass 4 — ARRAYRESIZE (Low) — ArrayResize(tags, 0, 12) at initialisation in GetConvictionResult. The 12-slot reserve eliminates up to 10 sequential heap reallocations per call.
+Pass 5 — UA-SCORE (Medium) — UA_Lo and UA_Hi excluded from componentCount using the same carve-out pattern as NakedPOC. Both tags are still retained in the label string for display/logging. A borderline trade can no longer be pushed through the conviction gate by a signal that the HFT score cannot see.
+Pass 6 — CTR-ANALYSIS (Low) — New CounterSave() function writes only the two counter GlobalVariables. Called immediately after g_sigMarkerCount++ in EvalAndFireSignal. The CARRY-CTR crash-collision fix now works correctly in analysis mode.
+Pass 7 — NEWDAY-DEFER (Low) — g_newDayDeferStart timestamp added. CheckNewDay() now records the first defer tick and forces the snapshot after 24 hours regardless of open positions, preventing a stale balance baseline over weekend gaps.
+Pass 8 — DELTA-THRESHOLD (Low) — New InpDeltaConvThreshold input (default 0.35) replaces the hardcoded literal in Component 2 of GetConvictionResult. Now consistent with the rest of the input surface.
+Pass 9 — SL-COMMENT-CASE (Low, from architecture notes) — commentLower = StringToLower(comment) computed once; all three StringFind checks in OnTradeTransaction now operate on the lowercase copy. Brokers writing SL, S/L, or TP in uppercase are handled correctly.
