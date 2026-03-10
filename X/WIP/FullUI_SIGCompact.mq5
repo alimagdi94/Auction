@@ -2745,6 +2745,12 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
    // EvalAndAlertSignals already updated g_lastSignalBar.
    int lastDrawnBar = -9999;
 
+   // Compact hint overlap avoidance (screen-space)
+   int placedCount = 0;
+   int placedX[64];
+   int placedY[64];
+   int placedHalfW[64];
+
    for(int v = 0; v < visBars; v++)
      {
       int shift = firstVis - v;
@@ -2792,131 +2798,73 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       int barBot = MathMax(wy_h, wy_l);
       int barH   = MathMax(barBot - barTop, 1);
 
-      //--- Colours ---
-      color sigColor  = isBuySignal ? InpSignalBuyColor : InpSignalSellColor;
-      color bgDark    = isBuySignal ? C'3,22,12'        : C'22,3,8';
-      color bgHeader  = isBuySignal ? C'5,38,20'        : C'38,5,14';
-      uint  cBdr      = FpARGB(sigColor, 255);
-      uint  cGlow1    = FpARGB(sigColor,  90);
-      uint  cGlow2    = FpARGB(sigColor,  35);
-      uint  cBgDark   = FpARGB(bgDark,  240);
-      uint  cBgHdr    = FpARGB(bgHeader, 240);
-      uint  cWhite    = FpARGB(clrWhite, 255);
-      uint  cDim      = FpARGB(C'155,155,175', 220);
-      uint  cShadow   = FpARGB(clrBlack, 200);
-      uint  cSep      = FpARGB(sigColor, 130);
-      uint  cAccent   = FpARGB(sigColor, 200);
-      uint  cScoreVal = FpARGB(isBuySignal ? C'80,255,150' : C'255,100,110', 255);
+      //--- Compact hint text (direction + HFT + OFS only) ---
+      color  sigColor  = isBuySignal ? InpSignalBuyColor : InpSignalSellColor;
+      uint   cText     = FpARGB(sigColor, 245);
+      uint   cShadow   = FpARGB(clrBlack, 170);
+      int    hftDisp   = (int)MathRound(isBuySignal ? hftScore : -hftScore);
+      string arrowStr  = isBuySignal ? ShortToString(0x25B2) : ShortToString(0x25BC); // ▲ / ▼
+      string hint      = StringFormat("%s HFT:%d OFS:%d", arrowStr, hftDisp, ofsScore);
 
-      //--- Build card text ---
-      int    score    = (int)MathRound(isBuySignal ? hftScore : -hftScore);
-      string arrowStr = isBuySignal ? ShortToString(0x25B2) : ShortToString(0x25BC); // ▲ / ▼
-      string dirStr   = isBuySignal ? "BUY SIGNAL" : "SELL SIGNAL";
-      string tfStr    = EnumToString(Period());
-      StringReplace(tfStr, "PERIOD_", "");
-      double closePrice = iClose(_Symbol, PERIOD_CURRENT, shift);
-      string priceStr   = DoubleToString(closePrice, _Digits);
-      string timeStr    = TimeToString(g_bars[bi].bar_time, TIME_MINUTES);
+      // Small, no-fill, single-line hint — below buys / above sells
+      canvas.FontSet("Consolas", 9, FW_BOLD);
+      int twHint = 0, thHint = 0;
+      canvas.TextSize(hint, twHint, thHint);
+      const int hintH  = 12;  // fallback for overlap checks if TextSize fails
+      int boxW = (twHint > 0 ? twHint : (int)(barW * 2));
+      int boxH = (thHint > 0 ? thHint : hintH);
+      const int gapY   = 2;   // minimal padding from bar edge
+      const int stepY  = 12;  // vertical nudge step to avoid overlap
 
-      string rowHeader = arrowStr + " " + dirStr;
-      string rowScores = StringFormat("HFT: %d   |   OFS: %d", score, ofsScore);
-      string rowPrice  = "Price: " + priceStr;
-      string rowFooter = _Symbol + " · " + tfStr + " · " + timeStr;
+      int hx = barCX;
+      int hy = isBuySignal ? (barBot + gapY) : (barTop - boxH - gapY);
 
-      //--- Card layout constants ---
-      int cardW   = MathMax(barW * 2 + 40, 192);
-      int padX    = 8;
-      int padY    = 5;
-      int hdrH    = 18;   // header row height
-      int rowH    = 14;   // data row height
-      int sepH    = 1;    // separator height
-      int cardH   = padY + hdrH + sepH + 3 + rowH + rowH + rowH + padY;  // ~73px
+      // Clamp initial placement to canvas bounds
+      int halfBoxW = boxW / 2;
+      if(hx < 2 + halfBoxW) hx = 2 + halfBoxW;
+      if(hx > cw - 2 - halfBoxW) hx = cw - 2 - halfBoxW;
+      if(hy < 2) hy = 2;
+      if(hy > ch - boxH - 2) hy = ch - boxH - 2;
 
-      int ballR   = MathMax(InpSigBallMinRadius, InpSigBallRadius);
-      int stemGap = 4;
-
-      //--- Position card above bar (SELL) or below bar (BUY) ---
-      int ballY, cardX1, cardY1, cardX2, cardY2;
-
-      if(isBuySignal)
+      // Smart offset: avoid overlaps with previously placed hints nearby in X/Y
+      int tries = 0;
+      while(tries < 10)
         {
-         ballY  = barBot + ballR + stemGap;
-         cardY1 = ballY  + ballR + stemGap + 2;
-         cardY2 = cardY1 + cardH;
-        }
-      else
-        {
-         ballY  = barTop - ballR - stemGap;
-         cardY2 = ballY  - ballR - stemGap - 2;
-         cardY1 = cardY2 - cardH;
+         bool conflict = false;
+         int  maxCheck = MathMin(placedCount, 64);
+         for(int i = 0; i < maxCheck; i++)
+           {
+            int minDx = halfBoxW + placedHalfW[i] + 2;
+            if(MathAbs(hx - placedX[i]) <= minDx && MathAbs(hy - placedY[i]) <= (boxH + 1))
+              {
+               conflict = true;
+               break;
+              }
+           }
+         if(!conflict)
+            break;
+
+         // Move further away from the candle body: down for buys, up for sells
+         hy += isBuySignal ? stepY : -stepY;
+
+         // Keep within screen bounds; stop if we can't resolve reasonably
+         if(hy < 2 || hy > ch - boxH - 2)
+            break;
+         tries++;
         }
 
-      // Center card on bar, clamp to canvas edges
-      cardX1 = barCX - cardW / 2;
-      cardX2 = cardX1 + cardW;
-      if(cardX1 < 2)      { cardX1 = 2;      cardX2 = cardX1 + cardW; }
-      if(cardX2 > cw - 2) { cardX2 = cw - 2; cardX1 = cardX2 - cardW; }
-      if(cardY1 < 2)      { cardY1 = 2;       cardY2 = cardY1 + cardH; }
-      if(cardY2 > ch - 2) { cardY2 = ch - 2;  cardY1 = cardY2 - cardH; }
+      // Record placement for subsequent overlap checks
+      if(placedCount < 64)
+        {
+         placedX[placedCount] = hx;
+         placedY[placedCount] = hy;
+         placedHalfW[placedCount] = halfBoxW;
+         placedCount++;
+        }
 
-      //--- 1. Bar frame (triple-layer glow for crisp halo effect) ---
-      canvas.Rectangle(x1 - 3, barTop - 3, x2 + 3, barBot + 3, cGlow2);
-      canvas.Rectangle(x1 - 2, barTop - 2, x2 + 2, barBot + 2, cGlow1);
-      canvas.Rectangle(x1 - 1, barTop - 1, x2 + 1, barBot + 1, cBdr);
-      canvas.Rectangle(x1,     barTop,     x2,     barBot,     cBdr);
-
-      //--- 2. Stem: vertical line from bar edge to ball ---
-      int stemY1 = isBuySignal ? barBot  : cardY2;
-      int stemY2 = isBuySignal ? cardY1  : barTop;
-      canvas.LineVertical(barCX, stemY1, stemY2, FpARGB(sigColor, 100));
-
-      //--- 3. Ring ball on the stem (Bookmap bubble style) ---
-      DrawRings(barCX, ballY, ballR, sigColor, 235);
-
-      //--- 4. Card outer glow ---
-      canvas.Rectangle(cardX1 - 2, cardY1 - 2, cardX2 + 2, cardY2 + 2, cGlow2);
-      canvas.Rectangle(cardX1 - 1, cardY1 - 1, cardX2 + 1, cardY2 + 1, cGlow1);
-
-      //--- 5. Card background ---
-      canvas.FillRectangle(cardX1, cardY1, cardX2, cardY2, cBgDark);
-
-      //--- 6. Header band (slightly lighter background) ---
-      int hdrY2 = cardY1 + padY + hdrH + padY / 2;
-      canvas.FillRectangle(cardX1, cardY1, cardX2, hdrY2, cBgHdr);
-
-      //--- 7. Left accent stripe (3px) ---
-      canvas.FillRectangle(cardX1, cardY1, cardX1 + 3, cardY2, cAccent);
-
-      //--- 8. Card border ---
-      canvas.Rectangle(cardX1, cardY1, cardX2, cardY2, cBdr);
-
-      //--- 9. Separator line below header ---
-      canvas.LineHorizontal(cardX1 + 4, cardX2 - 1, hdrY2, cSep);
-
-      //--- 10. Header text: ▲ BUY SIGNAL / ▼ SELL SIGNAL ---
-      canvas.FontSet("Consolas", 12, FW_BOLD);
-      int tX  = cardX1 + padX + 4;
-      int tY  = cardY1 + padY;
-      canvas.TextOut(tX + 1, tY + 1, rowHeader, cShadow, TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     tY,     rowHeader, FpARGB(sigColor, 255), TA_LEFT | TA_TOP);
-
-      //--- 11. Score row: HFT: xx  |  OFS: xx ---
-      canvas.FontSet("Consolas", 10, FW_BOLD);
-      int r2Y = hdrY2 + 4;
-      canvas.TextOut(tX + 1, r2Y + 1, rowScores, cShadow,   TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     r2Y,     rowScores, cScoreVal,  TA_LEFT | TA_TOP);
-
-      //--- 12. Price row ---
-      canvas.FontSet("Consolas", 10, FW_NORMAL);
-      int r3Y = r2Y + rowH;
-      canvas.TextOut(tX + 1, r3Y + 1, rowPrice, cShadow, TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     r3Y,     rowPrice, cWhite,  TA_LEFT | TA_TOP);
-
-      //--- 13. Footer: Symbol · TF · Time ---
-      canvas.FontSet("Consolas", 9, FW_NORMAL);
-      int r4Y = r3Y + rowH;
-      canvas.TextOut(tX + 1, r4Y + 1, rowFooter, cShadow, TA_LEFT | TA_TOP);
-      canvas.TextOut(tX,     r4Y,     rowFooter, cDim,    TA_LEFT | TA_TOP);
+      // Draw minimal hint text (shadow + main)
+      canvas.TextOut(hx + 1, hy + 1, hint, cShadow, TA_CENTER | TA_TOP);
+      canvas.TextOut(hx,     hy,     hint, cText,   TA_CENTER | TA_TOP);
      }
   }
 
