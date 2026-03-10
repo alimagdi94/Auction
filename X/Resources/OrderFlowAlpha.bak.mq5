@@ -1275,24 +1275,21 @@ void EnsureScratch(int needed)
 //|  A. Delta ratio          — directional by sign                  |
 //|  B. Imbalance balance    — (buyImb-sellImb)/(total) → [0,1]    |
 //|  C. Stacked imbalance    — buy=1.0 / sell=0.0 / mixed=0.5      |
-//|  D. Absorption sentiment — flipped by bar direction             |
+//|  D. Absorption sentiment — location-aware, LOW vs HIGH         |
 //+------------------------------------------------------------------+
 int ComputeOFScore(int bi)
   {
-   int  len   = g_bars[bi].level_count;
-   long tvol  = g_bars[bi].total_vol;
-   if(len == 0 || tvol == 0)
-      return 50;
+   int  len  = g_bars[bi].level_count;
+   long tvol = g_bars[bi].total_vol;
+   if(len == 0 || tvol == 0) return 50;
 
-   // A: delta ratio [-1,+1] → [0,1]
-   double dRatio = (double)g_bars[bi].total_delta / (double)tvol;
-   dRatio        = MathMax(-1.0, MathMin(1.0, dRatio));
+   double rawDr = (double)g_bars[bi].total_delta / (double)tvol;
+   if(!MathIsValidNumber(rawDr)) rawDr = 0.0;
+   double dRatio = MathMax(-1.0, MathMin(1.0, rawDr));
    double cDelta = (dRatio + 1.0) * 0.5;
 
-   // B: directional imbalance balance [-1=all sell, +1=all buy] → [0,1]
    int  imbBuy = 0, imbSell = 0;
-   bool hasStackBuy = false, hasStackSell = false;
-   bool hasAbsorb   = false;
+   bool hasStackBuy = false, hasStackSell = false, hasAbsorb = false;
    for(int i = 0; i < len; i++)
      {
       if(g_bars[bi].levels[i].is_imb_buy)          imbBuy++;
@@ -1301,103 +1298,111 @@ int ComputeOFScore(int bi)
       if(g_bars[bi].levels[i].is_stacked_imb_sell) hasStackSell = true;
       if(g_bars[bi].levels[i].is_absorption)        hasAbsorb    = true;
      }
-   int totalImb = imbBuy + imbSell;
-   double cImb;
+   int    totalImb = imbBuy + imbSell;
+   double cImb = 0.5;
    if(totalImb > 0)
-      cImb = ((double)(imbBuy - imbSell) / (double)totalImb + 1.0) * 0.5;
-   else
-      cImb = 0.5; // no imbalances → neutral
+     {
+      double rawImb = ((double)(imbBuy - imbSell) / (double)totalImb + 1.0) * 0.5;
+      cImb = MathIsValidNumber(rawImb) ? rawImb : 0.5;
+     }
 
-   // C: stacked direction
    double cStack;
    if     (hasStackBuy  && !hasStackSell) cStack = 1.0;
    else if(hasStackSell && !hasStackBuy)  cStack = 0.0;
-   else                                    cStack = 0.5; // both or neither → neutral
+   else                                    cStack = 0.5;
 
-   // D: absorption sentiment — absorbing sellers on bullish bar = bullish, vice versa
-   double cAbsorb;
-   if(!hasAbsorb)
-      cAbsorb = 0.5; // no absorption → neutral contribution
-   else
-      cAbsorb = g_bars[bi].is_bullish ? 1.0 : 0.0;
+   // [V8-19] Ascending sort: levels[0]=LOW, levels[len-1]=HIGH.
+   //    i < chkA indexes the LOW end (bullish absorption); i >= len-chkA indexes HIGH (bearish).
+   bool absOfsLow = false, absOfsHigh = false;
+   {
+      int chkA = MathMin(3, len/3+1);
+      for(int i = 0;        i < chkA; i++) if(g_bars[bi].levels[i].is_absorption) absOfsLow  = true;
+      for(int i = len-chkA; i < len;  i++) if(g_bars[bi].levels[i].is_absorption) absOfsHigh = true;
+   }
+   double cAbsorb = (!absOfsLow && !absOfsHigh) ? 0.5
+                  : ( absOfsLow && !absOfsHigh)  ? 1.0
+                  : (!absOfsLow &&  absOfsHigh)  ? 0.0
+                  : 0.5;  // absorption at both extremes = neutral
 
    double wD = MathMax(0.0, InpOFWtDelta)   / 100.0;
    double wI = MathMax(0.0, InpOFWtImb)     / 100.0;
    double wS = MathMax(0.0, InpOFWtStacked) / 100.0;
    double wA = MathMax(0.0, InpOFWtAbsorb)  / 100.0;
    double wT = wD + wI + wS + wA;
-   if(wT <= 0.0) wT = 1.0; // prevent division by zero if all weights = 0
+   if(wT <= 0.0) wT = 1.0;
 
-   double raw   = (cDelta * wD + cImb * wI + cStack * wS + cAbsorb * wA) / wT;
-   int    score = (int)(raw * 100.0 + 0.5);
+   double raw = (cDelta*wD + cImb*wI + cStack*wS + cAbsorb*wA) / wT;
+   if(!MathIsValidNumber(raw)) raw = 0.5;
+   int score = (int)(raw * 100.0 + 0.5);
    return MathMax(0, MathMin(100, score));
+  }
+
+// [V8-22] CVD-DRY: shared helper for the 3-bar recency-weighted CVD slope.
+//    Previously duplicated in multiple components; centralised here.
+double ComputeCVDSlope(int bi)
+  {
+   if(bi < 2) return 0.0;
+   long v0 = MathMax(1, g_bars[bi].total_vol);
+   long v1 = MathMax(1, g_bars[bi-1].total_vol);
+   long v2 = MathMax(1, g_bars[bi-2].total_vol);
+   double nd0 = (double)g_bars[bi].total_delta   / v0;
+   double nd1 = (double)g_bars[bi-1].total_delta / v1;
+   double nd2 = (double)g_bars[bi-2].total_delta / v2;
+   if(!MathIsValidNumber(nd0)) nd0 = 0.0;
+   if(!MathIsValidNumber(nd1)) nd1 = 0.0;
+   if(!MathIsValidNumber(nd2)) nd2 = 0.0;
+   return (2.0 * (nd0 - nd1) + (nd1 - nd2)) / 3.0;
   }
 
 //+------------------------------------------------------------------+
 //| HFT Multi-Factor Signal Score                                    |
 //| Returns -100 (strong sell) to +100 (strong buy).                |
-//| 6 independently-sourced order-flow components:                  |
-//|  1. OFS composite (delta/imbalance/absorption)   wt = 30 %      |
-//|  2. Delta exhaustion / divergence confirmation   wt = 20 %      |
-//|  3. POC gravity — POC position inside the bar    wt = 15 %      |
-//|  4. Absorption at extremes (hi/lo clusters)      wt = 15 %      |
-//|  5. Bid/Ask exhaustion at bar extremes           wt = 10 %      |
-//|  6. 3-bar normalised CVD momentum slope          wt = 10 %      |
+//| 6 independently-sourced order-flow components.                  |
+//| [V7-12], [V8-17], [V8-19], [V8-20], [V8-21], [V8-23] integrated.|
 //+------------------------------------------------------------------+
-double ComputeHFTSignal(int bi)
+double ComputeHFTSignal(int bi, int preOFS = -1)
   {
    int  len  = g_bars[bi].level_count;
    long tvol = g_bars[bi].total_vol;
-   if(len == 0 || tvol == 0)
-      return 0.0;
+   if(len == 0 || tvol == 0) return 0.0;
 
-   // ── Component 1: OFS Score (normalised -1 → +1) ───────────────
-   int    ofs = ComputeOFScore(bi);
-   double c1  = (ofs - 50.0) / 50.0;   // centre at 0, range ±1
+   // C1: OFS Score (30%) — reuse preOFS when supplied to avoid redundant level scan
+   double c1 = ((preOFS >= 0 ? preOFS : ComputeOFScore(bi)) - 50.0) / 50.0;
 
-   // ── Component 2: Delta Exhaustion / Divergence Confirmation ───
-   // Pure delta ratio aligned with price = continuation signal.
-   // Delta divergence (price up / delta negative) flips the sign —
-   // it reveals hidden selling or buying pressure and is one of the
-   // most reliable HFT reversal signals.
-   double dRatio = MathMax(-1.0, MathMin(1.0,
-                            (double)g_bars[bi].total_delta / tvol));
+   // C2: Delta exhaustion / divergence (20%)
+   double rawDr = (double)g_bars[bi].total_delta / (double)tvol;
+   if(!MathIsValidNumber(rawDr)) rawDr = 0.0;
+   double dRatio = MathMax(-1.0, MathMin(1.0, rawDr));
    double c2 = g_bars[bi].is_delta_divergence ? -dRatio : dRatio;
 
-   // ── Component 3: POC Gravity — where is control price? ────────
-   // Levels sorted descending: index 0 = bar high, len-1 = bar low.
-   // POC in the lower third → buy-side controls the bar → bullish.
-   // POC in the upper third → sell-side in control → bearish.
+   // C3: POC gravity (15%)
+   // levels[] is sorted price-ascending (levels[0]=bar LOW, levels[len-1]=bar HIGH).
+   // [V8-23] C3-INDEX: price-distance formula; invariant to level density.
    double c3 = 0.0;
    if(g_bars[bi].poc_idx >= 0 && len > 2)
      {
-      double pocPos = (double)g_bars[bi].poc_idx / (double)(len - 1); // 0=top,1=bot
-      c3 = pocPos * 2.0 - 1.0; // map [0,1] → [-1,+1]  (bot=+1=bullish)
+      double range  = g_bars[bi].high - g_bars[bi].low;
+      double pocPos = (range > g_step)
+                      ? (g_bars[bi].levels[g_bars[bi].poc_idx].price - g_bars[bi].low) / range
+                      : 0.5;
+      c3 = -(pocPos * 2.0 - 1.0);
      }
 
-   // ── Component 4: Absorption at Bar Extremes ───────────────────
-   // Heavy volume absorbed at the bar LOW (sellers exhausted) →
-   //   smart money stepped in as buyers — strong bullish signal.
-   // Heavy volume absorbed at the bar HIGH (buyers absorbed) →
-   //   smart money selling into strength — bearish.
+   // C4: Absorption at extremes (10%) — [V7-12] reduced from 15%
+   // [V8-19] Ascending sort: i < chk = LOW end (bullish); i >= len-chk = HIGH end (bearish).
    double c4 = 0.0;
    {
-      int    chk         = MathMin(3, len / 3 + 1);
-      bool   absorbAtLow = false, absorbAtHigh = false;
-      for(int i = len - chk; i < len; i++)
-         if(g_bars[bi].levels[i].is_absorption)
-            absorbAtLow = true;
-      for(int i = 0; i < chk; i++)
-         if(g_bars[bi].levels[i].is_absorption)
-            absorbAtHigh = true;
-      if(absorbAtLow  && !absorbAtHigh)  c4 = +1.0;
-      else if(absorbAtHigh && !absorbAtLow) c4 = -1.0;
-      // Both or neither → neutral (0.0)
+      int  chk = MathMin(3, len/3+1);
+      bool absLow = false, absHigh = false;
+      for(int i = 0;        i < chk;  i++)
+         if(g_bars[bi].levels[i].is_absorption) absLow  = true;
+      for(int i = len-chk; i < len;  i++)
+         if(g_bars[bi].levels[i].is_absorption) absHigh = true;
+      if(absLow  && !absHigh) c4 = +1.0;
+      else if(absHigh && !absLow) c4 = -1.0;
      }
 
-   // ── Component 5: Bid/Ask Exhaustion at Bar Extremes ───────────
-   // Ask exhaustion at HIGH = buy-side fuel depleted → bearish reversal.
-   // Bid exhaustion at LOW  = sell-side fuel depleted → bullish reversal.
+   // C5: Bid/Ask exhaustion (10%)
    double c5 = 0.0;
    {
       bool exhAsk = false, exhBid = false;
@@ -1406,34 +1411,23 @@ double ComputeHFTSignal(int bi)
          if(g_bars[bi].levels[i].is_exhaustion_ask) exhAsk = true;
          if(g_bars[bi].levels[i].is_exhaustion_bid) exhBid = true;
         }
-      if(exhBid && !exhAsk)  c5 = +1.0;
-      if(exhAsk && !exhBid)  c5 = -1.0;
+      if(exhBid && !exhAsk) c5 = +1.0;
+      if(exhAsk && !exhBid) c5 = -1.0;
      }
 
-   // ── Component 6: 3-Bar Normalised CVD Momentum Slope ──────────
-   // Measures acceleration of net order-flow over the last 3 completed
-   // bars.  Positive slope = buy pressure building (bullish momentum).
-   // Negative slope = sell pressure accelerating (bearish momentum).
-   // Only computed when at least 2 prior bars are available.
+   // C6: 3-bar normalised CVD momentum slope (15%)
+   // [V8-22] CVD-DRY: formula extracted to ComputeCVDSlope().
    double c6 = 0.0;
    if(bi >= 2)
      {
-      long v0 = MathMax(1, g_bars[bi].total_vol);
-      long v2 = MathMax(1, g_bars[bi - 2].total_vol);
-      // Slope uses only the first and third bar (3-point finite difference).
-      // The middle bar volume (bi-1) is not needed in this linear approximation.
-      double nd0 = (double)g_bars[bi].total_delta     / v0;
-      double nd2 = (double)g_bars[bi - 2].total_delta / v2;
-      // Simple 3-bar linear slope; scale ×3 for sensitivity
-      double slope = (nd0 - nd2) / 2.0;
-      c6 = MathMax(-1.0, MathMin(1.0, slope * 3.0));
+      double slope = ComputeCVDSlope(bi);
+      c6 = MathMax(-1.0, MathMin(1.0, slope * 2.25));
      }
 
-   // ── Weighted composite → [-100, +100] ─────────────────────────
-   const double w1 = 0.30, w2 = 0.20, w3 = 0.15;
-   const double w4 = 0.15, w5 = 0.10, w6 = 0.10;
-   double raw = c1 * w1 + c2 * w2 + c3 * w3
-              + c4 * w4 + c5 * w5 + c6 * w6;
+   // [V7-12] Updated weights
+   const double w1=0.30, w2=0.20, w3=0.15, w4=0.10, w5=0.10, w6=0.15;
+   double raw = c1*w1 + c2*w2 + c3*w3 + c4*w4 + c5*w5 + c6*w6;
+   if(!MathIsValidNumber(raw)) raw = 0.0;
    return MathMax(-1.0, MathMin(1.0, raw)) * 100.0;
   }
 
@@ -3546,17 +3540,6 @@ bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
 
    if(res.order != 0) outTicket = res.order;
    return true;
-  }
-
-//+------------------------------------------------------------------+
-//| Trading-engine helpers needed by v8 PlaceOrders/ManagePositions    |
-//+------------------------------------------------------------------+
-double ComputeHFTSignal(int bi, int ofsScore)
-  {
-   // Overload for v8 engine: reuse existing implementation.
-   // (The v8 engine passes ofsScore to avoid redundant scanning; kept for API compat.)
-   if(false) Print(ofsScore);
-   return ComputeHFTSignal(bi);
   }
 
 double CalcLot(double slDistPoints, bool isBuy)

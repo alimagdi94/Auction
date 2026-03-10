@@ -2635,9 +2635,9 @@ void DrawRings(int xc, int yc, int maxR, color col, int alpha)
 
 //+------------------------------------------------------------------+
 //| EvalAndFireSignal                                               |
-//| Pure-logic pass: evaluates the live bar, applies v8-style       |
-//| spacing/conviction gating, and then triggers the existing       |
-//| sound + chart-arrow UI.                                         |
+//| Pure-logic pass: evaluates the live bar, arms the frequency     |
+//| gate, and places a silent chart arrow object on the chart.      |
+//| No Alert(), no popup, no sound — chart object only.            |
 //| Called unconditionally from Render() — no canvas interaction.  |
 //+------------------------------------------------------------------+
 void EvalAndFireSignal()
@@ -2648,8 +2648,8 @@ void EvalAndFireSignal()
    if(nBars == 0)
       return;
 
-   // Evaluate the live (latest) bar so the arrow appears where the condition
-   // is first satisfied. Orders (in v8 PlaceOrders) use the last closed bar.
+   // Only evaluate the live (latest) bar.
+   // Historical bars are shown visually by DrawSignalMarkersPass.
    int bi = nBars - 1;
    if(g_bars[bi].level_count == 0 || g_bars[bi].total_vol == 0)
       return;
@@ -2657,47 +2657,20 @@ void EvalAndFireSignal()
    if(!g_bars[bi].sorted)
       ComputeBarSignals(bi);
 
-   // Cache guard: skip re-evaluating the same live bar at identical volume.
-   if(bi == g_sigCacheBarIdx && g_bars[bi].total_vol == g_sigCacheVol)
+   bool freqGatePass = (bi - g_lastSignalBar >= g_signalFreqBars);
+   if(!freqGatePass)
       return;
-   g_sigCacheBarIdx = bi;
-   g_sigCacheVol    = g_bars[bi].total_vol;
 
-   // Time-based spacing gate using last signal bar-time + iBarShift.
-   if(g_lastSignalBarTime > 0)
-     {
-      int barsSinceLast = iBarShift(_Symbol, PERIOD_CURRENT, g_lastSignalBarTime);
-      if(barsSinceLast >= 0 && barsSinceLast < g_signalFreqBars)
-         return;
-     }
+   double hftScore     = ComputeHFTSignal(bi);
+   int    currentScore = ComputeOFScore(bi);
 
-   // Compute OFS once and reuse inside HFT signal.
-   int    ofsScore   = ComputeOFScore(bi);
-   double hftScore   = ComputeHFTSignal(bi, ofsScore);
+   bool isBuySignal  = (hftScore >=  (double)g_signalThreshold);
+   bool isSellSignal = (hftScore <= -(double)g_signalThreshold);
 
-   // Adaptive threshold for alerts.
-   int effThresh = ComputeAdaptiveThreshold();
-
-   bool isBuySignal  = (hftScore >=  (double)effThresh);
-   bool isSellSignal = (hftScore <= -(double)effThresh);
    if(!isBuySignal && !isSellSignal)
       return;
 
-   // Conviction diversity gate — require enough distinct components.
-   ConvictionResult conv = GetConvictionResult(bi, isBuySignal);
-   if(conv.componentCount < InpMinConvictionComp)
-     {
-      LogSignal(StringFormat(
-         "Signal suppressed — only %d conviction component(s) present, need %d. Label: %s",
-         conv.componentCount, InpMinConvictionComp, conv.label));
-      return;
-     }
-
-   // Arm the spacing gate using bar-time.
-   g_lastSignalBarTime = g_bars[bi].bar_time;
-
-   int currentScore = ofsScore;
-   int displayScore = (int)MathRound(isBuySignal ? hftScore : -hftScore);
+   g_lastSignalBar = bi;   // arm the frequency gate
 
    // ── Play unique sound per signal direction ────────────────────────
    if(isBuySignal)
@@ -2707,6 +2680,7 @@ void EvalAndFireSignal()
 
    // ── Silent chart arrow ────────────────────────────────────────────
    // Name is unique per bar_time so duplicate ticks don't stack objects.
+   int    displayScore = (int)MathRound(isBuySignal ? hftScore : -hftScore);
    string objName = StringFormat("FP_Sig_%s_%I64d",
                                  isBuySignal ? "B" : "S",
                                  (long)g_bars[bi].bar_time);
