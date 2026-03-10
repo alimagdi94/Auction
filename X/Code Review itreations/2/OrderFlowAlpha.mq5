@@ -367,9 +367,10 @@ bool   g_visible     = false;
 bool   g_profileOnly = false;
 
 // --- Trading Signal Feature ---
-bool     g_signalsEnabled   = true;   // runtime toggle (mirrors InpShowSignals on init)
-int      g_signalFreqBars   = 3;      // runtime min-bars between signals (mirrors InpSignalFreqBars on init)
-int      g_signalThreshold  = 60;     // runtime score threshold (mirrors InpSignalThreshold on init)
+bool   g_signalsEnabled   = true;   // runtime toggle (mirrors InpShowSignals on init)
+int    g_signalFreqBars   = 3;      // runtime min-bars between signals (mirrors InpSignalFreqBars on init)
+int    g_signalThreshold  = 60;     // runtime score threshold (mirrors InpSignalThreshold on init)
+int    g_lastSignalBar    = -9999;  // bar index (within g_bars) at which the last alert was fired
 int    g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2;  // "Sig" button hit-test coords
 
 // Persistent scratch buffers
@@ -602,7 +603,7 @@ void ReloadHistory()
       if(StringFind(nm, "FP_Sig_") == 0)
          ObjectDelete(g_chart, nm);
      }
-   g_lastSignalBarTime = 0;  // reset spacing gate after purge so history is re-evaluated cleanly
+   g_lastSignalBar = -9999;  // reset gate after purge so history is re-evaluated cleanly
    int n = ArraySize(g_bars);
    for(int i = 0; i < n; i++)
      {
@@ -2698,20 +2699,6 @@ void EvalAndFireSignal()
    int currentScore = ofsScore;
    int displayScore = (int)MathRound(isBuySignal ? hftScore : -hftScore);
 
-   // Journal visibility for successful signals (does not affect UI behavior).
-   string tf = EnumToString(Period());
-   StringReplace(tf, "PERIOD_", "");
-   LogSignal(StringFormat(
-      "Signal FIRED — %s | %s %s | HFT: %d (thresh=%d) | OFS: %d"
-      " | Conviction: %s (%d comps) | Bar: %s | NakedPOC: %s | DeltaDiv: %s",
-      isBuySignal ? "BUY" : "SELL",
-      _Symbol, tf,
-      displayScore, effThresh, ofsScore,
-      conv.label, conv.componentCount,
-      TimeToString(g_bars[bi].bar_time, TIME_DATE|TIME_MINUTES),
-      g_bars[bi].is_naked_poc        ? "YES" : "NO",
-      g_bars[bi].is_delta_divergence ? "YES" : "NO"));
-
    // ── Play unique sound per signal direction ────────────────────────
    if(isBuySignal)
       PlaySound(InpSignalBuySound);
@@ -2774,8 +2761,8 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
    int ch = canvas.Height();
 
    // Local frequency gate — tracks the last bar for which a marker was drawn
-   // so that the visual spacing matches g_signalFreqBars regardless of how many
-   // runtime alerts actually fired.
+   // so that the visual spacing matches g_signalFreqBars regardless of whether
+   // EvalAndAlertSignals already updated g_lastSignalBar.
    int lastDrawnBar = -9999;
 
    // Compact hint overlap avoidance (screen-space)
@@ -4147,10 +4134,10 @@ int OnInit()
    // Seed runtime VA% so the button shows the correct value on load
    g_vaPercent    = (double)InpVAPercent;
    // Seed signal runtime state
-   g_signalsEnabled    = InpShowSignals;
-   g_signalFreqBars    = MathMax(1, InpSignalFreqBars);
-   g_signalThreshold   = MathMax(1, MathMin(99, InpSignalThreshold));
-   g_lastSignalBarTime = 0;
+   g_signalsEnabled  = InpShowSignals;
+   g_signalFreqBars  = MathMax(1, InpSignalFreqBars);
+   g_signalThreshold = MathMax(1, MathMin(99, InpSignalThreshold));
+   g_lastSignalBar   = -9999;
    g_visible         = true;   // show footprint on load; user can toggle with the Viz/Hid button
 
    // --- Automated Trading init ---
@@ -4450,7 +4437,7 @@ void OnChartEvent(const int id, const long &lparam,
       freqV        = MathMax(1, MathMin(500, freqV));
       g_signalFreqBars = freqV;
       ObjectSetString(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT, IntegerToString(g_signalFreqBars));
-      g_lastSignalBarTime = 0;  // reset spacing gate so next signal fires immediately
+      g_lastSignalBar = -9999;  // reset gate so next signal fires immediately
       g_dirty = true;
       Render();
       return;
@@ -4464,7 +4451,7 @@ void OnChartEvent(const int id, const long &lparam,
       thrV          = MathMax(1, MathMin(99, thrV));
       g_signalThreshold = thrV;
       ObjectSetString(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT, IntegerToString(g_signalThreshold));
-      g_lastSignalBarTime = 0;  // reset spacing gate — new threshold may expose new signals
+      g_lastSignalBar = -9999;  // reset gate — new threshold may expose new signals
       g_dirty = true;
       Render();
       return;
@@ -4663,7 +4650,7 @@ void OnChartEvent(const int id, const long &lparam,
       else if(HitTest(mx, my, g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2))
         {
          g_signalsEnabled = !g_signalsEnabled;
-         g_lastSignalBarTime = 0; // reset spacing gate on toggle
+         g_lastSignalBar  = -9999; // reset frequency gate on toggle
          g_dirty          = true;
          Render();
         }
