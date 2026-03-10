@@ -1,0 +1,11 @@
+Mechanically: You now have:
+Broker-safe symbol properties and lot-step guards.
+Centralized and robust SL/TP logic.
+Size clamping plus direction-aware lot sizing with reduction.
+Equity and daily-percent risk halts with persistence.
+Session, HTF, spread, and conviction filters.
+Safer pending expiry and trade management respecting broker stops levels.
+Practically: This is production-grade from a code/risk-engine standpoint, but you still need:
+MetaEditor compile with zero errors/warnings.
+Strategy Tester runs across symbols/TFs to verify behavior and logs.
+Demo / tiny-live forward test to observe behavior under real broker conditions (gaps, news, rollovers) before scaling size.
