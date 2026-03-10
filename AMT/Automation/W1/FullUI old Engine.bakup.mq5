@@ -30,20 +30,7 @@ enum ENUM_FOOT_CHART_MODE
    FOOT_CHART_BIDASK = 2    // Bid x Ask cluster (industry standard)
   };
 
-//--- Logging (used by the enhanced trading engine)
-enum ENUM_LOG_MODE
-  {
-   LOG_SILENT      = 0,
-   LOG_TRADES_ONLY = 1,
-   LOG_SIGNALS     = 2,
-   LOG_FULL        = 3
-  };
-
 //--- Inputs
-input group "Logging"
-input bool          InpLoggingEnable = true;      // Write EA messages to the MT5 journal
-input ENUM_LOG_MODE InpLogMode       = LOG_FULL;  // Verbosity: Silent | Trades only | Signals | Full
-
 input group "Data & History"
 input int    InpTickSize        = 10;           // Base cell size (points), 1 point = 1×_Point
 input double InpImbalanceRatio  = 300.0;        // Imbalance Threshold (%)
@@ -194,33 +181,6 @@ input bool   InpCleanOldOrders    = true;         // Delete stale pending orders
 input int    InpMaxPositions      = 1;            // Max concurrent open positions for this EA (0 = unlimited)
 input ulong  InpMagic             = 20260226;     // Unique EA magic number (change if running multiple instances)
 
-input group "Automated Trading — V7 Filters"
-input bool   InpAnalysisMode        = false;   // Analysis mode: simulate and draw trading visuals without live orders
-input int    InpPendingExpiryBars   = 0;       // Delete unfilled pending orders after N bars (0 = never)
-input double InpSpreadATRRatio      = 0.0;     // Max spread as a fraction of ATR (0 = disabled)
-input int    InpMinConvictionComp   = 0;       // Min distinct conviction sources required to trade (0 = off)
-input bool   InpAdaptiveThreshold   = false;   // Adaptive signal threshold scaled by volatility (ATR)
-input double InpAdaptiveThreshMin   = 35.0;    // Adaptive threshold floor
-input double InpAdaptiveThreshMax   = 75.0;    // Adaptive threshold ceiling
-input int    InpSLCooldownBars      = 0;       // Bars to block same-direction re-entry after an SL (0 = off)
-input double InpDeltaConvThreshold  = 0.35;    // Strong net-delta conviction threshold (0..1)
-
-input group "Automated Trading — Higher Timeframe Filter"
-input bool            InpHTFEnable  = false;     // Trade only with HTF EMA trend
-input ENUM_TIMEFRAMES InpHTFPeriod  = PERIOD_H1; // Higher timeframe
-input int             InpHTFEMA     = 50;        // EMA period on HTF
-
-input group "Automated Trading — Session Filter"
-input bool   InpSessionEnable    = false; // Restrict entries to a session window
-input int    InpSessionStartHour = 7;     // Session open (server hour, inclusive)
-input int    InpSessionEndHour   = 17;    // Session close (server hour, exclusive; start>end = overnight)
-
-input group "Automated Trading — Risk Controls"
-input double InpMaxDailyLossPercent = 0.0; // Halt trading for the day after X% loss from day-start balance (0 = off)
-input int    InpMaxConsecLosses     = 0;   // Consecutive SL hits before 50% size reduction (0 = off)
-input int    InpHaltConsecLosses    = 0;   // Consecutive SL hits to halt trading for the session (0 = off)
-input int    InpSizeReductionTrades = 3;   // Trades at half-size after the consecutive-loss limit
-
 input group "Delta Mode Cell Coloring"           // Enable per-cell green/red in Delta mode
 input bool   InpDeltaCellColor    = true;           // Enable per-cell green/red in Delta mode
 input color  InpDeltaCellBull     = C'5,70,40';     // Delta mode: ask>bid base (dark green floor)
@@ -277,14 +237,6 @@ struct FPBar
    bool       is_delta_divergence; // price moved up but delta fell (or vice versa)
    bool       is_naked_poc;        // POC level not yet retested by any subsequent bar
    PriceLevel levels[];
-  };
-
-// Enhanced trading engine: conviction result carries both label and component count
-// so the diversity gate (InpMinConvictionComp) can be applied without re-scanning.
-struct ConvictionResult
-  {
-   string label;
-   int    componentCount;
   };
 
 //--- Globals
@@ -394,128 +346,6 @@ double   g_VolMin       = 0.01;      // broker minimum lot
 double   g_VolMax       = 100.0;     // broker maximum lot
 double   g_VolStep      = 0.01;      // broker lot step
 double   g_TickSize     = 0.0;       // tick value in deposit currency
-
-// --- Enhanced trading engine runtime state (ported from OrderFlowEA_v820) ---
-bool     g_analysisMode       = false;
-ulong    g_virtualTicket      = 900000000UL;
-ulong    g_sigMarkerCount     = 800000000UL;
-int      g_sigCacheBarIdx     = -1;
-long     g_sigCacheVol        = -1;
-datetime g_lastSignalBarTime  = 0;
-ulong    g_lastManageTick     = 0;
-int      g_htfEMAHandle       = INVALID_HANDLE;
-double   g_atrBaseline        = 0.0;
-bool     g_atrBaselineReady   = false;
-double   g_dayStartBalance    = 0.0;
-int      g_dayStartDay        = -1;
-bool     g_dailyLossHalted    = false;
-int      g_consecutiveLosses  = 0;
-int      g_sizeReductionLeft  = 0;
-bool     g_sessionHalted      = false;
-bool     g_equityHalted       = false;
-datetime g_lastSLBarTimeBuy   = 0;
-datetime g_lastSLBarTimeSell  = 0;
-datetime g_newDayDeferStart   = 0;
-datetime g_pendingPlacedBarTime = 0;
-ulong    g_pendingTickets[];
-datetime g_pendingBarTimes[];
-
-#define FP_MANAGE_THROTTLE 250
-
-// --- Enhanced engine persistence helpers (GlobalVariables) ---
-string GVKey(const string field)
-  {
-   return StringFormat("FPEA_%I64u_%I64u_%s_%s",
-                       (ulong)AccountInfoInteger(ACCOUNT_LOGIN),
-                       (ulong)InpMagic, _Symbol, field);
-  }
-
-void RiskStateSave()
-  {
-   GlobalVariableSet(GVKey("ConsecLoss"),    (double)g_consecutiveLosses);
-   GlobalVariableSet(GVKey("SizeRedLeft"),   (double)g_sizeReductionLeft);
-   GlobalVariableSet(GVKey("SessHalted"),    g_sessionHalted   ? 1.0 : 0.0);
-   GlobalVariableSet(GVKey("DayLossHalted"), g_dailyLossHalted ? 1.0 : 0.0);
-   GlobalVariableSet(GVKey("DayStartDay"),   (double)g_dayStartDay);
-   GlobalVariableSet(GVKey("SigMarkerCnt"),  (double)g_sigMarkerCount);
-   GlobalVariableSet(GVKey("VirtualTicket"), (double)g_virtualTicket);
-   GlobalVariableSet(GVKey("LastSLBuy"),     (double)g_lastSLBarTimeBuy);
-   GlobalVariableSet(GVKey("LastSLSell"),    (double)g_lastSLBarTimeSell);
-   GlobalVariableSet(GVKey("NewDayDefer"),   (double)g_newDayDeferStart);
-   GlobalVariableSet(GVKey("EquityHalted"),  g_equityHalted ? 1.0 : 0.0);
-   GlobalVariableSet(GVKey("DayStartBal"),   g_dayStartBalance);
-  }
-
-void RiskStateLoad()
-  {
-   if(GlobalVariableCheck(GVKey("ConsecLoss")))
-      g_consecutiveLosses = (int)GlobalVariableGet(GVKey("ConsecLoss"));
-   if(GlobalVariableCheck(GVKey("SizeRedLeft")))
-      g_sizeReductionLeft = (int)GlobalVariableGet(GVKey("SizeRedLeft"));
-   if(GlobalVariableCheck(GVKey("SessHalted")))
-      g_sessionHalted = (GlobalVariableGet(GVKey("SessHalted")) != 0.0);
-   if(GlobalVariableCheck(GVKey("DayLossHalted")))
-      g_dailyLossHalted = (GlobalVariableGet(GVKey("DayLossHalted")) != 0.0);
-   if(GlobalVariableCheck(GVKey("DayStartDay")))
-      g_dayStartDay = (int)GlobalVariableGet(GVKey("DayStartDay"));
-   if(GlobalVariableCheck(GVKey("SigMarkerCnt")))
-      g_sigMarkerCount = (ulong)GlobalVariableGet(GVKey("SigMarkerCnt"));
-   if(GlobalVariableCheck(GVKey("VirtualTicket")))
-      g_virtualTicket = (ulong)GlobalVariableGet(GVKey("VirtualTicket"));
-   if(GlobalVariableCheck(GVKey("LastSLBuy")))
-      g_lastSLBarTimeBuy = (datetime)GlobalVariableGet(GVKey("LastSLBuy"));
-   if(GlobalVariableCheck(GVKey("LastSLSell")))
-      g_lastSLBarTimeSell = (datetime)GlobalVariableGet(GVKey("LastSLSell"));
-   if(GlobalVariableCheck(GVKey("NewDayDefer")))
-      g_newDayDeferStart = (datetime)GlobalVariableGet(GVKey("NewDayDefer"));
-   if(GlobalVariableCheck(GVKey("EquityHalted")))
-      g_equityHalted = (GlobalVariableGet(GVKey("EquityHalted")) != 0.0);
-   if(GlobalVariableCheck(GVKey("DayStartBal")))
-      g_dayStartBalance = GlobalVariableGet(GVKey("DayStartBal"));
-  }
-
-void CounterSave()
-  {
-   GlobalVariableSet(GVKey("SigMarkerCnt"),  (double)g_sigMarkerCount);
-   GlobalVariableSet(GVKey("VirtualTicket"), (double)g_virtualTicket);
-  }
-
-// --- Enhanced engine logging helpers ---
-void LogSystem(const string msg)
-  {
-   if(!InpLoggingEnable || InpLogMode < LOG_FULL) return;
-   Print(msg);
-  }
-
-void LogWarning(const string msg)
-  {
-   if(!InpLoggingEnable || InpLogMode < LOG_TRADES_ONLY) return;
-   Print("[WARN] ", msg);
-  }
-
-void LogSignal(const string msg)
-  {
-   if(!InpLoggingEnable || InpLogMode < LOG_SIGNALS) return;
-   Print("[SIGNAL] ", msg);
-  }
-
-void LogTradeExec(const string msg)
-  {
-   if(!InpLoggingEnable || InpLogMode < LOG_TRADES_ONLY) return;
-   Print("[EXEC] ", msg);
-  }
-
-void LogTradeClosed(const string msg)
-  {
-   if(!InpLoggingEnable || InpLogMode < LOG_TRADES_ONLY) return;
-   Print("[TRADE] ", msg);
-  }
-
-void LogRisk(const string msg)
-  {
-   if(!InpLoggingEnable || InpLogMode < LOG_TRADES_ONLY) return;
-   Print("[RISK] ", msg);
-  }
 
 //+------------------------------------------------------------------+
 //| Helper: point-in-rect hit test                                  |
@@ -3463,409 +3293,67 @@ bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
   }
 
 //+------------------------------------------------------------------+
-//| trade_Send (enhanced) — v8 engine signature                       |
-//| Provides broker ticket + actual SL/TP sent (after clamping).       |
-//+------------------------------------------------------------------+
-bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
-                ENUM_ORDER_TYPE            orderType,
-                double                     price,
-                double                     sl,
-                double                     tp,
-                double                     lot,
-                string                     comment,
-                ulong                     &outTicket,
-                double                    &sentSL,
-                double                    &sentTP)
-  {
-   outTicket = 0;
-   sentSL    = sl;
-   sentTP    = tp;
-
-   if(!IsTradeAllowed())
-      return false;
-
-   MqlTradeRequest req = {};
-   MqlTradeResult  res = {};
-
-   MqlTick lastTick;
-   if(!SymbolInfoTick(_Symbol, lastTick))
-     {
-      LogTradeExec(StringFormat("trade_Send: SymbolInfoTick failed (%d)", GetLastError()));
-      return false;
-     }
-
-   double freshAsk = lastTick.ask;
-   double freshBid = lastTick.bid;
-
-   if(action == TRADE_ACTION_DEAL)
-     {
-      if(orderType == ORDER_TYPE_BUY)  price = freshAsk;
-      if(orderType == ORDER_TYPE_SELL) price = freshBid;
-     }
-
-   if(action == TRADE_ACTION_PENDING)
-     {
-      if(orderType == ORDER_TYPE_BUY_STOP && price <= freshAsk)
-        { LogTradeExec(StringFormat("BuyStop skipped: entry=%s not above ask=%s", DoubleToString(price,_Digits), DoubleToString(freshAsk,_Digits))); return false; }
-      if(orderType == ORDER_TYPE_SELL_STOP && price >= freshBid)
-        { LogTradeExec(StringFormat("SellStop skipped: entry=%s not below bid=%s", DoubleToString(price,_Digits), DoubleToString(freshBid,_Digits))); return false; }
-     }
-
-   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist    = MathMax((double)stopsLevel, 1.0) * _Point;
-
-   double refPrice = price;
-   if(action == TRADE_ACTION_DEAL)
-      refPrice = (orderType == ORDER_TYPE_BUY) ? freshAsk : freshBid;
-
-   req.action       = action;
-   req.symbol       = _Symbol;
-   req.volume       = lot;
-   req.type         = orderType;
-   req.price        = NormalizeDouble(price, _Digits);
-   req.sl           = NormalizeDouble(sl,    _Digits);
-   req.tp           = NormalizeDouble(tp,    _Digits);
-   req.magic        = g_Magic;
-   req.comment      = comment;
-   req.type_filling = GetBrokerFillingMode();
-   req.expiration   = 0;
-
-   if(sl > 0.0)
-     {
-      double slDist = MathAbs(refPrice - sl);
-      if(slDist < minDist)
-        {
-         if(orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_BUY)
-            req.sl = NormalizeDouble(refPrice - minDist, _Digits);
-         else
-            req.sl = NormalizeDouble(refPrice + minDist, _Digits);
-        }
-     }
-   if(tp > 0.0)
-     {
-      double tpDist = MathAbs(refPrice - tp);
-      if(tpDist < minDist)
-        {
-         if(orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_BUY)
-            req.tp = NormalizeDouble(refPrice + minDist, _Digits);
-         else
-            req.tp = NormalizeDouble(refPrice - minDist, _Digits);
-        }
-     }
-
-   bool ok = false;
-   for(int attempt = 1; attempt <= 3; attempt++)
-     {
-      if(attempt > 1 && action == TRADE_ACTION_DEAL)
-        {
-         if(SymbolInfoTick(_Symbol, lastTick))
-           {
-            if(orderType == ORDER_TYPE_BUY)  req.price = NormalizeDouble(lastTick.ask, _Digits);
-            if(orderType == ORDER_TYPE_SELL) req.price = NormalizeDouble(lastTick.bid, _Digits);
-           }
-        }
-      ok = OrderSend(req, res);
-      if(ok) break;
-      uint rc = res.retcode;
-      if(rc != TRADE_RETCODE_REQUOTE       &&
-         rc != TRADE_RETCODE_PRICE_CHANGED &&
-         rc != TRADE_RETCODE_CONNECTION    &&
-         rc != TRADE_RETCODE_TIMEOUT) break;
-      Sleep(10);
-     }
-
-   sentSL = req.sl;
-   sentTP = req.tp;
-
-   if(!ok)
-     {
-      LogTradeExec(StringFormat(
-         "OrderSend FAILED: retcode=%u action=%s type=%s price=%s sl=%s tp=%s lot=%.2f",
-         res.retcode, EnumToString(action), EnumToString(orderType),
-         DoubleToString(req.price,_Digits), DoubleToString(req.sl,_Digits),
-         DoubleToString(req.tp,_Digits), req.volume));
-      return false;
-     }
-
-   if(res.order != 0) outTicket = res.order;
-   return true;
-  }
-
-//+------------------------------------------------------------------+
-//| Trading-engine helpers needed by v8 PlaceOrders/ManagePositions    |
-//+------------------------------------------------------------------+
-double ComputeHFTSignal(int bi, int ofsScore)
-  {
-   // Overload for v8 engine: reuse existing implementation.
-   // (The v8 engine passes ofsScore to avoid redundant scanning; kept for API compat.)
-   if(false) Print(ofsScore);
-   return ComputeHFTSignal(bi);
-  }
-
-double CalcLot(double slDistPoints, bool isBuy)
-  {
-   // Direction-aware wrapper (v8 signature). Uses existing sizing then applies
-   // the consecutive-loss size reduction penalty (if active).
-   if(false) Print(isBuy);
-   double lot = CalcLot(slDistPoints);
-   if(g_sizeReductionLeft > 0)
-      lot *= 0.5;
-   return lot;
-  }
-
-int ComputeAdaptiveThreshold()
-  {
-   if(!InpAdaptiveThreshold)
-      return g_signalThreshold;
-
-   // Conservative adaptive mapping: clamp into [min,max] and fall back to the current threshold.
-   int tMin = (int)MathRound(InpAdaptiveThreshMin);
-   int tMax = (int)MathRound(InpAdaptiveThreshMax);
-   if(tMin < 1)  tMin = 1;
-   if(tMax > 99) tMax = 99;
-   if(tMin >= tMax)
-      return g_signalThreshold;
-
-   double atrVal = 0.0;
-   if(g_handleATR != INVALID_HANDLE)
-     {
-      double atrBuf[];
-      if(CopyBuffer(g_handleATR, 0, 1, 1, atrBuf) == 1)
-         atrVal = atrBuf[0];
-     }
-   if(atrVal <= 0.0)
-      return g_signalThreshold;
-
-   // Normalise ATR to pips to keep instruments comparable.
-   double atrPips = atrVal / (g_Pip > 0.0 ? g_Pip : _Point);
-
-   // Map ATR(pips) to [0,1] in a bounded range. This is intentionally simple;
-   // the full v8 baseline EMA update runs in the OnTick bar-close path.
-   double lo = 5.0, hi = 50.0;
-   double x  = (atrPips - lo) / (hi - lo);
-   if(x < 0.0) x = 0.0;
-   if(x > 1.0) x = 1.0;
-
-   int thr = (int)MathRound(tMin + x * (tMax - tMin));
-   return MathMax(1, MathMin(99, thr));
-  }
-
-ConvictionResult GetConvictionResult(int bi, bool isBuy)
-  {
-   // Lightweight conviction label + component count based on existing bar/level flags.
-   // This preserves compatibility with the v8 trading engine without changing UI signals.
-   ConvictionResult out;
-   out.label = "";
-   out.componentCount = 0;
-
-   if(bi < 0 || bi >= ArraySize(g_bars)) return out;
-   if(!g_bars[bi].sorted) ComputeBarSignals(bi);
-
-   // Component: Delta divergence
-   if(g_bars[bi].is_delta_divergence)
-     { out.label += (out.label==""?"":"+") + string("DeltaDiv"); out.componentCount++; }
-
-   // Component: Naked POC
-   if(g_bars[bi].is_naked_poc)
-     { out.label += (out.label==""?"":"+") + string("NakedPOC"); out.componentCount++; }
-
-   // Component: stacked imbalance presence (directional)
-   bool hasStackDir = false;
-   for(int i = 0; i < g_bars[bi].level_count; i++)
-     {
-      if(isBuy && g_bars[bi].levels[i].is_stacked_imb_buy)  { hasStackDir=true; break; }
-      if(!isBuy && g_bars[bi].levels[i].is_stacked_imb_sell){ hasStackDir=true; break; }
-     }
-   if(hasStackDir)
-     { out.label += (out.label==""?"":"+") + string(isBuy ? "StackBuy" : "StackSell"); out.componentCount++; }
-
-   // Component: absorption at extremes (very lightweight)
-   bool absorbLo=false, absorbHi=false;
-   int len = g_bars[bi].level_count;
-   int chk = MathMin(3, len/3 + 1);
-   for(int i=len-chk; i<len; i++) if(i>=0 && g_bars[bi].levels[i].is_absorption) absorbLo=true;
-   for(int i=0; i<chk; i++)      if(i<len && g_bars[bi].levels[i].is_absorption) absorbHi=true;
-   if((isBuy && absorbLo) || (!isBuy && absorbHi))
-     { out.label += (out.label==""?"":"+") + string(isBuy ? "AbsLow" : "AbsHigh"); out.componentCount++; }
-
-   if(out.label == "") out.label = "Base";
-   return out;
-  }
-
-bool CheckSessionTime()
-  {
-   if(!InpSessionEnable) return true;
-   datetime now = TimeCurrent();
-   MqlDateTime dt; TimeToStruct(now, dt);
-   int h = dt.hour;
-   int start = InpSessionStartHour;
-   int end   = InpSessionEndHour;
-   if(start == end) return false;
-   if(start < end)
-      return (h >= start && h < end);
-   // Overnight session (e.g. 22..6)
-   return (h >= start || h < end);
-  }
-
-bool CheckHTFTrend(bool isBuy)
-  {
-   if(!InpHTFEnable) return true;
-   if(InpHTFEMA < 2) return true;
-   int handle = iMA(_Symbol, InpHTFPeriod, InpHTFEMA, 0, MODE_EMA, PRICE_CLOSE);
-   if(handle == INVALID_HANDLE) return true;
-   double buf[];
-   bool ok = (CopyBuffer(handle, 0, 0, 1, buf) == 1);
-   IndicatorRelease(handle);
-   if(!ok || buf[0] <= 0.0) return true;
-   double px = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   return isBuy ? (px >= buf[0]) : (px <= buf[0]);
-  }
-
-bool CheckRiskConditions(bool isBuy)
-  {
-   // Minimal gating set required for v8 PlaceOrders; full v8 risk engine is integrated later.
-   if(g_equityHalted || g_sessionHalted || g_dailyLossHalted) return false;
-
-   // Equity stops are instance-agnostic but still gate new entries.
-   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   if(InpMaxEquityProfit > 0.0 && equity >= balance + InpMaxEquityProfit) { g_equityHalted = true; RiskStateSave(); return false; }
-   if(InpMaxEquityLoss   > 0.0 && equity <= balance - InpMaxEquityLoss)   { g_equityHalted = true; RiskStateSave(); return false; }
-
-   if(!CheckSessionTime()) return false;
-   if(!CheckHTFTrend(isBuy)) return false;
-   return true;
-  }
-
-void DrawAnalysisEntry(ulong ticket, bool isBuy, double entry, double sl, double tp,
-                       datetime bt, const string label, int hft, int ofs)
-  {
-   // No-op in FullUI: trading visuals are intentionally not part of the UI contract here.
-   if(false) Print(ticket, isBuy, entry, sl, tp, bt, label, hft, ofs);
-  }
-
-void DrawTradeEntry(ulong ticket, bool isBuy, double entry, double sl, double tp,
-                    datetime bt, const string label, int hft, int ofs)
-  {
-   // No-op in FullUI: trading visuals are intentionally not part of the UI contract here.
-   if(false) Print(ticket, isBuy, entry, sl, tp, bt, label, hft, ofs);
-  }
-
-void UpdateSLLine(ulong posId, double newSL)
-  {
-   // No-op in FullUI: no trade visuals maintained here.
-   if(false) Print(posId, newSL);
-  }
-
-void CleanupAllTradeObjects()
-  {
-   // No-op in FullUI: trade objects are not created by default.
-  }
-
-void SyncPendingTracking()
-  {
-   int pn = ArraySize(g_pendingTickets);
-   if(pn == 0) return;
-
-   for(int pi = pn-1; pi >= 0; pi--)
-     {
-      ulong tk = g_pendingTickets[pi];
-      bool stillAlive = false;
-      if(OrderSelect(tk))
-        {
-         if((ulong)OrderGetInteger(ORDER_MAGIC) == g_Magic &&
-            OrderGetString(ORDER_SYMBOL)        == _Symbol)
-           {
-            ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-            if(ot == ORDER_TYPE_BUY_STOP  || ot == ORDER_TYPE_SELL_STOP ||
-               ot == ORDER_TYPE_BUY_LIMIT || ot == ORDER_TYPE_SELL_LIMIT)
-               stillAlive = true;
-           }
-        }
-      if(!stillAlive)
-        {
-         LogTradeExec(StringFormat(
-            "PENDING-SYNC: ticket=%I64u no longer live (filled/deleted/missing). Removing from tracking.",
-            tk));
-         int rem = ArraySize(g_pendingTickets) - 1;
-         for(int k = pi; k < rem; k++)
-           { g_pendingTickets[k] = g_pendingTickets[k+1];
-             g_pendingBarTimes[k] = g_pendingBarTimes[k+1]; }
-         ArrayResize(g_pendingTickets,  rem);
-         ArrayResize(g_pendingBarTimes, rem);
-        }
-     }
-  }
-
-//+------------------------------------------------------------------+
 //| PlaceOrders — evaluate last closed bar and fire orders           |
 //|   Supports Market (instant fill) and Pending (stop) modes.      |
 //|   SL/TP computed by CalcSLTP() — mode-aware, ATR-aware.         |
 //+------------------------------------------------------------------+
 void PlaceOrders()
   {
-   if(!g_autoTrade && !g_analysisMode) return;
-   if(!g_analysisMode && !IsTradeAllowed()) return;
+   if(!g_autoTrade)      return;
+   if(!IsTradeAllowed()) return;
 
+   // ── Position limit ───────────────────────────────────────────────
+   if(InpMaxPositions > 0 && CountOpenPositions() >= InpMaxPositions)
+      return;
+
+   // ── Equity stop checks ───────────────────────────────────────────
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(InpMaxEquityProfit > 0.0 && equity >= balance + InpMaxEquityProfit)
+     { Print("Footprint EA — MaxEquityProfit reached. Auto-trading halted."); g_autoTrade = false; g_dirty = true; return; }
+   if(InpMaxEquityLoss > 0.0 && equity <= balance - InpMaxEquityLoss)
+     { Print("Footprint EA — MaxEquityLoss hit. Auto-trading halted."); g_autoTrade = false; g_dirty = true; return; }
+
+   // ── Spread filter ────────────────────────────────────────────────
+   double spreadPoints = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point;
+   if(InpSpreadFilter && spreadPoints > InpMaxSpread * g_Pip)
+      return;
+
+   // ── Signal from last closed bar ──────────────────────────────────
    int nBars = ArraySize(g_bars);
    if(nBars < 2) return;
 
-   int bi = nBars - 2;   // last closed bar
+   int bi = nBars - 2;
    if(g_bars[bi].level_count == 0 || g_bars[bi].total_vol == 0) return;
    if(!g_bars[bi].sorted) ComputeBarSignals(bi);
 
-   double barHigh = g_bars[bi].high;
-   double barLow  = g_bars[bi].low;
-   if(barHigh == 0.0 || barLow == 0.0) return;
-
-   int    ofsScore = ComputeOFScore(bi);
-   double hftScore = ComputeHFTSignal(bi, ofsScore);
-
-   int effThresh = ComputeAdaptiveThreshold();
-   bool isBuy  = (hftScore >=  (double)effThresh && InpAllowBuy);
-   bool isSell = (hftScore <= -(double)effThresh && InpAllowSell);
+   double hftScore = ComputeHFTSignal(bi);
+   bool   isBuy    = (hftScore >=  (double)g_signalThreshold && InpAllowBuy);
+   bool   isSell   = (hftScore <= -(double)g_signalThreshold && InpAllowSell);
    if(!isBuy && !isSell) return;
 
-   bool direction = isBuy;
+   if(InpCleanOldOrders) DeleteAllPending();
 
-   ConvictionResult conv = GetConvictionResult(bi, direction);
-   if(conv.componentCount < InpMinConvictionComp)
-     {
-      LogTradeExec(StringFormat(
-         "PlaceOrders: conviction gate failed — %d component(s), need %d. Label: %s",
-         conv.componentCount, InpMinConvictionComp, conv.label));
-      return;
-     }
-
-   if(!g_analysisMode && !CheckRiskConditions(direction)) return;
-   if(g_analysisMode)
-     {
-      if(!CheckSessionTime()) return;
-      if(!CheckHTFTrend(direction)) return;
-     }
-
-   if(!g_analysisMode && InpCleanOldOrders)
-     {
-      DeleteAllPending();
-      ArrayResize(g_pendingTickets, 0);
-      ArrayResize(g_pendingBarTimes, 0);
-     }
-
+   // ── ATR value ────────────────────────────────────────────────────
    double atrBuf[];
    double atrVal = 0.0;
-   int    barsOnChart = iBars(_Symbol, PERIOD_CURRENT);
-   if(g_handleATR != INVALID_HANDLE && barsOnChart > InpATR_Period + 1 &&
+   if(g_handleATR != INVALID_HANDLE &&
       CopyBuffer(g_handleATR, 0, 1, 1, atrBuf) == 1)
       atrVal = atrBuf[0];
 
    double bufDist = InpBufferPips * g_Pip;
+   double barHigh = g_bars[bi].high;
+   double barLow  = g_bars[bi].low;
 
+   // ── Live tick ─────────────────────────────────────────────────────
    MqlTick lv;
    if(!SymbolInfoTick(_Symbol, lv))
-     { LogTradeExec("PlaceOrders: SymbolInfoTick failed"); return; }
+     { Print("Footprint EA — PlaceOrders: SymbolInfoTick failed"); return; }
 
-   bool isMarket = (InpOrderMode == ORDER_MODE_MARKET);
+   bool   isMarket = (InpOrderMode == ORDER_MODE_MARKET);
+   bool   direction = isBuy;                 // true=buy false=sell
 
+   // ── Entry price ───────────────────────────────────────────────────
    double entry;
    ENUM_TRADE_REQUEST_ACTIONS action;
    ENUM_ORDER_TYPE            orderType;
@@ -3878,75 +3366,26 @@ void PlaceOrders()
      }
    else
      {
-      entry     = direction
-                  ? NormalizeDouble(barHigh + bufDist, _Digits)
-                  : NormalizeDouble(barLow  - bufDist, _Digits);
+      entry     = direction ? NormalizeDouble(barHigh + bufDist, _Digits)
+                            : NormalizeDouble(barLow  - bufDist, _Digits);
       action    = TRADE_ACTION_PENDING;
       orderType = direction ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
      }
 
+   // ── SL / TP ───────────────────────────────────────────────────────
    double sl, tp;
    CalcSLTP(direction, entry, atrVal, barHigh, barLow, bufDist, sl, tp);
 
+   // ── Lot size (driven by SL distance for risk sizing) ─────────────
    double slPoints = (sl > 0.0) ? MathAbs(entry - sl) / _Point : 0.0;
-   double lot      = CalcLot(slPoints, direction);
+   double lot      = CalcLot(slPoints);
 
-   int hftInt = (int)MathRound(MathAbs(hftScore));
-
-   string tag = StringFormat("FP_%s_%s_HFT%d|%s|T%d|%s",
-                             direction ? "Buy"  : "Sell",
-                             isMarket  ? "MKT"  : "STP",
-                             hftInt, conv.label, effThresh,
-                             TimeToString(g_bars[bi].bar_time, TIME_MINUTES));
-
-   ulong  ticket = 0;
-   bool   sent   = false;
-   double sentSL = sl, sentTP = tp;
-
-   if(g_analysisMode)
-     {
-      g_virtualTicket++;
-      ticket = g_virtualTicket;
-      sent   = true;
-      CounterSave();
-      DrawAnalysisEntry(ticket, direction, entry, sl, tp,
-                        g_bars[bi].bar_time, conv.label, hftInt, ofsScore);
-      LogTradeExec(StringFormat(
-         "[ANALYSIS] ORDER | %s %s | #V%I64u | Entry: %s | SL: %s | TP: %s"
-         " | Lot: %.2f | HFT: %d (thresh=%d) | OFS: %d | Conv: %s (%d)",
-         direction?"BUY":"SELL", isMarket?"MKT":"STP",
-         ticket, DoubleToString(entry,_Digits),
-         DoubleToString(sl,_Digits), DoubleToString(tp,_Digits),
-         lot, hftInt, effThresh, ofsScore, conv.label, conv.componentCount));
-     }
-   else
-     {
-      sent = trade_Send(action, orderType, entry, sl, tp, lot, tag, ticket, sentSL, sentTP);
-      if(sent)
-        {
-         if(!isMarket) g_pendingPlacedBarTime = g_bars[bi].bar_time;
-         if(!isMarket && ticket != 0)
-           {
-            int pn = ArraySize(g_pendingTickets);
-            ArrayResize(g_pendingTickets, pn+1);
-            ArrayResize(g_pendingBarTimes, pn+1);
-            g_pendingTickets[pn] = ticket;
-            g_pendingBarTimes[pn] = g_bars[bi].bar_time;
-           }
-
-         LogTradeExec(StringFormat(
-            "ORDER PLACED [%s] %s | #%I64u | Entry: %s | SL: %s | TP: %s"
-            " | Lot: %.2f | HFT: %d (thresh=%d) | OFS: %d | Conv: %s (%d)",
-            direction?"BUY":"SELL", isMarket?"MKT":"STP",
-            ticket, DoubleToString(entry,_Digits),
-            DoubleToString(sentSL,_Digits),
-            DoubleToString(sentTP,_Digits),
-            lot, hftInt, effThresh, ofsScore, conv.label, conv.componentCount));
-
-         DrawTradeEntry(ticket, direction, entry, sentSL, sentTP,
-                        g_bars[bi].bar_time, conv.label, hftInt, ofsScore);
-        }
-     }
+   // ── Fire ──────────────────────────────────────────────────────────
+   string tag = StringFormat("FP_%s_%s_HFT%d",
+                             direction ? "Buy" : "Sell",
+                             isMarket  ? "MKT" : "STP",
+                             (int)MathRound(MathAbs(hftScore)));
+   trade_Send(action, orderType, entry, sl, tp, lot, tag);
   }
 
 //+------------------------------------------------------------------+
@@ -3954,94 +3393,78 @@ void PlaceOrders()
 //+------------------------------------------------------------------+
 void ManagePositions()
   {
-   if(g_analysisMode) return;
-   if(!IsTradeAllowed()) return;
+   if(!g_autoTrade)
+      return;
+   if(!IsTradeAllowed())
+      return;
 
-   ulong now = GetTickCount64();
-   if(now - g_lastManageTick < FP_MANAGE_THROTTLE) return;
-   g_lastManageTick = now;
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist  = MathMax((double)stopsLevel, 1.0) * _Point;  // guard: ECN brokers may return 0
 
-   SyncPendingTracking();
-
-   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist    = MathMax((double)stopsLevel, 1.0) * _Point;
-   double curBid     = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double curAsk     = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-
-   if(InpPendingExpiryBars > 0)
-     {
-      for(int pi = ArraySize(g_pendingTickets)-1; pi >= 0; pi--)
-        {
-         int barsSincePlaced = iBarShift(_Symbol, PERIOD_CURRENT, g_pendingBarTimes[pi]);
-         if(barsSincePlaced >= InpPendingExpiryBars)
-           {
-            LogTradeExec(StringFormat(
-               "Pending expiry: ticket=%I64u %d bars elapsed (limit=%d). Deleting.",
-               g_pendingTickets[pi], barsSincePlaced, InpPendingExpiryBars));
-            trade_OrderDelete(g_pendingTickets[pi]);
-            int rem = ArraySize(g_pendingTickets) - 1;
-            for(int k = pi; k < rem; k++)
-              { g_pendingTickets[k] = g_pendingTickets[k+1];
-                g_pendingBarTimes[k] = g_pendingBarTimes[k+1]; }
-            ArrayResize(g_pendingTickets, rem);
-            ArrayResize(g_pendingBarTimes, rem);
-           }
-        }
-     }
-
-   for(int i = PositionsTotal()-1; i >= 0; i--)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if((ulong)PositionGetInteger(POSITION_MAGIC) != g_Magic) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)        continue;
 
-      ulong posId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
-
       ENUM_POSITION_TYPE pType  = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       double             entry  = PositionGetDouble(POSITION_PRICE_OPEN);
       double             curSL  = PositionGetDouble(POSITION_SL);
       double             curTP  = PositionGetDouble(POSITION_TP);
+      double             curBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double             curAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double             profit = (pType == POSITION_TYPE_BUY)
                                   ? (curBid - entry) / g_Pip
                                   : (entry  - curAsk) / g_Pip;
 
       double newSL = curSL;
 
+      // ── Break-Even ───────────────────────────────────────────────
       if(InpUseBreakEven && profit >= InpBreakEvenTrigger)
         {
-         double beSL = (pType == POSITION_TYPE_BUY)
-                       ? NormalizeDouble(entry + InpBreakEvenBuffer * g_Pip, _Digits)
-                       : NormalizeDouble(entry - InpBreakEvenBuffer * g_Pip, _Digits);
+         double beSL;
+         if(pType == POSITION_TYPE_BUY)
+            beSL = NormalizeDouble(entry + InpBreakEvenBuffer * g_Pip, _Digits);
+         else
+            beSL = NormalizeDouble(entry - InpBreakEvenBuffer * g_Pip, _Digits);
+
+         // Only move SL in the favourable direction (never widen)
          bool improvement = (pType == POSITION_TYPE_BUY)
                             ? (beSL > curSL + _Point)
                             : (beSL < curSL - _Point || curSL == 0.0);
          if(improvement)
            {
+            // Ensure it respects broker stops level
             double distEntry = (pType == POSITION_TYPE_BUY)
-                               ? MathAbs(curBid - beSL) : MathAbs(curAsk - beSL);
-            if(distEntry >= minDist) newSL = beSL;
+                               ? MathAbs(curBid - beSL)
+                               : MathAbs(curAsk - beSL);
+            if(distEntry >= minDist)
+               newSL = beSL;
            }
         }
 
+      // ── Trailing Stop ────────────────────────────────────────────
       if(InpUseTrailing && profit >= InpTrailStart)
         {
-         double trailSL = (pType == POSITION_TYPE_BUY)
-                          ? NormalizeDouble(curBid - InpTrailStep * g_Pip, _Digits)
-                          : NormalizeDouble(curAsk + InpTrailStep * g_Pip, _Digits);
+         double trailSL;
+         if(pType == POSITION_TYPE_BUY)
+            trailSL = NormalizeDouble(curBid - InpTrailStep * g_Pip, _Digits);
+         else
+            trailSL = NormalizeDouble(curAsk + InpTrailStep * g_Pip, _Digits);
+
+         // Only tighten; ensure distance from current price is legal
          bool better = (pType == POSITION_TYPE_BUY)
                        ? (trailSL > newSL + _Point)
                        : (trailSL < newSL - _Point || newSL == 0.0);
          double distCur = (pType == POSITION_TYPE_BUY)
-                          ? MathAbs(curBid - trailSL) : MathAbs(curAsk - trailSL);
+                          ? MathAbs(curBid - trailSL)
+                          : MathAbs(curAsk - trailSL);
          if(better && distCur >= minDist)
             newSL = trailSL;
-         else if(!better && InpUseBreakEven && MathAbs(newSL - curSL) > _Point / 2.0)
-            LogTradeExec(StringFormat(
-               "ManagePositions: trail suppressed by BE — trailSL=%s newSL=%s | ticket=%I64u",
-               DoubleToString(trailSL,_Digits), DoubleToString(newSL,_Digits), ticket));
         }
 
+      // Only send a modify request if the stop actually changed
       if(MathAbs(newSL - curSL) > _Point / 2.0)
         {
          MqlTradeRequest req = {};
@@ -4052,7 +3475,7 @@ void ManagePositions()
          req.sl       = NormalizeDouble(newSL, _Digits);
          req.tp       = NormalizeDouble(curTP, _Digits);
          req.magic    = g_Magic;
-
+         // Retry on transient connection / busy codes
          bool modOk = false;
          for(int attempt = 1; attempt <= 3 && !modOk; attempt++)
            {
@@ -4060,17 +3483,16 @@ void ManagePositions()
             if(!modOk)
               {
                uint rc = res.retcode;
-               if(rc != TRADE_RETCODE_REQUOTE && rc != TRADE_RETCODE_CONNECTION &&
-                  rc != TRADE_RETCODE_TIMEOUT) break;
-               Sleep(10);
+               if(rc != TRADE_RETCODE_REQUOTE    &&
+                  rc != TRADE_RETCODE_CONNECTION &&
+                  rc != TRADE_RETCODE_TIMEOUT)
+                  break;
+               Sleep(200);
               }
            }
-         if(modOk)
-            UpdateSLLine(posId, req.sl);
-         else
-            LogTradeExec(StringFormat(
-               "ManagePositions modify failed: ticket=%I64u retcode=%u newSL=%s",
-               ticket, res.retcode, DoubleToString(req.sl,_Digits)));
+         if(!modOk)
+            Print("Footprint EA — ManagePositions modify failed: ticket=", ticket,
+                  " retcode=", res.retcode, " newSL=", req.sl, " tp=", req.tp);
         }
      }
   }
@@ -4162,63 +3584,6 @@ int OnInit()
         }
      }
 
-   // --- Enhanced trading engine validation (no UI impact) ---
-   if(InpPendingExpiryBars < 0)
-     {
-      Alert("Footprint: InpPendingExpiryBars must be >= 0.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpMinConvictionComp < 0)
-     {
-      Alert("Footprint: InpMinConvictionComp must be >= 0.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpAdaptiveThreshMin >= InpAdaptiveThreshMax)
-     {
-      Alert("Footprint: InpAdaptiveThreshMin must be < InpAdaptiveThreshMax.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpDeltaConvThreshold <= 0.0 || InpDeltaConvThreshold >= 1.0)
-     {
-      Alert("Footprint: InpDeltaConvThreshold must be strictly between 0 and 1.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpSessionEnable && InpSessionStartHour == InpSessionEndHour)
-     {
-      Alert("Footprint: InpSessionStartHour must not equal InpSessionEndHour.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpHTFEnable && InpHTFEMA < 2)
-     {
-      Alert("Footprint: InpHTFEMA must be >= 2.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpMaxDailyLossPercent < 0.0)
-     {
-      Alert("Footprint: InpMaxDailyLossPercent must be >= 0 (0 = disabled).");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpMaxConsecLosses < 0 || InpHaltConsecLosses < 0)
-     {
-      Alert("Footprint: Consecutive-loss inputs must be >= 0 (0 = disabled).");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpMaxConsecLosses > 0 && InpHaltConsecLosses > 0 && InpHaltConsecLosses <= InpMaxConsecLosses)
-     {
-      Alert("Footprint: InpHaltConsecLosses must be > InpMaxConsecLosses when both are enabled.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpMaxEquityProfit < 0.0 || InpMaxEquityLoss < 0.0)
-     {
-      Alert("Footprint: Equity stop inputs must be >= 0 (0 = disabled).");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpATR_Period < 1)
-     {
-      Alert("Footprint: InpATR_Period must be >= 1.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-
    // Base step in points (clamped)
    int pts = MathMax(1, MathMin(10000, InpTickSize));
    g_basePts  = pts;
@@ -4250,12 +3615,8 @@ int OnInit()
 
    // --- Automated Trading init ---
    g_autoTrade   = InpATEnable;
-   g_analysisMode = InpAnalysisMode;
    g_Magic       = InpMagic;   // source magic from user input (allows multi-instance coexistence)
    g_LastBarTime = 0;
-
-   // Restore persisted risk/counter state for the enhanced engine (no UI impact)
-   RiskStateLoad();
 
    RefreshSymbolInfo();
 
@@ -4390,9 +3751,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   // Persist risk/counter state for the enhanced engine (no UI impact)
-   RiskStateSave();
-
    ObjectDelete(g_chart, FP_HIST_EDIT);
    ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
    ObjectDelete(g_chart, FP_SIG_THRESH_EDIT);
@@ -4414,12 +3772,6 @@ void OnDeinit(const int reason)
      {
       IndicatorRelease(g_handleATR);
       g_handleATR = INVALID_HANDLE;
-     }
-
-   if(g_htfEMAHandle != INVALID_HANDLE)
-     {
-      IndicatorRelease(g_htfEMAHandle);
-      g_htfEMAHandle = INVALID_HANDLE;
      }
    
    int n = ArraySize(g_bars);
@@ -4443,15 +3795,6 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   // v8 engine: if LAST price becomes valid after init, switch to full tick flags and
-   // force a history rebuild so prior proxy-classified bars are reclassified correctly.
-   if(!g_hasTrades && SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0)
-     {
-      g_hasTrades    = true;
-      g_needs_reload = true;
-      LogSystem("g_hasTrades re-checked: LAST price now available — forcing history reload to reclassify ticks.");
-     }
-
    // Full reload when bars array is empty (first run or after param change)
    if(ArraySize(g_bars) == 0)
      {
@@ -4464,8 +3807,6 @@ void OnTick()
    if(g_needs_reload)
      {
       g_needs_reload = false;
-      // v8 engine: only clean trade visuals when there are no open positions.
-      if(CountOpenPositions() == 0) CleanupAllTradeObjects();
       ReloadHistory();
      }
 
@@ -4497,21 +3838,7 @@ void OnTick()
    ManagePositions();
    if(IsNewBar())
      {
-      if(g_autoTrade || g_analysisMode) RefreshSymbolInfo();   // refresh pip/lot/spread cache at bar open
-
-      // v8 engine: rolling ATR baseline (EMA) to keep adaptive threshold responsive.
-      if(g_atrBaselineReady && g_handleATR != INVALID_HANDLE)
-        {
-         double atrBuf[];
-         if(CopyBuffer(g_handleATR, 0, 1, 1, atrBuf) == 1 && atrBuf[0] > 0.0)
-           {
-            const double alpha = 2.0 / 51.0;   // ~50-bar EMA
-            g_atrBaseline = g_atrBaseline + alpha * (atrBuf[0] - g_atrBaseline);
-           }
-        }
-
-      // v8 engine: recompute naked POCs once per bar close before placing orders.
-      ComputeNakedPOCs();
+      RefreshSymbolInfo();   // refresh pip/lot/spread cache at bar open
       PlaceOrders();
      }
   }

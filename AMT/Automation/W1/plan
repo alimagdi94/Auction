@@ -1,0 +1,222 @@
+### Quick clarification
+
+The trading engine in `OrderFlowEA_v820.mq5` is significantly larger and more feature‑rich than the one already embedded in `FullUI.mq5`. Porting it properly means:
+
+- Bringing over its **risk engine**, **exposure/position management**, **pending-order lifecycle**, and **lot‑sizing** helpers.
+- Integrating those with the **existing UI‑driven signals and footprint rendering** in `FullUI.mq5` without changing any UI behavior.
+- Ensuring **single definitions** for handlers (`OnInit`, `OnTick`, `OnDeinit`, `OnTradeTransaction`) and helpers like `PlaceOrders`, `ManagePositions`, `CalcLot`, etc., and that all required globals/inputs compile.
+
+This is a fairly large, mechanical merge, so below is the concrete integration plan you can follow (or I can implement piece‑by‑piece if you want detailed patches for specific sections):
+
+---
+
+### 1. Create `OrderFlowFull.mq5` using `FullUI.mq5` as the base
+
+In `W1/OrderFlowFull.mq5`:
+
+```mql5
+#property strict
+#include "FullUI.mq5"
+```
+
+Compile `OrderFlowFull.mq5` from now on. This keeps `FullUI.mq5` as the canonical source while giving you a new EA name.
+
+---
+
+### 2. Sync trading inputs and globals from `OrderFlowEA_v820.mq5`
+
+In `FullUI.mq5`:
+
+- **Inputs**: Add missing trading‑engine inputs from `OrderFlowEA_v820.mq5` that are referenced by its engine, at minimum:
+  - `InpMinConvictionComp`
+  - Any session filters / HTF filters / risk‑engine inputs used by:
+    - `ComputeAdaptiveThreshold`
+    - `CheckRiskConditions`
+    - `CheckSessionTime`
+    - `CheckHTFTrend`
+    - daily‑loss / size‑reduction / halt logic (consecutive SLs etc.)
+- **Globals**: Add missing globals the v8 engine uses and `FullUI.mq5` doesn’t have yet, such as:
+  - `bool g_analysisMode;`
+  - `int g_sigCacheBarIdx;`
+  - `long g_sigCacheVol;`
+  - `datetime g_lastSignalBarTime;`
+  - `int g_sigMarkerCount;`
+  - `ulong g_virtualTicket;`
+  - `ulong g_pendingTickets[];`
+  - `datetime g_pendingBarTimes[];`
+  - `ulong g_lastManageTick;`
+  - risk‑state fields: `int g_consecutiveLosses;`, `int g_sizeReductionLeft;`, `bool g_sessionHalted;`, any `*_BarTime*` used in the v8 risk engine.
+
+Keep all existing UI globals intact (panel coords, canvas, `g_signalsEnabled`, etc.).
+
+---
+
+### 3. Bring over engine helpers (no UI impact)
+
+From `OrderFlowEA_v820.mq5`, copy into `FullUI.mq5` (place them near existing trading helpers):
+
+- **Section 13 (signal evaluation helpers only, not UI)**:
+  - `struct ConvictionResult { ... };`
+  - `ConvictionResult GetConvictionResult(int bi, bool isBuy);`
+  - `int ComputeAdaptiveThreshold();` (and any helpers it relies on).
+- **Section 14 (core trading helpers)**:
+  - `void RefreshSymbolInfo()` (replace the simpler existing one).
+  - `bool IsNewBar()` (replace existing).
+  - `bool IsTradeAllowed()` (replace existing).
+  - `int CountOpenPositions()` (replace existing).
+  - `int CountExposure()` (new).
+  - `ENUM_ORDER_TYPE_FILLING GetBrokerFillingMode()` (new).
+  - `double CalcLot(double slDistPoints, bool isBuy = true);` (replace old `CalcLot`).
+  - `void CalcSLTP(...)` improvements if v8 uses a richer version than `FullUI.mq5` (or keep `FullUI`’s if they match).
+  - Risk‑engine helpers used by `CheckRiskConditions` (e.g. `CheckNewDay`, `CheckDailyLoss`, `RiskStateLoad`, `RiskStateSave`, etc., as referenced in the v8 code).
+- **Order‑send helpers**:
+  - v8 `trade_Send(...)` overload that accepts `ticket`, `sentSL`, `sentTP`.
+  - `trade_OrderDelete(...)` if used by pending‑expiry logic.
+
+These are all pure engine / logging; they don’t change your existing footprint UI.
+
+---
+
+### 4. Replace `PlaceOrders()` with the v8 version
+
+In `FullUI.mq5`, locate the existing:
+
+```mql5
+void PlaceOrders()
+{
+   ...
+   double hftScore = ComputeHFTSignal(bi);
+   ...
+   trade_Send(...);
+}
+```
+
+Replace the entire function body with the v8 `PlaceOrders()` from `OrderFlowEA_v820.mq5`, **unchanged**, except:
+
+- Keep using your existing `CalcSLTP(...)` if signatures match; otherwise port the v8 one completely.
+- Ensure all references compile:
+  - `g_analysisMode`
+  - `ComputeOFScore(bi)`
+  - `ComputeHFTSignal(bi, ofsScore)` (update your `ComputeHFTSignal` signature to accept `ofsScore`, or add an overload that forwards to v8 implementation).
+  - `ComputeAdaptiveThreshold()`
+  - `GetConvictionResult(...)`
+  - `CheckRiskConditions(...)`, `CheckSessionTime()`, `CheckHTFTrend(...)`
+  - `DeleteAllPending()`
+  - `CounterSave()`
+  - `DrawAnalysisEntry(...)`
+  - `DrawTradeEntry(...)`
+  - `LogTradeExec(...)`
+  - pending‑tracking arrays `g_pendingTickets`, `g_pendingBarTimes`, `g_pendingPlacedBarTime`.
+
+If some of these visual helpers (`DrawAnalysisEntry`, `DrawTradeEntry`) are missing in `FullUI.mq5`, copy them from `OrderFlowEA_v820.mq5` as well; they draw trade objects, not footprint UI, so they won’t disturb your main panel.
+
+---
+
+### 5. Replace `ManagePositions()` with the v8 version
+
+In `FullUI.mq5`, replace the simpler:
+
+```mql5
+void ManagePositions()
+{
+   if(!g_autoTrade) return;
+   if(!IsTradeAllowed()) return;
+   ...
+}
+```
+
+with v8’s `ManagePositions()`:
+
+- Uses `g_analysisMode` gate instead of `g_autoTrade` (so open positions are still managed even if auto‑entry is disabled).
+- Uses `g_lastManageTick` and `FP_MANAGE_THROTTLE` for throttling.
+- Calls `SyncPendingTracking()` and runs per‑order pending expiry via `g_pendingTickets/g_pendingBarTimes`.
+- Updates SL lines via `UpdateSLLine(...)` after SL modification.
+- Logs via `LogTradeExec(...)`.
+
+Copy in any missing helpers it references from `OrderFlowEA_v820.mq5`:
+
+- `SyncPendingTracking()`
+- `UpdateSLLine(...)`
+- `LogTradeExec(...)`
+- `LogRisk(...)` if used from inside risk logic.
+
+---
+
+### 6. Keep `EvalAndFireSignal()` UI‑driven, but consider merging thresholds later
+
+To preserve all existing visual and audible signal behavior:
+
+- **Keep `FullUI.mq5`’s `EvalAndFireSignal()` and `DrawSignalMarkersPass(...)` as they are** for now.
+- Do **not** call v8’s `EvalAndFireSignal()` from `OnTick`; you already call your own from `Render()`.
+
+Optionally, as a later enhancement, you can replace the internal logic of your `EvalAndFireSignal()` with the v8 version, but still keep:
+
+- The **object creation** (`OBJ_ARROW` naming, tooltips).
+- The **sound behavior** (which `InpSignal*Sound` you play).
+
+That’s a clean second step and independent of the trade engine.
+
+---
+
+### 7. Merge `OnTick()` logic while preserving UI
+
+In `FullUI.mq5` `OnTick()`:
+
+- Before the `ArraySize(g_bars)==0` check, copy in v8’s lazy `g_hasTrades` / `g_needs_reload` block:
+
+  - Re‑check `g_hasTrades` when `SYMBOL_LAST` becomes valid.
+  - If it flips true, set `g_needs_reload=true` and log via `LogSystem(...)`.
+
+- Replace your simple reload block with v8’s:
+
+  - If `ArraySize(g_bars)==0`, call `ReloadHistory()` and early‑return.
+  - When `g_needs_reload` is true, clear trade visuals when there are no open positions (you’ll need `CleanupAllTradeObjects()` from v8) and call `ReloadHistory()`.
+
+- Keep your **UI rendering** intact:
+
+  - After `ProcessTicks(...)`, keep `if(g_dirty) ThrottledRender();`.
+
+- Use v8’s bar‑close path:
+
+  - After `ManagePositions();`, inside `if(IsNewBar())`:
+    - Update ATR baseline if you port the rolling ATR snippet.
+    - Call `ComputeNakedPOCs();` once per new bar.
+    - Then call `PlaceOrders();`.
+
+Do **not** add another `EvalAndFireSignal()` here to avoid double signaling; your `Render()` already handles it.
+
+---
+
+### 8. Keep OnInit/OnDeinit UI, extend with v8 validations
+
+In `OnInit()` of `FullUI.mq5`:
+
+- Keep all your **canvas + panel + edit box** setup as is.
+- Extend the **validation block** with the extra v8 checks you imported (e.g. for `InpMinConvictionComp`, `InpDeltaConvThreshold`, `InpAdaptiveThreshMin/Max`, `InpMaxConsecLosses`, `InpHaltConsecLosses`, `InpATR_Period`, trailing/break‑even param sanity, equity inputs).
+
+In `OnDeinit()`:
+
+- Keep UI cleanup.
+- Add v8 engine cleanup:
+
+  - `IndicatorRelease(g_handleATR);` (already present).
+  - `CleanupAllTradeObjects();`
+  - Free both `levels` and any `levelMap` fields if you copied that struct extension.
+
+---
+
+### 9. Ensure compilation and behavior
+
+- Open `OrderFlowFull.mq5` in MetaEditor and compile.
+- Fix any missing identifiers by copying the corresponding helper from `OrderFlowEA_v820.mq5`.
+- Once it compiles, test:
+
+  - **Visually**: footprint panel, controls, input edits, and signal cards behave as before.
+  - **Trading**:
+    - Auto‑entry uses v8’s logic (lot sizing, filters, conviction, adaptive threshold).
+    - Positions and pending orders are managed by v8’s improved `ManagePositions()` and expiry.
+    - Risk‑engine (consecutive loss limits, equity caps) behaves per v8 comments.
+
+---
+
+If you’d like, tell me which part you want done first (e.g. “just swap `PlaceOrders` and `ManagePositions`” or “merge the v8 OnTick path”), and I can generate the exact patches for those sections so you can paste them directly into `FullUI.mq5`.
