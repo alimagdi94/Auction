@@ -3785,6 +3785,21 @@ void PlaceOrders()
       if(!CheckHTFTrend(direction)) return;
      }
 
+   // ── Max open positions guard ──────────────────────────────────────
+   // Enforce InpMaxPositions as a hard cap on concurrent positions
+   // for this EA on the current symbol.
+   if(!g_analysisMode && InpMaxPositions > 0)
+     {
+      int openPos = CountOpenPositions();
+      if(openPos >= InpMaxPositions)
+        {
+         LogTradeExec(StringFormat(
+            "PlaceOrders: max positions reached (%d/%d). New entry skipped.",
+            openPos, InpMaxPositions));
+         return;
+        }
+     }
+
    if(!g_analysisMode && InpCleanOldOrders)
      {
       DeleteAllPending();
