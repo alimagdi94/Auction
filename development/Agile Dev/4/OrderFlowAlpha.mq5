@@ -139,7 +139,7 @@ enum ENUM_ORDER_MODE
    ORDER_MODE_MARKET  = 0,  // Market Order — fills instantly at current Ask/Bid
    ORDER_MODE_PENDING = 1   // Pending Order — BuyStop / SellStop above/below bar
   };
-input ENUM_ORDER_MODE InpOrderMode = ORDER_MODE_MARKET; // Order mode: Market or Pending
+input ENUM_ORDER_MODE InpOrderMode = ORDER_MODE_PENDING; // Order mode: Market or Pending
 input int    InpATR_Period        = 14;           // ATR lookback period for volatility normalization
 input bool   InpSpreadFilter      = true;         // Block new entries during high-spread conditions
 input double InpMaxSpread         = 3.0;          // Maximum allowable spread (Pips)
@@ -3616,12 +3616,14 @@ bool CheckHTFTrend(bool isBuy)
   {
    if(!InpHTFEnable) return true;
    if(InpHTFEMA < 2) return true;
-   int handle = iMA(_Symbol, InpHTFPeriod, InpHTFEMA, 0, MODE_EMA, PRICE_CLOSE);
-   if(handle == INVALID_HANDLE) return true;
+
+   // Use the persistent handle created in OnInit — never create/release per tick
+   if(g_htfEMAHandle == INVALID_HANDLE) return true;
+
    double buf[];
-   bool ok = (CopyBuffer(handle, 0, 0, 1, buf) == 1);
-   IndicatorRelease(handle);
-   if(!ok || buf[0] <= 0.0) return true;
+   if(CopyBuffer(g_htfEMAHandle, 0, 0, 1, buf) != 1) return true;
+   if(buf[0] <= 0.0) return true;
+
    double px = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    return isBuy ? (px >= buf[0]) : (px <= buf[0]);
   }
@@ -3839,6 +3841,21 @@ void PlaceOrders()
                   : NormalizeDouble(barLow  - bufDist, _Digits);
       action    = TRADE_ACTION_PENDING;
       orderType = direction ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+     }
+
+   // --- Pending entry distance guard (Fix 2 — skip orders too far from price) ---
+   if(!isMarket)
+     {
+      double currentPx = direction ? lv.ask : lv.bid;
+      double entryDistPips = MathAbs(entry - currentPx) / g_Pip;
+      double maxPips = InpBufferPips + 10.0;
+      if(entryDistPips > maxPips)
+        {
+         LogTradeExec(StringFormat(
+            "PlaceOrders: pending entry %.1f pips from price exceeds %.1f pip tolerance — skip.",
+            entryDistPips, maxPips));
+         return;
+        }
      }
 
    double sl, tp;
@@ -4220,6 +4237,14 @@ int OnInit()
    g_handleATR = iATR(_Symbol, PERIOD_CURRENT, InpATR_Period);
    if(g_handleATR == INVALID_HANDLE)
       Print("Footprint EA — Warning: ATR indicator handle could not be created (", GetLastError(), ").");
+
+   // Initialise persistent HTF EMA handle once — reused by CheckHTFTrend() every tick
+   if(InpHTFEnable && InpHTFEMA >= 2)
+     {
+      g_htfEMAHandle = iMA(_Symbol, InpHTFPeriod, InpHTFEMA, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_htfEMAHandle == INVALID_HANDLE)
+         Print("Footprint EA — Warning: HTF EMA handle could not be created (", GetLastError(), ").");
+     }
 
    g_hasTrades = (SymbolInfoDouble(_Symbol, SYMBOL_LAST) > 0.0);
 
