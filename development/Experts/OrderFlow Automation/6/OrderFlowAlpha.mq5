@@ -1035,8 +1035,9 @@ void Classify(const MqlTick &t, bool &isBuy, bool &isSell)
          isBuy = true;
       else if(t.bid < g_prevBid)
          isSell = true;
-      else
-         isBuy = true;
+      // else: bid unchanged → neutral (isBuy=false, isSell=false)
+      // Neutral ticks still contribute to total_vol via AccumulateTick
+      // but do NOT add to ask_vol, bid_vol, or total_delta.
      }
   }
 
@@ -1351,16 +1352,19 @@ int ComputeOFScore(int bi)
 double ComputeCVDSlope(int bi)
   {
    if(bi < 2) return 0.0;
-   long v0 = MathMax(1, g_bars[bi].total_vol);
-   long v1 = MathMax(1, g_bars[bi-1].total_vol);
-   long v2 = MathMax(1, g_bars[bi-2].total_vol);
-   double nd0 = (double)g_bars[bi].total_delta   / v0;
-   double nd1 = (double)g_bars[bi-1].total_delta / v1;
-   double nd2 = (double)g_bars[bi-2].total_delta / v2;
+   // CVD differences: cvd[bi]-cvd[bi-1]=total_delta[bi], etc. Use raw delta, normalize by avg vol.
+   long d0 = g_bars[bi].total_delta;
+   long d1 = g_bars[bi-1].total_delta;
+   double avgVol = (double)(MathMax(1, g_bars[bi].total_vol)
+                          + MathMax(1, g_bars[bi-1].total_vol)
+                          + MathMax(1, g_bars[bi-2].total_vol)) / 3.0;
+   if(avgVol < 1.0) avgVol = 1.0;
+   double nd0 = (double)d0 / avgVol;
+   double nd1 = (double)d1 / avgVol;
    if(!MathIsValidNumber(nd0)) nd0 = 0.0;
    if(!MathIsValidNumber(nd1)) nd1 = 0.0;
-   if(!MathIsValidNumber(nd2)) nd2 = 0.0;
-   return (2.0 * (nd0 - nd1) + (nd1 - nd2)) / 3.0;
+   // Recency-weighted slope: 2× recent change + 1× prior change
+   return (2.0 * nd0 + nd1) / 3.0;
   }
 
 //+------------------------------------------------------------------+
@@ -1437,6 +1441,17 @@ double ComputeHFTSignal(int bi, int preOFS = -1)
    const double w1=0.30, w2=0.20, w3=0.15, w4=0.10, w5=0.10, w6=0.15;
    double raw = c1*w1 + c2*w2 + c3*w3 + c4*w4 + c5*w5 + c6*w6;
    if(!MathIsValidNumber(raw)) raw = 0.0;
+   // Active-weight rescaling: dormant (zero) components compress the score; restore full range
+   int activeCount = 0;
+   double activeWeight = 0.0;
+   if(MathAbs(c1) > 0.001) { activeCount++; activeWeight += w1; }
+   if(MathAbs(c2) > 0.001) { activeCount++; activeWeight += w2; }
+   if(MathAbs(c3) > 0.001) { activeCount++; activeWeight += w3; }
+   if(MathAbs(c4) > 0.001) { activeCount++; activeWeight += w4; }
+   if(MathAbs(c5) > 0.001) { activeCount++; activeWeight += w5; }
+   if(MathAbs(c6) > 0.001) { activeCount++; activeWeight += w6; }
+   if(activeWeight > 0.0 && activeCount >= 2)
+      raw = raw / activeWeight;
    return MathMax(-1.0, MathMin(1.0, raw)) * 100.0;
   }
 
