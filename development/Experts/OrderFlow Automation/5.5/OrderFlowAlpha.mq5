@@ -117,8 +117,7 @@ input double InpOFWtAbsorb        = 15.0;          // OFS weight: absorption (%)
 
 input group "High Probability Signals"
 input bool   InpShowSignals       = true;          // Show High Probability Signals
-input int    InpSignalThreshold   = 60;            // Buy score threshold (signal when HFT >= this)
-input int    InpSignalThresholdSell = 60;         // Sell score threshold (signal when HFT <= -this)
+input int    InpSignalThreshold   = 60;            // Score Threshold (Buy >= thresh, Sell <= 100-thresh)
 input color  InpSignalBuyColor    = C'0,220,100';  // Buy Signal Color
 input color  InpSignalSellColor   = C'220,40,60';  // Sell Signal Color
 input int    InpSignalFreqBars    = 3;             // Min bars between repeated signals (1=every bar)
@@ -378,10 +377,9 @@ bool   g_visible     = false;
 bool   g_profileOnly = false;
 
 // --- Trading Signal Feature ---
-bool     g_signalsEnabled      = true;   // runtime toggle (mirrors InpShowSignals on init)
-int      g_signalFreqBars      = 3;      // runtime min-bars between signals (mirrors InpSignalFreqBars on init)
-int      g_signalThreshold     = 60;     // runtime buy threshold (mirrors InpSignalThreshold on init)
-int      g_signalThresholdSell = 60;     // runtime sell threshold (mirrors InpSignalThresholdSell on init)
+bool     g_signalsEnabled   = true;   // runtime toggle (mirrors InpShowSignals on init)
+int      g_signalFreqBars   = 3;      // runtime min-bars between signals (mirrors InpSignalFreqBars on init)
+int      g_signalThreshold  = 60;     // runtime score threshold (mirrors InpSignalThreshold on init)
 int    g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2;  // "Sig" button hit-test coords
 
 // Persistent scratch buffers
@@ -2701,12 +2699,11 @@ void EvalAndFireSignal()
    int    ofsScore   = ComputeOFScore(bi);
    double hftScore   = ComputeHFTSignal(bi, ofsScore);
 
-   // Adaptive threshold for alerts; sell has its own threshold when adaptive is off.
-   int effThreshBuy  = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThreshold;
-   int effThreshSell = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThresholdSell;
+   // Adaptive threshold for alerts.
+   int effThresh = ComputeAdaptiveThreshold();
 
-   bool isBuySignal  = (hftScore >=  (double)effThreshBuy);
-   bool isSellSignal = (hftScore <= -(double)effThreshSell);
+   bool isBuySignal  = (hftScore >=  (double)effThresh);
+   bool isSellSignal = (hftScore <= -(double)effThresh);
    if(!isBuySignal && !isSellSignal)
       return;
 
@@ -2729,13 +2726,12 @@ void EvalAndFireSignal()
    // Journal visibility for successful signals (does not affect UI behavior).
    string tf = EnumToString(Period());
    StringReplace(tf, "PERIOD_", "");
-   int threshUsed = isBuySignal ? effThreshBuy : effThreshSell;
    LogSignal(StringFormat(
       "Signal FIRED — %s | %s %s | HFT: %d (thresh=%d) | OFS: %d"
       " | Conviction: %s (%d comps) | Bar: %s | NakedPOC: %s | DeltaDiv: %s",
       isBuySignal ? "BUY" : "SELL",
       _Symbol, tf,
-      displayScore, threshUsed, ofsScore,
+      displayScore, effThresh, ofsScore,
       conv.label, conv.componentCount,
       TimeToString(g_bars[bi].bar_time, TIME_DATE|TIME_MINUTES),
       g_bars[bi].is_naked_poc        ? "YES" : "NO",
@@ -2839,7 +2835,7 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
       double hftScore    = ComputeHFTSignal(bi);
       int    ofsScore    = ComputeOFScore(bi);
       bool   isBuySignal = (hftScore >=  (double)g_signalThreshold);
-      bool   isSellSignal= (hftScore <= -(double)g_signalThresholdSell);
+      bool   isSellSignal= (hftScore <= -(double)g_signalThreshold);
       if(!isBuySignal && !isSellSignal)
          continue;
 
@@ -3793,10 +3789,9 @@ void PlaceOrders()
    int    ofsScore = ComputeOFScore(bi);
    double hftScore = ComputeHFTSignal(bi, ofsScore);
 
-   int effThreshBuy  = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThreshold;
-   int effThreshSell = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThresholdSell;
-   bool isBuy  = (hftScore >=  (double)effThreshBuy  && InpAllowBuy);
-   bool isSell = (hftScore <= -(double)effThreshSell && InpAllowSell);
+   int effThresh = ComputeAdaptiveThreshold();
+   bool isBuy  = (hftScore >=  (double)effThresh && InpAllowBuy);
+   bool isSell = (hftScore <= -(double)effThresh && InpAllowSell);
    if(!isBuy && !isSell) return;
 
    bool direction = isBuy;
@@ -3896,11 +3891,10 @@ void PlaceOrders()
 
    int hftInt = (int)MathRound(MathAbs(hftScore));
 
-   int effThreshUsed = direction ? effThreshBuy : effThreshSell;
    string tag = StringFormat("FP_%s_%s_HFT%d|%s|T%d|%s",
                              direction ? "Buy"  : "Sell",
                              isMarket  ? "MKT"  : "STP",
-                             hftInt, conv.label, effThreshUsed,
+                             hftInt, conv.label, effThresh,
                              TimeToString(g_bars[bi].bar_time, TIME_MINUTES));
 
    ulong  ticket = 0;
@@ -3921,7 +3915,7 @@ void PlaceOrders()
          direction?"BUY":"SELL", isMarket?"MKT":"STP",
          ticket, DoubleToString(entry,_Digits),
          DoubleToString(sl,_Digits), DoubleToString(tp,_Digits),
-         lot, hftInt, effThreshUsed, ofsScore, conv.label, conv.componentCount));
+         lot, hftInt, effThresh, ofsScore, conv.label, conv.componentCount));
      }
    else
      {
@@ -3945,7 +3939,7 @@ void PlaceOrders()
             ticket, DoubleToString(entry,_Digits),
             DoubleToString(sentSL,_Digits),
             DoubleToString(sentTP,_Digits),
-            lot, hftInt, effThreshUsed, ofsScore, conv.label, conv.componentCount));
+            lot, hftInt, effThresh, ofsScore, conv.label, conv.componentCount));
 
          DrawTradeEntry(ticket, direction, entry, sentSL, sentTP,
                         g_bars[bi].bar_time, conv.label, hftInt, ofsScore);
@@ -4296,16 +4290,6 @@ int OnInit()
       Alert("Footprint: InpMinConvictionComp must be >= 0.");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(InpSignalThreshold < 1 || InpSignalThreshold > 99)
-     {
-      Alert("Footprint: InpSignalThreshold (buy) must be between 1 and 99.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(InpSignalThresholdSell < 1 || InpSignalThresholdSell > 99)
-     {
-      Alert("Footprint: InpSignalThresholdSell must be between 1 and 99.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
    if(InpAdaptiveThreshMin >= InpAdaptiveThreshMax)
      {
       Alert("Footprint: InpAdaptiveThreshMin must be < InpAdaptiveThreshMax.");
@@ -4393,8 +4377,7 @@ int OnInit()
    // Seed signal runtime state
    g_signalsEnabled    = InpShowSignals;
    g_signalFreqBars    = MathMax(1, InpSignalFreqBars);
-   g_signalThreshold     = MathMax(1, MathMin(99, InpSignalThreshold));
-   g_signalThresholdSell = MathMax(1, MathMin(99, InpSignalThresholdSell));
+   g_signalThreshold   = MathMax(1, MathMin(99, InpSignalThreshold));
    g_lastSignalBarTime = 0;
    g_visible         = true;   // show footprint on load; user can toggle with the Viz/Hid button
 
