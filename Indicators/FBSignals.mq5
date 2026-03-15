@@ -121,8 +121,8 @@ input bool   InpCumDeltaVPLabels  = true;            // Profile: show POC / VAH 
 
 input group "High Probability Signals (OrderFlowAlpha)"
 input bool   InpShowSignals       = true;            // Show high-probability signal markers
-input int    InpSignalThreshold   = 60;              // Buy threshold (signal when HFT >= this)
-input int    InpSignalThresholdSell = 55;            // Sell threshold (HFT <= -this; 0 = use buy thresh)
+input int    InpSignalThreshold   = 45;              // Buy threshold (signal when HFT >= this)
+input int    InpSignalThresholdSell = 40;             // Sell threshold (HFT <= -this; 0 = use buy thresh)
 input int    InpSignalFreqBars    = 3;               // Min bars between repeated signals
 input int    InpMinConvictionComp = 0;               // Min conviction components (0 = off)
 input color  InpSignalBuyColor    = C'0,220,100';    // Buy signal color
@@ -167,6 +167,7 @@ struct FPBar
    datetime   bar_time;
    long       total_vol;
    long       total_delta;
+   long       cumDelta;       // running cumulative delta through this bar (for true CVD slope)
    double     high;
    double     low;
    int        poc_idx;
@@ -237,6 +238,7 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 #define FP_HIST_EDIT   "FP_HistEdit"   // OBJ_EDIT name for history-bars input
 #define FP_HIST_MIN    1               // minimum allowed history bars
 #define FP_HIST_MAX    5000            // maximum allowed history bars
+#define FP_CVD_SLOPE_LOOKBACK 5        // bars for true CVD slope regression
 
 int   g_panelX1, g_panelY1, g_panelX2, g_panelY2;
 int   g_btnSizeX1, g_btnSizeY1, g_btnSizeX2, g_btnSizeY2;
@@ -446,6 +448,7 @@ int InsertBar(datetime bt)
       g_bars[n].bar_time    = bt;
       g_bars[n].total_vol   = 0;
       g_bars[n].total_delta = 0;
+      g_bars[n].cumDelta    = 0;
       g_bars[n].high        = 0.0;
       g_bars[n].low         = 0.0;
       g_bars[n].sorted      = true;
@@ -487,6 +490,7 @@ int InsertBar(datetime bt)
    g_bars[n].bar_time    = 0;
    g_bars[n].total_vol   = 0;
    g_bars[n].total_delta = 0;
+   g_bars[n].cumDelta    = 0;
    g_bars[n].high        = 0.0;
    g_bars[n].low         = 0.0;
    g_bars[n].sorted      = true;
@@ -506,6 +510,7 @@ int InsertBar(datetime bt)
       g_bars[i].bar_time    = g_bars[i - 1].bar_time;
       g_bars[i].total_vol   = g_bars[i - 1].total_vol;
       g_bars[i].total_delta = g_bars[i - 1].total_delta;
+      g_bars[i].cumDelta    = g_bars[i - 1].cumDelta;
       g_bars[i].high        = g_bars[i - 1].high;
       g_bars[i].low         = g_bars[i - 1].low;
       g_bars[i].sorted      = g_bars[i - 1].sorted;
@@ -526,6 +531,7 @@ int InsertBar(datetime bt)
    g_bars[pos].bar_time    = bt;
    g_bars[pos].total_vol   = 0;
    g_bars[pos].total_delta = 0;
+   g_bars[pos].cumDelta    = 0;
    g_bars[pos].high        = 0.0;
    g_bars[pos].low         = 0.0;
    g_bars[pos].sorted      = true;
@@ -798,13 +804,25 @@ void Classify(const MqlTick &t, bool &isBuy, bool &isSell)
      }
    else
      {
+      // Forex / no last-price: infer from bid tick direction; flat tick → neutral (no bias)
       if(t.bid > g_prevBid)
          isBuy = true;
       else if(t.bid < g_prevBid)
          isSell = true;
-      else
-         isBuy = true;
+      // else: flat tick → isBuy=false, isSell=false (neutral)
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Sync running cumulative delta for all bars (for true CVD slope)  |
+//+------------------------------------------------------------------+
+void SyncCumDelta()
+  {
+   int n = ArraySize(g_bars);
+   for(int i = 0; i < n; i++)
+      g_bars[i].cumDelta = (i > 0)
+                           ? g_bars[i - 1].cumDelta + g_bars[i].total_delta
+                           : g_bars[i].total_delta;
   }
 
 //+------------------------------------------------------------------+
@@ -884,6 +902,7 @@ void ProcessTicks(MqlTick &ticks[], int startIdx, int count,
       if(updateLastTimeMs)
          g_last_tick_time_ms = ticks[i].time_msc;
      }
+   SyncCumDelta();
   }
 
 //+------------------------------------------------------------------+
@@ -1126,21 +1145,39 @@ int ComputeOFScore(int bi)
   }
 
 //+------------------------------------------------------------------+
-//| 3-bar recency-weighted CVD slope (OrderFlowAlpha)                |
+//| True CVD slope: linear regression over last N bars of cumDelta    |
+//| Returns normalized slope ∈ roughly [-1, +1] after scaling.       |
 //+------------------------------------------------------------------+
-double ComputeCVDSlope(int bi)
+double ComputeCVDSlope(int bi, int lookback = FP_CVD_SLOPE_LOOKBACK)
   {
-   if(bi < 2) return 0.0;
-   long v0 = MathMax(1, g_bars[bi].total_vol);
-   long v1 = MathMax(1, g_bars[bi-1].total_vol);
-   long v2 = MathMax(1, g_bars[bi-2].total_vol);
-   double nd0 = (double)g_bars[bi].total_delta   / v0;
-   double nd1 = (double)g_bars[bi-1].total_delta / v1;
-   double nd2 = (double)g_bars[bi-2].total_delta / v2;
-   if(!MathIsValidNumber(nd0)) nd0 = 0.0;
-   if(!MathIsValidNumber(nd1)) nd1 = 0.0;
-   if(!MathIsValidNumber(nd2)) nd2 = 0.0;
-   return (2.0 * (nd0 - nd1) + (nd1 - nd2)) / 3.0;
+   if(bi < 1) return 0.0;
+   int N = MathMin(lookback, bi + 1);
+   if(N < 2) return 0.0;
+
+   // Least-squares slope of cumDelta series
+   double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+   for(int k = 0; k < N; k++)
+     {
+      double x = (double)k;
+      double y = (double)g_bars[bi - N + 1 + k].cumDelta;
+      sumX  += x;
+      sumY  += y;
+      sumXY += x * y;
+      sumX2 += x * x;
+     }
+   double denom = N * sumX2 - sumX * sumX;
+   if(MathAbs(denom) < 1e-12) return 0.0;
+   double slope = (N * sumXY - sumX * sumY) / denom;
+
+   // Normalize by average bar volume so result is scale-independent
+   long avgVol = 0;
+   for(int k = bi - N + 1; k <= bi; k++)
+      avgVol += g_bars[k].total_vol;
+   avgVol = MathMax(1, avgVol / N);
+
+   double normalized = slope / (double)avgVol;
+   if(!MathIsValidNumber(normalized)) return 0.0;
+   return normalized;
   }
 
 //+------------------------------------------------------------------+
@@ -1173,28 +1210,32 @@ double ComputeHFTSignal(int bi, int preOFS = -1)
       c3 = -(pocPos * 2.0 - 1.0);
      }
 
-   // C4: Absorption at extremes — low = bullish, high = bearish
-   bool absLow = false, absHigh = false;
-   GetAbsorptionAtExtremes(bi, absLow, absHigh);
-   double c4 = 0.0;
-   if(absLow  && !absHigh) c4 = +1.0;
-   else if(absHigh && !absLow) c4 = -1.0;
+   // C4: Absorption — continuous grading by count at extremes
+   int chk = MathMin(FP_EXTREME_LEVELS_MAX, len / 3 + 1);
+   int absCountLow = 0, absCountHigh = 0;
+   for(int i = len - chk; i < len; i++)
+      if(i >= 0 && g_bars[bi].levels[i].is_absorption) absCountLow++;
+   for(int i = 0; i < chk; i++)
+      if(i < len && g_bars[bi].levels[i].is_absorption) absCountHigh++;
+   double c4 = (chk > 0)
+               ? (double)(absCountLow - absCountHigh) / (double)chk
+               : 0.0;
 
-   // C5: Exhaustion — bid exh at low = bullish; ask exh at high = bearish
-   double c5 = 0.0;
-   bool exhAsk = false, exhBid = false;
+   // C5: Exhaustion — continuous grading by run length
+   int exhBidRun = 0, exhAskRun = 0;
    for(int i = 0; i < len; i++)
      {
-      if(g_bars[bi].levels[i].is_exhaustion_ask) exhAsk = true;
-      if(g_bars[bi].levels[i].is_exhaustion_bid) exhBid = true;
+      if(g_bars[bi].levels[i].is_exhaustion_ask) exhAskRun++;
+      if(g_bars[bi].levels[i].is_exhaustion_bid) exhBidRun++;
      }
-   if(exhBid && !exhAsk) c5 = +1.0;
-   else if(exhAsk && !exhBid) c5 = -1.0;
+   double maxExhRun = MathMax(1.0, (double)InpExhaustionCells * 2.0);
+   double c5 = ((double)exhBidRun - (double)exhAskRun) / maxExhRun;
+   c5 = MathMax(-1.0, MathMin(1.0, c5));
 
-   // C6: CVD slope — symmetric (scale from inputs)
+   // C6: True CVD slope (uses cumDelta series)
    double cvdScale = (InpHFTCVDScale > 0.0) ? InpHFTCVDScale : FP_HFT_CVD_SLOPE_SCALE;
    double c6 = 0.0;
-   if(bi >= 2)
+   if(bi >= 1)
      {
       double slope = ComputeCVDSlope(bi);
       c6 = MathMax(-1.0, MathMin(1.0, slope * cvdScale));
