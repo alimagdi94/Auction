@@ -144,6 +144,7 @@ input ENUM_ORDER_MODE InpOrderMode = ORDER_MODE_PENDING; // Order mode: Market o
 input int    InpATR_Period        = 14;           // ATR lookback period for volatility normalization
 input bool   InpSpreadFilter      = true;         // Block new entries during high-spread conditions
 input double InpMaxSpread         = 3.0;          // Maximum allowable spread (Pips)
+input bool   InpSpreadChecksEnable = true;        // Master switch: disable ALL spread checks (entries won't be blocked by spread)
 input bool   InpAllowBuy          = true;         // Allow BUY (long) entries
 input bool   InpAllowSell         = true;         // Allow SELL (short) entries
 input double InpBufferPips        = 2.0;          // Distance above/below signal bar for pending entry (Pips)
@@ -345,10 +346,14 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 string g_editHistName   = "FP_HistEdit";     // set in OnInit
 string g_editFreqName   = "FP_SigFreqEdit";  // set in OnInit
 string g_editThreshName = "FP_SigThreshEdit";// set in OnInit
+string g_editThreshSellName = "FP_SigThreshSellEdit";// set in OnInit
+string g_editSpreadName = "FP_SpreadEdit";   // set in OnInit
 // Convenience macros that expand to the runtime-unique names
 #define FP_HIST_EDIT      g_editHistName
 #define FP_SIG_FREQ_EDIT  g_editFreqName
 #define FP_SIG_THRESH_EDIT g_editThreshName
+#define FP_SIG_THRESH_SELL_EDIT g_editThreshSellName
+#define FP_SPREAD_EDIT    g_editSpreadName
 #define FP_HIST_MIN    1               // minimum allowed history bars
 #define FP_HIST_MAX    5000            // maximum allowed history bars
 
@@ -383,6 +388,7 @@ int      g_signalFreqBars      = 3;      // runtime min-bars between signals (mi
 int      g_signalThreshold     = 60;     // runtime buy threshold (mirrors InpSignalThreshold on init)
 int      g_signalThresholdSell = 60;     // runtime sell threshold (mirrors InpSignalThresholdSell on init)
 int    g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2;  // "Sig" button hit-test coords
+double   g_maxSpreadPips       = 3.0;    // runtime max spread (pips), seeded from InpMaxSpread; panel-editable + persisted
 
 // Persistent scratch buffers
 int  g_scratchY1[];
@@ -397,6 +403,7 @@ int    g_profCount = 0;  // number of valid entries
 // --- Automated Trading State ---
 bool     g_autoTrade    = false;     // runtime toggle (seeded from InpATEnable)
 int      g_btnAutoX1, g_btnAutoY1, g_btnAutoX2, g_btnAutoY2;  // "Auto" button coords
+int      g_btnSimX1,  g_btnSimY1,  g_btnSimX2,  g_btnSimY2;   // "Sim" button coords
 ulong    g_Magic        = 20260226;  // set from InpMagic in OnInit
 datetime g_LastBarTime  = 0;         // new-bar detection timestamp
 int      g_handleATR    = INVALID_HANDLE; // compiled ATR indicator handle
@@ -456,6 +463,14 @@ void RiskStateSave()
    GlobalVariableSet(GVKey("NewDayDefer"),   (double)g_newDayDeferStart);
    GlobalVariableSet(GVKey("EquityHalted"),  g_equityHalted ? 1.0 : 0.0);
    GlobalVariableSet(GVKey("DayStartBal"),   g_dayStartBalance);
+
+   // Panel-driven controls: persist so you rarely need to open Inputs
+   GlobalVariableSet(GVKey("HistBars"),      (double)g_histBars);
+   GlobalVariableSet(GVKey("SigFreqBars"),   (double)g_signalFreqBars);
+   GlobalVariableSet(GVKey("SigThrBuy"),     (double)g_signalThreshold);
+   GlobalVariableSet(GVKey("SigThrSell"),    (double)g_signalThresholdSell);
+   GlobalVariableSet(GVKey("SimMode"),       g_analysisMode ? 1.0 : 0.0);
+   GlobalVariableSet(GVKey("MaxSpreadPips"), g_maxSpreadPips);
   }
 
 void RiskStateLoad()
@@ -484,6 +499,40 @@ void RiskStateLoad()
       g_equityHalted = (GlobalVariableGet(GVKey("EquityHalted")) != 0.0);
    if(GlobalVariableCheck(GVKey("DayStartBal")))
       g_dayStartBalance = GlobalVariableGet(GVKey("DayStartBal"));
+
+   // Restore panel-driven controls (clamped)
+   if(GlobalVariableCheck(GVKey("HistBars")))
+     {
+      int hb = (int)GlobalVariableGet(GVKey("HistBars"));
+      g_histBars = MathMax(FP_HIST_MIN, MathMin(FP_HIST_MAX, hb));
+     }
+   if(GlobalVariableCheck(GVKey("SigFreqBars")))
+     {
+      int fb = (int)GlobalVariableGet(GVKey("SigFreqBars"));
+      g_signalFreqBars = MathMax(1, MathMin(500, fb));
+     }
+   if(GlobalVariableCheck(GVKey("SigThrBuy")))
+     {
+      int tb = (int)GlobalVariableGet(GVKey("SigThrBuy"));
+      g_signalThreshold = MathMax(1, MathMin(99, tb));
+     }
+   if(GlobalVariableCheck(GVKey("SigThrSell")))
+     {
+      int ts = (int)GlobalVariableGet(GVKey("SigThrSell"));
+      g_signalThresholdSell = MathMax(1, MathMin(99, ts));
+     }
+   if(GlobalVariableCheck(GVKey("SimMode")))
+     {
+      g_analysisMode = (GlobalVariableGet(GVKey("SimMode")) != 0.0);
+      if(g_analysisMode) g_autoTrade = false; // safety: never persist/live-enable on load
+     }
+   if(GlobalVariableCheck(GVKey("MaxSpreadPips")))
+     {
+      double ms = GlobalVariableGet(GVKey("MaxSpreadPips"));
+      if(ms < 0.0) ms = 0.0;
+      if(ms > 500.0) ms = 500.0;
+      g_maxSpreadPips = ms;
+     }
   }
 
 void CounterSave()
@@ -2038,8 +2087,8 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 1 SigThresh OBJ_EDIT + 1 Auto button = 18 items
-   int panelW = pad + (btnW * 18 + btnGap * 17) + pad;
+   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 2 SigThresh OBJ_EDIT + 1 Spread OBJ_EDIT + 1 Prof + 1 Viz + 1 Sim + 1 Auto = 21 items
+   int panelW = pad + (btnW * 21 + btnGap * 20) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
@@ -2093,7 +2142,7 @@ void LayoutPanel(int cw, int ch)
    g_btnTickX1 = x; g_btnTickY1 = y1; g_btnTickX2 = x + btnW; g_btnTickY2 = y2;
    x += btnW + btnGap;
 
-   // Group 7: Signals — Sig toggle + Freq edit + Thresh edit ---------
+   // Group 7: Signals — Sig toggle + Freq edit + BuyThresh edit + SellThresh edit + MaxSpread edit
    g_btnSigX1 = x; g_btnSigY1 = y1; g_btnSigX2 = x + btnW; g_btnSigY2 = y2;
    x += btnW + btnGap;
 
@@ -2121,6 +2170,30 @@ void LayoutPanel(int cw, int ch)
      }
    x += btnW + btnGap;
 
+   // SigThreshSell OBJ_EDIT — inline numeric input for SELL threshold
+   int sigThreshSellEditX = x;
+   int sigThreshSellEditY = y1;
+   if(ObjectFind(g_chart, FP_SIG_THRESH_SELL_EDIT) >= 0)
+     {
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XDISTANCE, sigThreshSellEditX);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YDISTANCE, sigThreshSellEditY);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XSIZE,     btnW);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YSIZE,     y2 - y1);
+     }
+   x += btnW + btnGap;
+
+   // Spread OBJ_EDIT — inline numeric input for max spread (pips)
+   int spreadEditX = x;
+   int spreadEditY = y1;
+   if(ObjectFind(g_chart, FP_SPREAD_EDIT) >= 0)
+     {
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XDISTANCE, spreadEditX);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_YDISTANCE, spreadEditY);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XSIZE,     btnW);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_YSIZE,     y2 - y1);
+     }
+   x += btnW + btnGap;
+
    // Group 8: Visibility — Prof + Viz/Hid (rightmost, always visible) --
    g_btnProfX1 = x; g_btnProfY1 = y1; g_btnProfX2 = x + btnW; g_btnProfY2 = y2;
    x += btnW + btnGap;
@@ -2128,7 +2201,10 @@ void LayoutPanel(int cw, int ch)
    g_btnShowX1 = x; g_btnShowY1 = y1; g_btnShowX2 = x + btnW; g_btnShowY2 = y2;
    x += btnW + btnGap;
 
-   // Group 9: Automated Trading — one toggle button ----------------------
+   // Group 9: Execution mode — Sim + Auto (rightmost)
+   g_btnSimX1  = x; g_btnSimY1  = y1; g_btnSimX2  = x + btnW; g_btnSimY2  = y2;
+   x += btnW + btnGap;
+
    g_btnAutoX1 = x; g_btnAutoY1 = y1; g_btnAutoX2 = x + btnW; g_btnAutoY2 = y2;
    x += btnW + btnGap;
 
@@ -2157,7 +2233,7 @@ void DrawPanel()
                     FpARGB(C'70,70,80', 200));
 
    // Subtle group-separator lines
-   // After Sync | after Mode | after VA | after Lbl | after Lock | after Tick | after Thresh
+   // After Sync | after Mode | after VA | after Lbl | after Lock | after Tick | after Spread | before Sim/Auto
    int sepY1 = g_panelY1 + 4;
    int sepY2 = g_panelY2 - 4;
    int sepAlpha = 55;
@@ -2169,8 +2245,8 @@ void DrawPanel()
    sepPositions[3] = g_btnTxtX2      + FP_PANEL_BTN_GAP / 2;
    sepPositions[4] = g_btnScaleFixX2 + FP_PANEL_BTN_GAP / 2;
    sepPositions[5] = g_btnTickX2     + FP_PANEL_BTN_GAP / 2;
-   sepPositions[6] = g_btnSigX2      + (FP_PANEL_BTN_W * 2 + FP_PANEL_BTN_GAP * 2);  // after SigThresh
-   sepPositions[7] = g_btnShowX2     + FP_PANEL_BTN_GAP / 2;                           // before Auto
+   sepPositions[6] = g_btnSigX2      + (FP_PANEL_BTN_W * 4 + FP_PANEL_BTN_GAP * 4);  // after Spread
+   sepPositions[7] = g_btnShowX2     + FP_PANEL_BTN_GAP / 2;                          // before Sim/Auto
    for(int s = 0; s < 8; s++)
       canvas.LineVertical(sepPositions[s], sepY1, sepY2, sepCol);
 
@@ -2189,6 +2265,7 @@ void DrawPanel()
    bool hoveredMode     = HitTest(g_mouseX, g_mouseY, g_btnModeX1,     g_btnModeY1,     g_btnModeX2,     g_btnModeY2);
    bool hoveredProf     = HitTest(g_mouseX, g_mouseY, g_btnProfX1,     g_btnProfY1,     g_btnProfX2,     g_btnProfY2);
    bool hoveredSig      = HitTest(g_mouseX, g_mouseY, g_btnSigX1,      g_btnSigY1,      g_btnSigX2,      g_btnSigY2);
+   bool hoveredSim      = HitTest(g_mouseX, g_mouseY, g_btnSimX1,      g_btnSimY1,      g_btnSimX2,      g_btnSimY2);
    bool hoveredAuto     = HitTest(g_mouseX, g_mouseY, g_btnAutoX1,     g_btnAutoY1,     g_btnAutoX2,     g_btnAutoY2);
 
    uint baseFill    = FpARGB(C'35,35,45', 230);
@@ -2349,6 +2426,30 @@ void DrawPanel()
                        g_signalsEnabled ? FpARGB(C'200,140,30', 200) : FpARGB(C'80,80,100', 200));
      }
 
+   // SigThreshSell OBJ_EDIT slot — red accent border, dims when signals off
+   if(ObjectFind(g_chart, FP_SIG_THRESH_SELL_EDIT) >= 0)
+     {
+      int ssX = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XDISTANCE);
+      int ssY = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YDISTANCE);
+      int ssW = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XSIZE);
+      int ssH = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YSIZE);
+      canvas.FillRectangle(ssX, ssY, ssX + ssW, ssY + ssH, FpARGB(C'25,25,35', 230));
+      canvas.Rectangle(ssX, ssY, ssX + ssW, ssY + ssH,
+                       g_signalsEnabled ? FpARGB(C'220,80,90', 200) : FpARGB(C'80,80,100', 200));
+     }
+
+   // Spread OBJ_EDIT slot — violet accent border, dims when signals off
+   if(ObjectFind(g_chart, FP_SPREAD_EDIT) >= 0)
+     {
+      int spX = (int)ObjectGetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XDISTANCE);
+      int spY = (int)ObjectGetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_YDISTANCE);
+      int spW = (int)ObjectGetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XSIZE);
+      int spH = (int)ObjectGetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_YSIZE);
+      canvas.FillRectangle(spX, spY, spX + spW, spY + spH, FpARGB(C'25,25,35', 230));
+      canvas.Rectangle(spX, spY, spX + spW, spY + spH,
+                       g_signalsEnabled ? FpARGB(C'170,120,220', 200) : FpARGB(C'80,80,100', 200));
+     }
+
    // --- Group 8: Visibility (rightmost — Prof then Viz/Hid) ---
 
    // Prof — profile-only mode (teal when active)
@@ -2372,8 +2473,19 @@ void DrawPanel()
    canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
                   g_visible ? "Viz" : "Hid", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-   // --- Group 9: Automated Trading ---
-   // Amber-gold when active (distinct from the green signal button) / dark-red when off
+   // --- Group 9: Execution mode (Sim + Auto) ---
+   // Sim: analysis-only (never sends live orders). Auto: live execution.
+
+   // Sim button — blue when active
+   uint simFill   = g_analysisMode ? FpARGB(C'20,55,90', 230) : baseFill;
+   uint simBorder = g_analysisMode ? FpARGB(C'60,150,230', 230) : baseBorder;
+   if(hoveredSim) { simFill = hoverFill; simBorder = hoverBorder; }
+   canvas.FillRectangle(g_btnSimX1, g_btnSimY1, g_btnSimX2, g_btnSimY2, simFill);
+   canvas.Rectangle(g_btnSimX1, g_btnSimY1, g_btnSimX2, g_btnSimY2, simBorder);
+   canvas.TextOut(g_btnSimX1 + btnCenterX, btnCenterY,
+                  g_analysisMode ? "\x25CF Sim" : "Sim", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
+
+   // Auto button — amber-gold when active (distinct from the green signal button) / dark-red when off
    uint autoFill, autoBorder;
    if(g_autoTrade)
      {
@@ -3898,11 +4010,11 @@ void PlaceOrders()
    // InpSpreadFilter: absolute pip cap
    // InpSpreadATRRatio: spread must also be <= ATR(pips) * ratio (if ATR available)
    double spreadPips = (g_Pip > 0.0) ? (lv.ask - lv.bid) / g_Pip : 0.0;
-   if(InpSpreadFilter && InpMaxSpread > 0.0 && spreadPips > InpMaxSpread)
+   if(InpSpreadChecksEnable && InpSpreadFilter && g_maxSpreadPips > 0.0 && spreadPips > g_maxSpreadPips)
      {
       LogTradeExec(StringFormat(
          "PlaceOrders: spread %.2f pips exceeds max %.2f — skip entry.",
-         spreadPips, InpMaxSpread));
+         spreadPips, g_maxSpreadPips));
       return;
      }
 
@@ -3945,7 +4057,7 @@ void PlaceOrders()
    double sl, tp;
    CalcSLTP(direction, entry, atrVal, barHigh, barLow, bufDist, sl, tp);
 
-   if(InpSpreadATRRatio > 0.0 && atrVal > 0.0 && g_Pip > 0.0)
+   if(InpSpreadChecksEnable && InpSpreadATRRatio > 0.0 && atrVal > 0.0 && g_Pip > 0.0)
      {
       double atrPips = atrVal / g_Pip;
       double maxByAtr = atrPips * InpSpreadATRRatio;
@@ -4471,6 +4583,9 @@ int OnInit()
    g_lastSignalBarTime = 0;
    g_visible         = true;   // show footprint on load; user can toggle with the Viz/Hid button
 
+   // Seed spread filter runtime state (can be overridden by persisted state in RiskStateLoad)
+   g_maxSpreadPips = MathMax(0.0, MathMin(500.0, InpMaxSpread));
+
    // --- Automated Trading init ---
    g_autoTrade   = InpATEnable;
    g_analysisMode = InpAnalysisMode;
@@ -4503,6 +4618,8 @@ int OnInit()
    g_editHistName   = "FP_HistEdit_"   + IntegerToString(g_chart);
    g_editFreqName   = "FP_SigFreqEdit_"+ IntegerToString(g_chart);
    g_editThreshName = "FP_SigThreshEdit_"+IntegerToString(g_chart);
+   g_editThreshSellName = "FP_SigThreshSellEdit_"+IntegerToString(g_chart);
+   g_editSpreadName = "FP_SpreadEdit_"+IntegerToString(g_chart);
 
    // Enable mouse-move events for panel hover states
    ChartSetInteger(g_chart, CHART_EVENT_MOUSE_MOVE, 1);
@@ -4611,6 +4728,62 @@ int OnInit()
       Print("Footprint: Warning — could not create signal-threshold input box (", GetLastError(), ").");
      }
 
+   // Create SELL signal-threshold OBJ_EDIT — inline numeric input (HFT sell threshold)
+   ObjectDelete(g_chart, FP_SIG_THRESH_SELL_EDIT);
+   if(ObjectCreate(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJ_EDIT, 0, 0, 0))
+     {
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_BACK,         false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_ZORDER,       10);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_SELECTABLE,   false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_SELECTED,     false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_READONLY,     false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_COLOR,        C'220,220,230');
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_BORDER_COLOR, C'220,80,90');  // red — sell theme
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_FONTSIZE,     9);
+      ObjectSetString( g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_FONT,         "Consolas");
+      ObjectSetString( g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalThresholdSell));
+      ObjectSetString( g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TOOLTIP,      "HFT SELL threshold (1-99) — press Enter to apply");
+     }
+   else
+     {
+      Print("Footprint: Warning — could not create SELL signal-threshold input box (", GetLastError(), ").");
+     }
+
+   // Create max-spread OBJ_EDIT — inline numeric input (pips)
+   ObjectDelete(g_chart, FP_SPREAD_EDIT);
+   if(ObjectCreate(g_chart, FP_SPREAD_EDIT, OBJ_EDIT, 0, 0, 0))
+     {
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_YDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_BACK,         false);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_ZORDER,       10);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_SELECTABLE,   false);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_SELECTED,     false);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_READONLY,     false);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_COLOR,        C'220,220,230');
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_BORDER_COLOR, C'170,120,220');  // violet
+      ObjectSetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_FONTSIZE,     9);
+      ObjectSetString( g_chart, FP_SPREAD_EDIT, OBJPROP_FONT,         "Consolas");
+      ObjectSetString( g_chart, FP_SPREAD_EDIT, OBJPROP_TEXT,         DoubleToString(g_maxSpreadPips, 1));
+      ObjectSetString( g_chart, FP_SPREAD_EDIT, OBJPROP_TOOLTIP,      "Max spread (pips). 0 = disabled. Press Enter to apply");
+     }
+   else
+     {
+      Print("Footprint: Warning — could not create max-spread input box (", GetLastError(), ").");
+     }
+
    ReloadHistory();
 
    return INIT_SUCCEEDED;
@@ -4627,6 +4800,8 @@ void OnDeinit(const int reason)
    ObjectDelete(g_chart, FP_HIST_EDIT);
    ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
    ObjectDelete(g_chart, FP_SIG_THRESH_EDIT);
+   ObjectDelete(g_chart, FP_SIG_THRESH_SELL_EDIT);
+   ObjectDelete(g_chart, FP_SPREAD_EDIT);
 
    // Remove all signal arrow objects placed on the chart
    int total = ObjectsTotal(g_chart, 0, OBJ_ARROW);
@@ -4791,6 +4966,35 @@ void OnChartEvent(const int id, const long &lparam,
       g_signalThreshold = thrV;
       ObjectSetString(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT, IntegerToString(g_signalThreshold));
       g_lastSignalBarTime = 0;  // reset spacing gate — new threshold may expose new signals
+      g_dirty = true;
+      Render();
+      return;
+     }
+
+   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_SIG_THRESH_SELL_EDIT)
+     {
+      // User finished editing the SELL threshold input — parse, clamp, apply
+      string rawTS  = ObjectGetString(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TEXT);
+      int    thrSV = (int)StringToInteger(rawTS);
+      thrSV        = MathMax(1, MathMin(99, thrSV));
+      g_signalThresholdSell = thrSV;
+      ObjectSetString(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TEXT, IntegerToString(g_signalThresholdSell));
+      g_lastSignalBarTime = 0;
+      g_dirty = true;
+      Render();
+      return;
+     }
+
+   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_SPREAD_EDIT)
+     {
+      // User finished editing max spread (pips) — parse, clamp, apply
+      string rawS = ObjectGetString(g_chart, FP_SPREAD_EDIT, OBJPROP_TEXT);
+      double sp   = StringToDouble(rawS);
+      if(sp < 0.0) sp = 0.0;
+      if(sp > 500.0) sp = 500.0;
+      g_maxSpreadPips = sp;
+      ObjectSetString(g_chart, FP_SPREAD_EDIT, OBJPROP_TEXT, DoubleToString(g_maxSpreadPips, 1));
+      RiskStateSave(); // persist immediately
       g_dirty = true;
       Render();
       return;
@@ -4993,10 +5197,21 @@ void OnChartEvent(const int id, const long &lparam,
          g_dirty          = true;
          Render();
         }
+      // Simulation toggle: analysis-only (never sends live orders)
+      else if(HitTest(mx, my, g_btnSimX1, g_btnSimY1, g_btnSimX2, g_btnSimY2))
+        {
+         g_analysisMode = !g_analysisMode;
+         if(g_analysisMode) g_autoTrade = false; // simulation disables live execution
+         g_LastBarTime = 0;
+         g_dirty = true;
+         Render();
+         Print("Footprint EA — Simulation mode ", g_analysisMode ? "ENABLED" : "DISABLED");
+        }
       // Auto-Trading toggle: enable / disable live order execution
       else if(HitTest(mx, my, g_btnAutoX1, g_btnAutoY1, g_btnAutoX2, g_btnAutoY2))
         {
          g_autoTrade = !g_autoTrade;
+         if(g_autoTrade) g_analysisMode = false; // live execution overrides simulation
          g_LastBarTime = 0;  // reset new-bar gate so next tick is re-evaluated cleanly
          g_dirty = true;
          Render();
