@@ -404,6 +404,7 @@ double   g_Pip          = 0.0001;    // standardised pip size (auto-detected in 
 double   g_VolMin       = 0.01;      // broker minimum lot
 double   g_VolMax       = 100.0;     // broker maximum lot
 double   g_VolStep      = 0.01;      // broker lot step
+int      g_VolDigits    = 2;         // volume precision derived from step
 double   g_TickSize     = 0.0;       // tick value in deposit currency
 
 // --- Enhanced trading engine runtime state (ported from OrderFlowEA_v820) ---
@@ -3095,6 +3096,14 @@ void RefreshSymbolInfo()
    g_VolMax  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    g_VolStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(g_VolStep <= 0.0) g_VolStep = 0.01;
+   // Derive decimals from volume step (e.g. 0.1->1, 0.01->2, 0.001->3)
+   g_VolDigits = 0;
+   double s = g_VolStep;
+   while(g_VolDigits < 8 && s > 0.0 && s < 1.0 && MathAbs(s - MathRound(s)) > 1e-10)
+     {
+      s *= 10.0;
+      g_VolDigits++;
+     }
 
    // Tick value: profit per 1 lot for 1-point move, converted to deposit currency
    double tvBase = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
@@ -3107,6 +3116,34 @@ void RefreshSymbolInfo()
             ". Risk-based lot sizing will fall back to fixed lot.");
       g_TickSize = 0.0; // CalcLot detects this and falls back to InpFixedLot
      }
+  }
+
+//+------------------------------------------------------------------+
+//| NormalizeVolume — clamp and round volume to broker step           |
+//+------------------------------------------------------------------+
+double NormalizeVolume(double lot)
+  {
+   double step = (g_VolStep > 0.0) ? g_VolStep : 0.01;
+   double minV = (g_VolMin  > 0.0) ? g_VolMin  : step;
+   double maxV = (g_VolMax  > 0.0) ? g_VolMax  : 100.0;
+   if(lot <= 0.0) lot = minV;
+   // Floor to step (conservative sizing)
+   lot = MathFloor(lot / step) * step;
+   lot = MathMax(minV, MathMin(maxV, lot));
+   return NormalizeDouble(lot, g_VolDigits);
+  }
+
+//+------------------------------------------------------------------+
+//| DefaultDeviationPoints — convert ~2 pips to points                |
+//+------------------------------------------------------------------+
+int DefaultDeviationPoints()
+  {
+   if(_Point <= 0.0) return 20;
+   double pips = 2.0;
+   int pts = (int)MathRound((pips * g_Pip) / _Point);
+   if(pts < 10)  pts = 10;
+   if(pts > 200) pts = 200;
+   return pts;
   }
 
 //+------------------------------------------------------------------+
@@ -3145,6 +3182,14 @@ bool IsTradeAllowed()
       static datetime s_lastWarn3 = 0;
       if(TimeCurrent() - s_lastWarn3 > 60)
         { Print("Footprint EA — Account trade not allowed (read-only or suspended?)."); s_lastWarn3 = TimeCurrent(); }
+      return false;
+     }
+   long tm = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   if(tm == SYMBOL_TRADE_MODE_DISABLED)
+     {
+      static datetime s_lastWarn4 = 0;
+      if(TimeCurrent() - s_lastWarn4 > 60)
+        { Print("Footprint EA — Symbol trade mode is DISABLED for ", _Symbol, "."); s_lastWarn4 = TimeCurrent(); }
       return false;
      }
    return true;
@@ -3195,13 +3240,7 @@ double CalcLot(double slPoints)
       lot = InpFixedLot;
      }
 
-   // Guard: ensure step is positive before dividing (RefreshSymbolInfo sets 0.01 fallback,
-   // but a second path-through guard costs nothing and prevents a division-by-zero)
-   double step = (g_VolStep > 0.0) ? g_VolStep : 0.01;
-   lot = MathFloor(lot / step) * step;
-   lot = MathMax(g_VolMin > 0.0 ? g_VolMin : 0.01,
-                 MathMin(g_VolMax > 0.0 ? g_VolMax : 100.0, lot));
-   return NormalizeDouble(lot, 2);
+   return NormalizeVolume(lot);
   }
 
 //+------------------------------------------------------------------+
@@ -3408,8 +3447,9 @@ bool trade_SendCore(ENUM_TRADE_REQUEST_ACTIONS action,
         }
      }
 
-   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist    = MathMax((double)stopsLevel, 1.0) * _Point;
+   long   stopsLevel  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long   freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist     = MathMax((double)MathMax(stopsLevel, freezeLevel), 1.0) * _Point;
 
    double refPrice = price;
    if(action == TRADE_ACTION_DEAL)
@@ -3417,7 +3457,7 @@ bool trade_SendCore(ENUM_TRADE_REQUEST_ACTIONS action,
 
    req.action       = action;
    req.symbol       = _Symbol;
-   req.volume       = lot;
+   req.volume       = NormalizeVolume(lot);
    req.type         = orderType;
    req.price        = NormalizeDouble(price, _Digits);
    req.sl           = NormalizeDouble(sl,    _Digits);
@@ -3426,6 +3466,8 @@ bool trade_SendCore(ENUM_TRADE_REQUEST_ACTIONS action,
    req.comment      = comment;
    req.type_filling = GetBrokerFillingMode();
    req.expiration   = 0;
+   if(action == TRADE_ACTION_DEAL)
+      req.deviation = DefaultDeviationPoints();
 
    if(sl > 0.0)
      {
@@ -3852,6 +3894,18 @@ void PlaceOrders()
    if(!SymbolInfoTick(_Symbol, lv))
      { LogTradeExec("PlaceOrders: SymbolInfoTick failed"); return; }
 
+   // ── Spread filters (production guard) ────────────────────────────
+   // InpSpreadFilter: absolute pip cap
+   // InpSpreadATRRatio: spread must also be <= ATR(pips) * ratio (if ATR available)
+   double spreadPips = (g_Pip > 0.0) ? (lv.ask - lv.bid) / g_Pip : 0.0;
+   if(InpSpreadFilter && InpMaxSpread > 0.0 && spreadPips > InpMaxSpread)
+     {
+      LogTradeExec(StringFormat(
+         "PlaceOrders: spread %.2f pips exceeds max %.2f — skip entry.",
+         spreadPips, InpMaxSpread));
+      return;
+     }
+
    bool isMarket = (InpOrderMode == ORDER_MODE_MARKET);
 
    double entry;
@@ -3890,6 +3944,19 @@ void PlaceOrders()
 
    double sl, tp;
    CalcSLTP(direction, entry, atrVal, barHigh, barLow, bufDist, sl, tp);
+
+   if(InpSpreadATRRatio > 0.0 && atrVal > 0.0 && g_Pip > 0.0)
+     {
+      double atrPips = atrVal / g_Pip;
+      double maxByAtr = atrPips * InpSpreadATRRatio;
+      if(maxByAtr > 0.0 && spreadPips > maxByAtr)
+        {
+         LogTradeExec(StringFormat(
+            "PlaceOrders: spread %.2f pips exceeds ATR-ratio cap %.2f (ATR=%.2f pips, ratio=%.3f) — skip entry.",
+            spreadPips, maxByAtr, atrPips, InpSpreadATRRatio));
+         return;
+        }
+     }
 
    double slPoints = (sl > 0.0) ? MathAbs(entry - sl) / _Point : 0.0;
    double lot      = CalcLot(slPoints, direction);
@@ -3967,7 +4034,8 @@ bool ClosePositionWithRetry(ulong ticket, const string reason)
    req.symbol    = _Symbol;
    req.volume    = PositionGetDouble(POSITION_VOLUME);
    req.magic     = g_Magic;
-   req.deviation = 20;
+   req.deviation = DefaultDeviationPoints();
+   req.type_filling = GetBrokerFillingMode();
 
    ENUM_POSITION_TYPE pt = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
    req.type  = (pt == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
@@ -4242,6 +4310,11 @@ int OnInit()
    // --- Automated Trading — Exit validation ---
    if(InpATEnable)
      {
+      if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+        {
+         Alert("Footprint: This symbol is not tradeable (SYMBOL_TRADE_MODE_DISABLED). Cannot enable automated trading.");
+         return INIT_FAILED;
+        }
       if(InpUseStopLoss)
         {
          if((InpSLMode == SL_MODE_PIPS || InpSLMode == SL_MODE_ATR) && InpSLPips <= 0.0)
