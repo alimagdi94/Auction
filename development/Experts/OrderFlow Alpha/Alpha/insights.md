@@ -1,0 +1,3 @@
+I’ve confirmed the sizing bug is real, but it doesn’t explain the tester-only behavior by itself. I’m now tracing the live entry gates, order-submission constraints, and broker-sensitive checks that can block real fills.
+
+I’ve isolated two concrete live-only blockers: persisted simulation state can silently disable real auto-trading on reattach, and the EA is treating OrderSend(true) as execution success instead of checking result.retcode. I’m patching both, and I’m also relaxing the live tick filter that can discard valid broker ticks with zero last/volume.
