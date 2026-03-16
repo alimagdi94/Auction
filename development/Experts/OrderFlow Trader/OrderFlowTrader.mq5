@@ -345,12 +345,14 @@ datetime             g_last_tester_render_time = 0; // for Strategy Tester simul
 // has fully isolated object namespaces (no conflicts when attached to many charts)
 string g_editHistName   = "FP_HistEdit";     // set in OnInit
 string g_editFreqName   = "FP_SigFreqEdit";  // set in OnInit
-
+string g_editThreshName = "FP_SigThreshEdit";// set in OnInit
+string g_editThreshSellName = "FP_SigThreshSellEdit";// set in OnInit
 string g_editSpreadName = "FP_SpreadEdit";   // set in OnInit
 // Convenience macros that expand to the runtime-unique names
 #define FP_HIST_EDIT      g_editHistName
 #define FP_SIG_FREQ_EDIT  g_editFreqName
-
+#define FP_SIG_THRESH_EDIT g_editThreshName
+#define FP_SIG_THRESH_SELL_EDIT g_editThreshSellName
 #define FP_SPREAD_EDIT    g_editSpreadName
 #define FP_HIST_MIN    1               // minimum allowed history bars
 #define FP_HIST_MAX    5000            // maximum allowed history bars
@@ -383,7 +385,8 @@ bool   g_profileOnly = false;
 // --- Trading Signal Feature ---
 bool     g_signalsEnabled      = true;   // runtime toggle (mirrors InpShowSignals on init)
 int      g_signalFreqBars      = 3;      // runtime min-bars between signals (mirrors InpSignalFreqBars on init)
-
+int      g_signalThreshold     = 60;     // runtime buy threshold (mirrors InpSignalThreshold on init)
+int      g_signalThresholdSell = 60;     // runtime sell threshold (mirrors InpSignalThresholdSell on init)
 int    g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2;  // "Sig" button hit-test coords
 double   g_maxSpreadPips       = 3.0;    // runtime max spread (pips), seeded from InpMaxSpread; panel-editable + persisted
 
@@ -429,7 +432,6 @@ int      g_consecutiveLosses  = 0;
 int      g_sizeReductionLeft  = 0;
 bool     g_sessionHalted      = false;
 bool     g_equityHalted       = false;
-bool     g_calcLotFallbackLogged = false; // one-shot flag: log CalcLot fallback once per session
 datetime g_lastSLBarTimeBuy   = 0;
 datetime g_lastSLBarTimeSell  = 0;
 datetime g_newDayDeferStart   = 0;
@@ -465,7 +467,8 @@ void RiskStateSave()
    // Panel-driven controls: persist so you rarely need to open Inputs
    GlobalVariableSet(GVKey("HistBars"),      (double)g_histBars);
    GlobalVariableSet(GVKey("SigFreqBars"),   (double)g_signalFreqBars);
-
+   GlobalVariableSet(GVKey("SigThrBuy"),     (double)g_signalThreshold);
+   GlobalVariableSet(GVKey("SigThrSell"),    (double)g_signalThresholdSell);
    GlobalVariableSet(GVKey("SimMode"),       g_analysisMode ? 1.0 : 0.0);
    GlobalVariableSet(GVKey("MaxSpreadPips"), g_maxSpreadPips);
   }
@@ -508,7 +511,16 @@ void RiskStateLoad()
       int fb = (int)GlobalVariableGet(GVKey("SigFreqBars"));
       g_signalFreqBars = MathMax(1, MathMin(500, fb));
      }
-
+   if(GlobalVariableCheck(GVKey("SigThrBuy")))
+     {
+      int tb = (int)GlobalVariableGet(GVKey("SigThrBuy"));
+      g_signalThreshold = MathMax(1, MathMin(99, tb));
+     }
+   if(GlobalVariableCheck(GVKey("SigThrSell")))
+     {
+      int ts = (int)GlobalVariableGet(GVKey("SigThrSell"));
+      g_signalThresholdSell = MathMax(1, MathMin(99, ts));
+     }
    if(GlobalVariableCheck(GVKey("SimMode")))
      {
       g_analysisMode = (GlobalVariableGet(GVKey("SimMode")) != 0.0);
@@ -2075,8 +2087,8 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 1 Spread OBJ_EDIT + 1 Prof + 1 Viz + 1 Sim + 1 Auto = 19 items
-   int panelW = pad + (btnW * 19 + btnGap * 18) + pad;
+   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 2 SigThresh OBJ_EDIT + 1 Spread OBJ_EDIT + 1 Prof + 1 Viz + 1 Sim + 1 Auto = 21 items
+   int panelW = pad + (btnW * 21 + btnGap * 20) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
@@ -2130,7 +2142,7 @@ void LayoutPanel(int cw, int ch)
    g_btnTickX1 = x; g_btnTickY1 = y1; g_btnTickX2 = x + btnW; g_btnTickY2 = y2;
    x += btnW + btnGap;
 
-   // Group 7: Signals — Sig toggle + Freq edit + MaxSpread edit
+   // Group 7: Signals — Sig toggle + Freq edit + BuyThresh edit + SellThresh edit + MaxSpread edit
    g_btnSigX1 = x; g_btnSigY1 = y1; g_btnSigX2 = x + btnW; g_btnSigY2 = y2;
    x += btnW + btnGap;
 
@@ -2143,6 +2155,30 @@ void LayoutPanel(int cw, int ch)
       ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YDISTANCE, sigFreqEditY);
       ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_XSIZE,     btnW);
       ObjectSetInteger(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_YSIZE,     y2 - y1);
+     }
+   x += btnW + btnGap;
+
+   // SigThresh OBJ_EDIT — inline numeric input for signal score threshold
+   int sigThreshEditX = x;
+   int sigThreshEditY = y1;
+   if(ObjectFind(g_chart, FP_SIG_THRESH_EDIT) >= 0)
+     {
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XDISTANCE, sigThreshEditX);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YDISTANCE, sigThreshEditY);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XSIZE,     btnW);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YSIZE,     y2 - y1);
+     }
+   x += btnW + btnGap;
+
+   // SigThreshSell OBJ_EDIT — inline numeric input for SELL threshold
+   int sigThreshSellEditX = x;
+   int sigThreshSellEditY = y1;
+   if(ObjectFind(g_chart, FP_SIG_THRESH_SELL_EDIT) >= 0)
+     {
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XDISTANCE, sigThreshSellEditX);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YDISTANCE, sigThreshSellEditY);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XSIZE,     btnW);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YSIZE,     y2 - y1);
      }
    x += btnW + btnGap;
 
@@ -2376,6 +2412,30 @@ void DrawPanel()
       canvas.FillRectangle(sfX, sfY, sfX + sfW, sfY + sfH, FpARGB(C'25,25,35', 230));
       canvas.Rectangle(sfX, sfY, sfX + sfW, sfY + sfH,
                        g_signalsEnabled ? FpARGB(C'60,160,100', 200) : FpARGB(C'80,80,100', 200));
+     }
+
+   // SigThresh OBJ_EDIT slot — amber accent border, dims when signals off
+   if(ObjectFind(g_chart, FP_SIG_THRESH_EDIT) >= 0)
+     {
+      int stX = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XDISTANCE);
+      int stY = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YDISTANCE);
+      int stW = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XSIZE);
+      int stH = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YSIZE);
+      canvas.FillRectangle(stX, stY, stX + stW, stY + stH, FpARGB(C'25,25,35', 230));
+      canvas.Rectangle(stX, stY, stX + stW, stY + stH,
+                       g_signalsEnabled ? FpARGB(C'200,140,30', 200) : FpARGB(C'80,80,100', 200));
+     }
+
+   // SigThreshSell OBJ_EDIT slot — red accent border, dims when signals off
+   if(ObjectFind(g_chart, FP_SIG_THRESH_SELL_EDIT) >= 0)
+     {
+      int ssX = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XDISTANCE);
+      int ssY = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YDISTANCE);
+      int ssW = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XSIZE);
+      int ssH = (int)ObjectGetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YSIZE);
+      canvas.FillRectangle(ssX, ssY, ssX + ssW, ssY + ssH, FpARGB(C'25,25,35', 230));
+      canvas.Rectangle(ssX, ssY, ssX + ssW, ssY + ssH,
+                       g_signalsEnabled ? FpARGB(C'220,80,90', 200) : FpARGB(C'80,80,100', 200));
      }
 
    // Spread OBJ_EDIT slot — violet accent border, dims when signals off
@@ -2755,8 +2815,9 @@ void EvalAndFireSignal()
    double hftScore   = ComputeHFTSignal(bi, ofsScore);
 
    // Adaptive threshold for alerts; sell has its own threshold when adaptive is off.
-   int effThreshBuy  = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : InpSignalThreshold;
-   int effThreshSell = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : InpSignalThresholdSell;
+   int effThreshBuy  = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThreshold;
+   int effThreshSell = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThresholdSell;
+
    bool isBuySignal  = (hftScore >=  (double)effThreshBuy);
    bool isSellSignal = (hftScore <= -(double)effThreshSell);
    if(!isBuySignal && !isSellSignal)
@@ -2890,8 +2951,8 @@ void DrawSignalMarkersPass(int visBars, int firstVis, int barW)
 
       double hftScore    = ComputeHFTSignal(bi);
       int    ofsScore    = ComputeOFScore(bi);
-      bool   isBuySignal = (hftScore >= (double)InpSignalThreshold);
-      bool   isSellSignal= (hftScore <= -(double)InpSignalThresholdSell);
+      bool   isBuySignal = (hftScore >=  (double)g_signalThreshold);
+      bool   isSellSignal= (hftScore <= -(double)g_signalThresholdSell);
       if(!isBuySignal && !isSellSignal)
          continue;
 
@@ -3165,7 +3226,7 @@ void RefreshSymbolInfo()
      {
       Print("Footprint EA — Warning: tick value is zero for ", _Symbol,
             ". Risk-based lot sizing will fall back to fixed lot.");
-      g_TickSize = 0.0; // retained for spread checks; CalcLot no longer uses tick metadata
+      g_TickSize = 0.0; // CalcLot detects this and falls back to InpFixedLot
      }
   }
 
@@ -3276,51 +3337,40 @@ ENUM_ORDER_TYPE_FILLING GetBrokerFillingMode()
 
 //+------------------------------------------------------------------+
 //| CalcLot — risk-based or fixed lot, rounded to broker step        |
-//|                                                                  |
-//| Uses OrderCalcProfit() for 1.0 lot on the actual entry→SL range |
-//| so risk sizing is accurate across FX, indices, metals, crypto,  |
-//| and CFDs regardless of broker tick-metadata quirks.             |
-//|                                                                  |
-//| isBuy  : trade direction (true = BUY, false = SELL)             |
-//| entry  : intended fill / pending price                          |
-//| sl     : stop-loss price (0.0 → fixed-lot fallback)             |
+//| Risk sizing reads fresh tick-value data from _Symbol every call  |
+//| so the calculation is always accurate for the attached asset.    |
 //+------------------------------------------------------------------+
-double CalcLot(bool isBuy, double entry, double sl)
+double CalcLot(double slPoints)
   {
-   // ── Fixed-lot fast path ─────────────────────────────────────────
-   if(!InpUseRiskPercent)
-      return NormalizeVolume(InpFixedLot);
-
-   // ── Guard: need valid entry and SL prices ───────────────────────
-   if(sl <= 0.0 || entry <= 0.0 || MathAbs(entry - sl) < _Point)
-      return NormalizeVolume(InpFixedLot);
-
-   // ── Ask the broker: P&L for exactly 1 lot, entry → SL ──────────
-   // The result is the monetary loss (expected negative) if SL is hit.
-   double loss1Lot = 0.0;
-   ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   bool ok = OrderCalcProfit(orderType, _Symbol, 1.0, entry, sl, loss1Lot);
-
-   if(!ok || MathAbs(loss1Lot) <= 0.0)
+   double lot;
+   if(InpUseRiskPercent && slPoints > 0.0)
      {
-      // OrderCalcProfit failed — log once then fall back conservatively
-      if(InpLoggingEnable && !g_calcLotFallbackLogged)
+      // Read live symbol data — avoids stale cache and works correctly
+      // for any asset class (Forex, indices, commodities, crypto, etc.)
+      double tickVal  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      // Convert to monetary value per 1 lot per 1 point move
+      double pointValue = (tickSize > 0.0) ? (tickVal / tickSize) * _Point : 0.0;
+
+      if(pointValue > 0.0)
         {
-         Print("Footprint EA — CalcLot: OrderCalcProfit() failed for ", _Symbol,
-               " (err=", GetLastError(), ") — using fixed lot as fallback.");
-         g_calcLotFallbackLogged = true;
+         double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+         double riskAmt = balance * InpRiskPercent / 100.0;
+         lot = riskAmt / (slPoints * pointValue);
         }
-      return NormalizeVolume(InpFixedLot);
+      else
+        {
+         // Symbol tick data not yet available — fall back to fixed lot
+         lot = InpFixedLot;
+         if(InpLoggingEnable)
+            Print("Footprint EA — CalcLot: tick value unavailable for ", _Symbol,
+                  " — using fixed lot as fallback.");
+        }
      }
-
-   // ── Size to risk ────────────────────────────────────────────────
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskAmt = balance * InpRiskPercent / 100.0;
-   double lot     = riskAmt / MathAbs(loss1Lot);
-
-   // ── Consecutive-loss penalty (half-size reduction) ──────────────
-   if(g_sizeReductionLeft > 0)
-      lot *= 0.5;
+   else
+     {
+      lot = InpFixedLot;
+     }
 
    return NormalizeVolume(lot);
   }
@@ -3660,19 +3710,29 @@ bool trade_Send(ENUM_TRADE_REQUEST_ACTIONS action,
                          outTicket, sentSL, sentTP, true);
   }
 
+double CalcLot(double slDistPoints, bool isBuy)
+  {
+   // Direction-aware wrapper (v8 signature). Uses existing sizing then applies
+   // the consecutive-loss size reduction penalty (if active).
+   if(false) Print(isBuy);
+   double lot = CalcLot(slDistPoints);
+   if(g_sizeReductionLeft > 0)
+      lot *= 0.5;
+   return lot;
+  }
 
 int ComputeAdaptiveThreshold()
   {
    if(!InpAdaptiveThreshold)
-      return InpSignalThreshold;
+      return g_signalThreshold;
 
-   // Conservative adaptive mapping: clamp into [min,max] and fall back to the input threshold.
+   // Conservative adaptive mapping: clamp into [min,max] and fall back to the current threshold.
    int tMin = (int)MathRound(InpAdaptiveThreshMin);
    int tMax = (int)MathRound(InpAdaptiveThreshMax);
    if(tMin < 1)  tMin = 1;
    if(tMax > 99) tMax = 99;
    if(tMin >= tMax)
-      return InpSignalThreshold;
+      return g_signalThreshold;
 
    double atrVal = 0.0;
    if(g_handleATR != INVALID_HANDLE)
@@ -3682,7 +3742,7 @@ int ComputeAdaptiveThreshold()
          atrVal = atrBuf[0];
      }
    if(atrVal <= 0.0)
-      return InpSignalThreshold;
+      return g_signalThreshold;
 
    // Normalise ATR to pips to keep instruments comparable.
    double atrPips = atrVal / (g_Pip > 0.0 ? g_Pip : _Point);
@@ -3907,8 +3967,8 @@ void PlaceOrders()
    int    ofsScore = ComputeOFScore(bi);
    double hftScore = ComputeHFTSignal(bi, ofsScore);
 
-   int effThreshBuy  = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : InpSignalThreshold;
-   int effThreshSell = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : InpSignalThresholdSell;
+   int effThreshBuy  = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThreshold;
+   int effThreshSell = InpAdaptiveThreshold ? ComputeAdaptiveThreshold() : g_signalThresholdSell;
    bool isBuy  = (hftScore >=  (double)effThreshBuy  && InpAllowBuy);
    bool isSell = (hftScore <= -(double)effThreshSell && InpAllowSell);
    if(!isBuy && !isSell) return;
@@ -4030,7 +4090,8 @@ void PlaceOrders()
         }
      }
 
-   double lot = CalcLot(direction, entry, sl);
+   double slPoints = (sl > 0.0) ? MathAbs(entry - sl) / _Point : 0.0;
+   double lot      = CalcLot(slPoints, direction);
 
    int hftInt = (int)MathRound(MathAbs(hftScore));
 
@@ -4537,6 +4598,8 @@ int OnInit()
    // Seed signal runtime state
    g_signalsEnabled    = InpShowSignals;
    g_signalFreqBars    = MathMax(1, InpSignalFreqBars);
+   g_signalThreshold     = MathMax(1, MathMin(99, InpSignalThreshold));
+   g_signalThresholdSell = MathMax(1, MathMin(99, InpSignalThresholdSell));
    g_lastSignalBarTime = 0;
    g_visible         = true;   // show footprint on load; user can toggle with the Viz/Hid button
 
@@ -4591,6 +4654,8 @@ int OnInit()
    // OBJ_EDIT names also get the ChartID suffix — fully isolated per instance
    g_editHistName   = "FP_HistEdit_"   + IntegerToString(g_chart);
    g_editFreqName   = "FP_SigFreqEdit_"+ IntegerToString(g_chart);
+   g_editThreshName = "FP_SigThreshEdit_"+IntegerToString(g_chart);
+   g_editThreshSellName = "FP_SigThreshSellEdit_"+IntegerToString(g_chart);
    g_editSpreadName = "FP_SpreadEdit_"+IntegerToString(g_chart);
 
    // Enable mouse-move events for panel hover states
@@ -4672,6 +4737,62 @@ int OnInit()
       Print("Footprint: Warning — could not create signal-frequency input box (", GetLastError(), ").");
      }
 
+   // Create signal-threshold OBJ_EDIT — inline numeric input (HFT signal score threshold)
+   ObjectDelete(g_chart, FP_SIG_THRESH_EDIT);
+   if(ObjectCreate(g_chart, FP_SIG_THRESH_EDIT, OBJ_EDIT, 0, 0, 0))
+     {
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_BACK,         false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_ZORDER,       10);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_SELECTABLE,   false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_SELECTED,     false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_READONLY,     false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_COLOR,        C'220,220,230');
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_BORDER_COLOR, C'255,160,40');  // amber — matches signal theme
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_FONTSIZE,     9);
+      ObjectSetString( g_chart, FP_SIG_THRESH_EDIT, OBJPROP_FONT,         "Consolas");
+      ObjectSetString( g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalThreshold));
+      ObjectSetString( g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TOOLTIP,      "HFT signal score threshold (1-99) — press Enter to apply");
+     }
+   else
+     {
+      Print("Footprint: Warning — could not create signal-threshold input box (", GetLastError(), ").");
+     }
+
+   // Create SELL signal-threshold OBJ_EDIT — inline numeric input (HFT sell threshold)
+   ObjectDelete(g_chart, FP_SIG_THRESH_SELL_EDIT);
+   if(ObjectCreate(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJ_EDIT, 0, 0, 0))
+     {
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YDISTANCE,    0);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_XSIZE,        FP_PANEL_BTN_W);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_YSIZE,        FP_PANEL_H - 2 * FP_PANEL_PAD);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_BACK,         false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_ZORDER,       10);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_SELECTABLE,   false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_SELECTED,     false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_READONLY,     false);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_ALIGN,        ALIGN_CENTER);
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_COLOR,        C'220,220,230');
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_BGCOLOR,      C'22,22,34');
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_BORDER_COLOR, C'220,80,90');  // red — sell theme
+      ObjectSetInteger(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_FONTSIZE,     9);
+      ObjectSetString( g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_FONT,         "Consolas");
+      ObjectSetString( g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TEXT,         IntegerToString(g_signalThresholdSell));
+      ObjectSetString( g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TOOLTIP,      "HFT SELL threshold (1-99) — press Enter to apply");
+     }
+   else
+     {
+      Print("Footprint: Warning — could not create SELL signal-threshold input box (", GetLastError(), ").");
+     }
+
    // Create max-spread OBJ_EDIT — inline numeric input (pips)
    ObjectDelete(g_chart, FP_SPREAD_EDIT);
    if(ObjectCreate(g_chart, FP_SPREAD_EDIT, OBJ_EDIT, 0, 0, 0))
@@ -4715,6 +4836,8 @@ void OnDeinit(const int reason)
 
    ObjectDelete(g_chart, FP_HIST_EDIT);
    ObjectDelete(g_chart, FP_SIG_FREQ_EDIT);
+   ObjectDelete(g_chart, FP_SIG_THRESH_EDIT);
+   ObjectDelete(g_chart, FP_SIG_THRESH_SELL_EDIT);
    ObjectDelete(g_chart, FP_SPREAD_EDIT);
 
    // Remove all signal arrow objects placed on the chart
@@ -4866,6 +4989,34 @@ void OnChartEvent(const int id, const long &lparam,
       g_signalFreqBars = freqV;
       ObjectSetString(g_chart, FP_SIG_FREQ_EDIT, OBJPROP_TEXT, IntegerToString(g_signalFreqBars));
       g_lastSignalBarTime = 0;  // reset spacing gate so next signal fires immediately
+      g_dirty = true;
+      Render();
+      return;
+     }
+
+   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_SIG_THRESH_EDIT)
+     {
+      // User finished editing the signal-threshold input — parse, clamp, apply
+      string rawT   = ObjectGetString(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT);
+      int    thrV   = (int)StringToInteger(rawT);
+      thrV          = MathMax(1, MathMin(99, thrV));
+      g_signalThreshold = thrV;
+      ObjectSetString(g_chart, FP_SIG_THRESH_EDIT, OBJPROP_TEXT, IntegerToString(g_signalThreshold));
+      g_lastSignalBarTime = 0;  // reset spacing gate — new threshold may expose new signals
+      g_dirty = true;
+      Render();
+      return;
+     }
+
+   if(id == CHARTEVENT_OBJECT_ENDEDIT && sparam == FP_SIG_THRESH_SELL_EDIT)
+     {
+      // User finished editing the SELL threshold input — parse, clamp, apply
+      string rawTS  = ObjectGetString(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TEXT);
+      int    thrSV = (int)StringToInteger(rawTS);
+      thrSV        = MathMax(1, MathMin(99, thrSV));
+      g_signalThresholdSell = thrSV;
+      ObjectSetString(g_chart, FP_SIG_THRESH_SELL_EDIT, OBJPROP_TEXT, IntegerToString(g_signalThresholdSell));
+      g_lastSignalBarTime = 0;
       g_dirty = true;
       Render();
       return;
