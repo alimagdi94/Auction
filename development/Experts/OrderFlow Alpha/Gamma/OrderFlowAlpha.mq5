@@ -194,7 +194,6 @@ input double InpMaxEquityProfit   = 0.0;          // Hard profit target in accou
 input double InpMaxEquityLoss     = 0.0;          // Hard drawdown limit in account currency (0 = disabled)
 input bool   InpCleanOldOrders    = true;         // Delete stale pending orders when a new signal fires
 input int    InpMaxPositions      = 1;            // Max concurrent open positions for this EA (0 = unlimited)
-input ulong  InpMagic             = 20260226;     // Unique EA magic number (change if running multiple instances)
 
 input group "Automated Trading — V7 Filters"
 input int    InpPendingExpiryBars   = 0;       // Delete unfilled pending orders after N bars (0 = never)
@@ -399,7 +398,7 @@ int    g_profCount = 0;  // number of valid entries
 // --- Automated Trading State ---
 bool     g_autoTrade    = false;     // runtime toggle (seeded from InpATEnable)
 int      g_btnAutoX1, g_btnAutoY1, g_btnAutoX2, g_btnAutoY2;  // "Auto" button coords
-ulong    g_Magic        = 20260226;  // set from InpMagic in OnInit
+ulong    g_Magic        = 0;         // generated dynamically in OnInit
 datetime g_LastBarTime  = 0;         // new-bar detection timestamp
 int      g_handleATR    = INVALID_HANDLE; // compiled ATR indicator handle
 double   g_Pip          = 0.0001;    // standardised pip size (auto-detected in OnInit)
@@ -440,7 +439,7 @@ string GVKey(const string field)
   {
    return StringFormat("FPEA_%I64u_%I64u_%s_%s",
                        (ulong)AccountInfoInteger(ACCOUNT_LOGIN),
-                       (ulong)InpMagic, _Symbol, field);
+                       (ulong)g_Magic, _Symbol, field);
   }
 
 void RiskStateSave()
@@ -460,6 +459,7 @@ void RiskStateSave()
    // Panel-driven controls: persist so you rarely need to open Inputs
    GlobalVariableSet(GVKey("HistBars"),      (double)g_histBars);
    GlobalVariableSet(GVKey("SigFreqBars"),   (double)g_signalFreqBars);
+
    GlobalVariableSet(GVKey("MaxSpreadPips"), g_maxSpreadPips);
   }
 
@@ -499,6 +499,7 @@ void RiskStateLoad()
       int fb = (int)GlobalVariableGet(GVKey("SigFreqBars"));
       g_signalFreqBars = MathMax(1, MathMin(500, fb));
      }
+
    if(GlobalVariableCheck(GVKey("MaxSpreadPips")))
      {
       double ms = GlobalVariableGet(GVKey("MaxSpreadPips"));
@@ -2059,8 +2060,8 @@ void LayoutPanel(int cw, int ch)
    int btnW   = FP_PANEL_BTN_W;
    int btnGap = FP_PANEL_BTN_GAP;
    int pad    = FP_PANEL_PAD;
-   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 1 Spread OBJ_EDIT + 1 Prof + 1 Viz + 1 Auto = 18 items
-   int panelW = pad + (btnW * 18 + btnGap * 17) + pad;
+   // 1 history OBJ_EDIT + 13 buttons + 1 Sig button + 1 SigFreq OBJ_EDIT + 1 Spread OBJ_EDIT + 1 Prof + 1 Viz + 1 Sim + 1 Auto = 19 items
+   int panelW = pad + (btnW * 19 + btnGap * 18) + pad;
 
    g_panelX2 = cw - FP_PANEL_MARGIN;
    g_panelX1 = g_panelX2 - panelW;
@@ -2178,7 +2179,7 @@ void DrawPanel()
                     FpARGB(C'70,70,80', 200));
 
    // Subtle group-separator lines
-   // After Sync | after Mode | after VA | after Lbl | after Lock | after Tick | after Spread | before Auto
+   // After Sync | after Mode | after VA | after Lbl | after Lock | after Tick | after Spread | before Sim/Auto
    int sepY1 = g_panelY1 + 4;
    int sepY2 = g_panelY2 - 4;
    int sepAlpha = 55;
@@ -2190,16 +2191,8 @@ void DrawPanel()
    sepPositions[3] = g_btnTxtX2      + FP_PANEL_BTN_GAP / 2;
    sepPositions[4] = g_btnScaleFixX2 + FP_PANEL_BTN_GAP / 2;
    sepPositions[5] = g_btnTickX2     + FP_PANEL_BTN_GAP / 2;
-   // After Spread edit (use actual OBJ_EDIT coords when available)
-   sepPositions[6] = g_btnSigX2 + FP_PANEL_BTN_GAP / 2;
-   if(ObjectFind(g_chart, FP_SPREAD_EDIT) >= 0)
-     {
-      int spX = (int)ObjectGetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XDISTANCE);
-      int spW = (int)ObjectGetInteger(g_chart, FP_SPREAD_EDIT, OBJPROP_XSIZE);
-      sepPositions[6] = spX + spW + FP_PANEL_BTN_GAP / 2;
-     }
-
-   sepPositions[7] = g_btnShowX2     + FP_PANEL_BTN_GAP / 2;                          // before Auto
+   sepPositions[6] = g_btnSigX2      + (FP_PANEL_BTN_W * 4 + FP_PANEL_BTN_GAP * 4);  // after Spread
+   sepPositions[7] = g_btnShowX2     + FP_PANEL_BTN_GAP / 2;                          // before Sim/Auto
    for(int s = 0; s < 8; s++)
       canvas.LineVertical(sepPositions[s], sepY1, sepY2, sepCol);
 
@@ -2401,8 +2394,10 @@ void DrawPanel()
    canvas.TextOut(g_btnShowX1 + btnCenterX, btnCenterY,
                   g_visible ? "Viz" : "Hid", FpARGB(clrWhite, 210), TA_CENTER | TA_VCENTER);
 
-  // --- Group 9: Execution mode (Auto) ---
-  // Auto button — amber-gold when active (distinct from the green signal button) / dark-red when off
+   // --- Group 9: Execution mode (Auto) ---
+   // Auto: live execution.
+
+   // Auto button — amber-gold when active (distinct from the green signal button) / dark-red when off
    uint autoFill, autoBorder;
    if(g_autoTrade)
      {
@@ -3280,7 +3275,18 @@ double CalcLot(bool isBuy, double entry, double sl)
 
    if(!ok || MathAbs(loss1Lot) <= 0.0)
      {
-      // OrderCalcProfit failed — log once then fall back conservatively
+      double tSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double tValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      if(tSize > 0.0 && tValue > 0.0)
+        {
+         double pipDist = MathAbs(entry - sl);
+         loss1Lot = (pipDist / tSize) * tValue;
+        }
+     }
+
+   if(MathAbs(loss1Lot) <= 0.0)
+     {
+      // Final fallback if both OrderCalcProfit and Tick calculations fail
       if(InpLoggingEnable && !g_calcLotFallbackLogged)
         {
          Print("Footprint EA — CalcLot: OrderCalcProfit() failed for ", _Symbol,
@@ -3800,6 +3806,13 @@ bool CheckRiskConditions(bool isBuy)
    return true;
   }
 
+void DrawAnalysisEntry(ulong ticket, bool isBuy, double entry, double sl, double tp,
+                       datetime bt, const string label, int hft, int ofs)
+  {
+   // No-op in FullUI: trading visuals are intentionally not part of the UI contract here.
+   if(false) Print(ticket, isBuy, entry, sl, tp, bt, label, hft, ofs);
+  }
+
 void DrawTradeEntry(ulong ticket, bool isBuy, double entry, double sl, double tp,
                     datetime bt, const string label, int hft, int ofs)
   {
@@ -4013,27 +4026,27 @@ void PlaceOrders()
    sent = trade_Send(action, orderType, entry, sl, tp, lot, tag, ticket, sentSL, sentTP);
    if(sent)
      {
-     if(!isMarket) g_pendingPlacedBarTime = g_bars[bi].bar_time;
-     if(!isMarket && ticket != 0)
-       {
-        int pn = ArraySize(g_pendingTickets);
-        ArrayResize(g_pendingTickets, pn+1);
-        ArrayResize(g_pendingBarTimes, pn+1);
-        g_pendingTickets[pn] = ticket;
-        g_pendingBarTimes[pn] = g_bars[bi].bar_time;
-       }
+      if(!isMarket) g_pendingPlacedBarTime = g_bars[bi].bar_time;
+      if(!isMarket && ticket != 0)
+        {
+         int pn = ArraySize(g_pendingTickets);
+         ArrayResize(g_pendingTickets, pn+1);
+         ArrayResize(g_pendingBarTimes, pn+1);
+         g_pendingTickets[pn] = ticket;
+         g_pendingBarTimes[pn] = g_bars[bi].bar_time;
+        }
 
-     LogTradeExec(StringFormat(
-        "ORDER PLACED [%s] %s | #%I64u | Entry: %s | SL: %s | TP: %s"
-        " | Lot: %.2f | HFT: %d (thresh=%d) | OFS: %d | Conv: %s (%d)",
-        direction?"BUY":"SELL", isMarket?"MKT":"STP",
-        ticket, DoubleToString(entry,_Digits),
-        DoubleToString(sentSL,_Digits),
-        DoubleToString(sentTP,_Digits),
-        lot, hftInt, effThreshUsed, ofsScore, conv.label, conv.componentCount));
+      LogTradeExec(StringFormat(
+         "ORDER PLACED [%s] %s | #%I64u | Entry: %s | SL: %s | TP: %s"
+         " | Lot: %.2f | HFT: %d (thresh=%d) | OFS: %d | Conv: %s (%d)",
+         direction?"BUY":"SELL", isMarket?"MKT":"STP",
+         ticket, DoubleToString(entry,_Digits),
+         DoubleToString(sentSL,_Digits),
+         DoubleToString(sentTP,_Digits),
+         lot, hftInt, effThreshUsed, ofsScore, conv.label, conv.componentCount));
 
-     DrawTradeEntry(ticket, direction, entry, sentSL, sentTP,
-                    g_bars[bi].bar_time, conv.label, hftInt, ofsScore);
+      DrawTradeEntry(ticket, direction, entry, sentSL, sentTP,
+                     g_bars[bi].bar_time, conv.label, hftInt, ofsScore);
      }
   }
 
@@ -4489,8 +4502,9 @@ int OnInit()
    g_maxSpreadPips = MathMax(0.0, MathMin(500.0, InpMaxSpread));
 
    // --- Automated Trading init ---
-  g_autoTrade   = InpATEnable;
-   g_Magic       = InpMagic;   // source magic from user input (allows multi-instance coexistence)
+   g_autoTrade   = InpATEnable;
+   MathSrand(GetTickCount());
+   g_Magic       = ((ulong)ChartID() << 32) ^ ((ulong)GetMicrosecondCount() + (ulong)MathRand());
    g_LastBarTime = 0;
 
    // Restore persisted risk/counter state for the enhanced engine (no UI impact)
@@ -4744,7 +4758,7 @@ void OnTick()
    ManagePositions();
    if(IsNewBar())
      {
-     if(g_autoTrade) RefreshSymbolInfo();   // refresh pip/lot/spread cache at bar open
+      if(g_autoTrade) RefreshSymbolInfo();   // refresh pip/lot/spread cache at bar open
 
       // v8 engine: rolling ATR baseline (EMA) to keep adaptive threshold responsive.
       if(g_atrBaselineReady && g_handleATR != INVALID_HANDLE)
@@ -5001,23 +5015,23 @@ void OnChartEvent(const int id, const long &lparam,
          g_profileOnly = !g_profileOnly;
          g_dirty       = true;
          Render();
-     }
-   // Signals toggle: enable / disable trading signal diamonds and alerts
-   else if(HitTest(mx, my, g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2))
-     {
-      g_signalsEnabled = !g_signalsEnabled;
-      g_lastSignalBarTime = 0; // reset spacing gate on toggle
-      g_dirty          = true;
-      Render();
-     }
-   // Auto-Trading toggle: enable / disable live order execution
-   else if(HitTest(mx, my, g_btnAutoX1, g_btnAutoY1, g_btnAutoX2, g_btnAutoY2))
-     {
-      g_autoTrade = !g_autoTrade;
-      g_LastBarTime = 0;  // reset new-bar gate so next tick is re-evaluated cleanly
-      g_dirty = true;
-      Render();
-      Print("Footprint EA — Automated Trading ", g_autoTrade ? "ENABLED" : "DISABLED");
-     }
+        }
+      // Signals toggle: enable / disable trading signal diamonds and alerts
+      else if(HitTest(mx, my, g_btnSigX1, g_btnSigY1, g_btnSigX2, g_btnSigY2))
+        {
+         g_signalsEnabled = !g_signalsEnabled;
+         g_lastSignalBarTime = 0; // reset spacing gate on toggle
+         g_dirty          = true;
+         Render();
+        }
+      // Auto-Trading toggle: enable / disable live order execution
+      else if(HitTest(mx, my, g_btnAutoX1, g_btnAutoY1, g_btnAutoX2, g_btnAutoY2))
+        {
+         g_autoTrade = !g_autoTrade;
+         g_LastBarTime = 0;  // reset new-bar gate so next tick is re-evaluated cleanly
+         g_dirty = true;
+         Render();
+         Print("Footprint EA — Automated Trading ", g_autoTrade ? "ENABLED" : "DISABLED");
+        }
      }
   }
