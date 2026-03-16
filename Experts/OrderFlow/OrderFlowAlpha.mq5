@@ -4546,24 +4546,7 @@ int OnInit()
    // --- Automated Trading init ---
    g_autoTrade   = InpATEnable;
    g_analysisMode = InpAnalysisMode;
-   // Auto-generate a unique magic number each time the EA is attached to a chart.
-   // Built from ChartID (unique per window) + a djb2 hash of _Symbol so two
-   // instances on different symbols never accidentally share the same magic.
-   {
-      ulong symHash = 5381;
-      string sym    = _Symbol;
-      int    slen   = StringLen(sym);
-      for(int i = 0; i < slen; i++)
-         symHash = ((symHash << 5) + symHash) + (ulong)StringGetCharacter(sym, i);
-
-      // Blend: lower 20 bits of ChartID XOR upper 20 bits of symbol hash
-      ulong chartPart  = (ulong)ChartID() & 0xFFFFF;
-      ulong symbolPart = (symHash >> 20)  & 0xFFFFF;
-      g_Magic = (chartPart ^ symbolPart);
-      if(g_Magic == 0) g_Magic = (ulong)ChartID() + 1; // safety — never zero
-      Print("Footprint EA — Magic number assigned: ", g_Magic,
-            "  (Chart=", ChartID(), "  Symbol=", _Symbol, ")");
-   }
+   g_Magic       = InpMagic;   // source magic from user input (allows multi-instance coexistence)
    g_LastBarTime = 0;
 
    // Restore persisted risk/counter state for the enhanced engine (no UI impact)
